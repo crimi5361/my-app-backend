@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certificat de Scolarité - <%= data.informations_personnelles.nom %> <%= data.informations_personnelles.prenoms %></title>
+    <style>
+        /* Styles généraux */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Arial', sans-serif;
+            background: white;
+            color: #000;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+        
+        .certificat-container {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto;
+            padding: 30px;
+            box-sizing: border-box;
+            border: 2px solid #d9d9d9;
+            border-radius: 4px;
+            background: white;
+            position: relative;
+            page-break-inside: avoid;
+        }
+        
+        /* En-tête ministère */
+        .header-ministry {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+        }
+        
+        .ministry-left, .ministry-right {
+            text-align: left;
+            flex: 1;
+        }
+
+          .ministry-right {
+            text-align: right;
+            flex: 1;
+        }
+        
+        
+        .ministry-text {
+            font-size: 10px;
+            color: #003366;
+            display: block;
+            margin: 0;
+            line-height: 1.2;
+        }
+        
+        .ministry-text strong {
+            font-weight: bold;
+        }
+        
+        /* Barre de séparation */
+        .separator-bar {
+            border-bottom: 3px solid #003366;
+            margin: 15px 0 20px 0;
+            width: 100%;
+        }
+        
+        /* Logo et nom école */
+        .school-header {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        
+        .school-logo {
+            height: 60px;
+            width: auto;
+            margin-right: 15px;
+            max-width: 100%;
+        }
+        
+        .school-name {
+            font-size: 16px;
+            color: #003366;
+            font-weight: bold;
+            text-align: center;
+            margin: 10px 0;
+        }
+        
+        /* Titre principal */
+        .main-title-container {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 25px;
+        }
+        
+        .main-title {
+            border: 2px solid #003366;
+            border-radius: 10px;
+            padding: 10px 40px;
+            text-align: center;
+            background-color: #f0f8ff;
+            width: fit-content;
+        }
+        
+        .main-title-text {
+            color: #003366;
+            text-align: center;
+            font-size: 20px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin: 0;
+        }
+        
+        /* Année universitaire */
+        .academic-year {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        
+        .academic-year-text {
+            font-size: 16px;
+            color: #003366;
+            font-weight: bold;
+            margin: 0;
+        }
+        
+        /* Corps du certificat */
+        .certificate-body {
+            display: flex;
+            gap: 30px;
+            margin-bottom: 25px;
+            align-items: flex-start;
+        }
+        
+        .student-info {
+            flex: 2;
+            min-width: 0;
+        }
+        
+        .student-photo-container {
+            flex: 1;
+            text-align: center;
+            min-width: 150px;
+            position: relative;
+        }
+        
+        .student-photo {
+            width: 120px;
+            height: 150px;
+            border-radius: 4px;
+            border: 1px solid #d9d9d9;
+            object-fit: cover;
+            background-color: #f5f5f5;
+            display: block;
+            margin: 0 auto;
+        }
+        
+        .photo-placeholder {
+            width: 120px;
+            height: 150px;
+            border: 1px dashed #ccc;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #f9f9f9;
+            color: #666;
+            font-size: 12px;
+            text-align: center;
+            margin: 0 auto;
+        }
+        
+        .photo-error {
+            display: none;
+        }
+        
+        .intro-text {
+            font-size: 14px;
+            font-weight: bold;
+            display: block;
+            margin-bottom: 15px;
+        }
+        
+        .info-line {
+            margin-bottom: 10px;
+            padding: 2px 0;
+        }
+        
+        .info-label {
+            font-weight: bold;
+            display: inline-block;
+            min-width: 140px;
+        }
+        
+        /* Tableau informations académiques horizontal */
+        .academic-table-container {
+            margin-bottom: 20px;
+        }
+        
+        .academic-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+            border: 1px solid #d9d9d9;
+        }
+        
+        .academic-table thead {
+            background-color: #f9f9f9;
+        }
+        
+        .academic-table th {
+            border: 1px solid #d9d9d9;
+            padding: 12px 10px;
+            font-size: 13px;
+            font-weight: bold;
+            text-align: left;
+            color: #003366;
+            background-color: #f0f8ff;
+        }
+        
+        .academic-table td {
+            border: 1px solid #d9d9d9;
+            padding: 12px 10px;
+            font-size: 13px;
+            vertical-align: top;
+        }
+        
+        .previous-year-row {
+            background-color: #f9f9f9;
+         
+        }
+        
+        .table-label {
+            font-weight: bold;
+            width: 30%;
+            background-color: #f9f9f9;
+        }
+        
+        .table-value {
+            width: 70%;
+        }
+        
+        .conclusion-text {
+            font-size: 14px;
+            display: block;
+            margin-top: 20px;
+            line-height: 1.5;
+        }
+        
+        /* QR Code et signature */
+        .footer-section {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-top: 40px;
+            flex-wrap: wrap;
+        }
+        
+        .qrcode-container, .signature-container {
+            text-align: center;
+            flex: 1;
+            min-width: 150px;
+            margin-bottom: 20px;
+        }
+        
+        .qrcode-image {
+            width: 120px;
+            height: 120px;
+            border: 1px solid #d9d9d9;
+            display: block;
+            margin: 0 auto 5px auto;
+        }
+        
+        .date-text {
+            display: block;
+            margin-bottom: 100px;
+            font-size: 14px;
+        }
+        
+        .signature-line {
+            border-top: 1px solid #000;
+            width: 200px;
+            margin: 0 auto;
+            padding-top: 5px;
+        }
+        
+        .signature-text {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        /* Notes de bas de page */
+        .notes-section {
+            margin-top: 40px;
+            border-top: 1px solid #d9d9d9;
+            padding-top: 15px;
+        }
+        
+        .note-text {
+            font-size: 11px;
+            color: #666;
+            display: block;
+            margin-bottom: 5px;
+            line-height: 1.4;
+        }
+        
+        /* Pied de page */
+        .footer {
+            margin-top: 30px;
+            text-align: center;
+            border-top: 1px solid #d9d9d9;
+            padding-top: 15px;
+        }
+        
+        .footer-text {
+            font-size: 11px;
+            color: #666;
+            display: block;
+            margin-bottom: 3px;
+        }
+
+        /* Styles pour le chargement des images */
+        .image-loading {
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .image-loaded {
+            opacity: 1;
+        }
+        
+        /* Styles pour données manquantes */
+        .data-missing {
+            color: #999;
+            font-style: italic;
+        }
+        
+        /* Styles d'impression améliorés */
+        @media print {
+            body {
+                margin: 5px !important;
+                padding: 5px !important;
+                background: white !important;
+                
+            }
+            
+            .certificat-container {
+                border: none !important;
+                box-shadow: none !important;
+                padding: 15px !important;
+                margin: 0 auto !important;
+                width: 90% !important;
+                min-height: auto !important;
+                page-break-after: always;
+                page-break-inside: avoid;
+            }
+            
+            .student-photo,
+            .qrcode-image {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            
+            .no-print {
+                display: none !important;
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .certificate-body {
+                flex-direction: column;
+            }
+            
+            .student-photo-container {
+                order: -1;
+                margin-bottom: 20px;
+            }
+            
+            .main-title {
+                padding: 10px 20px;
+            }
+            
+            .main-title-text {
+                font-size: 18px;
+            }
+            
+            .academic-table {
+                display: block;
+                overflow-x: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="certificat-container">
+        <!-- En-tête avec informations ministère -->
+        <div class="header-ministry">
+            <div class="ministry-left">
+                <span class="ministry-text">MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR</span>
+                <span class="ministry-text">ET DE LA RECHERCHE SCIENTIFIQUE</span>
+            </div>
+            
+            <div class="ministry-right">
+                <span class="ministry-text">RÉPUBLIQUE DE CÔTE D'IVOIRE</span>
+                <span class="ministry-text">Union - Discipline - Travail</span>
+            </div>
+        </div>
+
+        <!-- Barre de soulignement -->
+        <div class="separator-bar"></div>
+
+        <!-- Logo et nom de l'école -->
+        <div class="school-header">
+            <img 
+                src="/public/IIPEA-Photoroom.png" 
+                alt="Logo IIPEA" 
+                class="school-logo image-loading"
+                onload="this.classList.add('image-loaded')"
+                onerror="this.style.display='none'"
+            >
+            <span class="school-name">
+                Institut International Polytechnique des Elites d'Abidjan - (IIPEA)
+            </span>
+        </div>
+
+        <!-- Titre Principal -->
+        <div class="main-title-container">
+            <div class="main-title">
+                <h1 class="main-title-text">CERTIFICAT DE SCOLARITE</h1>
+            </div>
+        </div>
+
+        <!-- Année universitaire -->
+        <div class="academic-year">
+            <span class="academic-year-text">
+                ANNÉE UNIVERSITAIRE : <%= data.informations_academiques.annee_academique.annee %>
+            </span>
+        </div>
+
+        <!-- Corps du Certificat -->
+        <div class="certificate-body">
+            <!-- Informations Personnelles -->
+            <div class="student-info">
+                <span class="intro-text">Nous certifions que,</span>
+                
+                <div class="info-line">
+                    <span class="info-label">Etudiant(e) : </span>
+                    <span><%= data.informations_personnelles.nom %> <%= data.informations_personnelles.prenoms %></span>
+                </div>
+                
+                <div class="info-line">
+                    <span class="info-label">Né(e) le : </span>
+                    <span><%= data.date_naissance_formatee %> à <%= data.informations_personnelles.lieu_naissance %></span>
+                </div>
+                
+                <div class="info-line">
+                    <span class="info-label">Nationalité : </span>
+                    <span><%= data.nationalite_formatee %></span>
+                </div>
+                
+                <div class="info-line">
+                    <span class="info-label">Matricule IIPEA : </span>
+                    <span><%= data.informations_personnelles.matricule_iipea %></span>
+                </div>
+                
+                <div class="info-line">
+                    <span class="info-label">Elites-ID : </span>
+                    <span><%= data.informations_personnelles.code_unique %></span>
+                </div>
+                
+                <div class="info-line">
+                    <span class="info-label">Matricule MESRS : </span>
+                    <span><%= data.informations_personnelles.matricule %></span>
+                </div>
+            </div>
+
+            <!-- Photo avec gestion d'erreur améliorée -->
+            <div class="student-photo-container">
+                <% if (data.photo_url_complete && data.photo_url_complete.trim() !== '' && !data.photo_url_complete.includes('default-avatar')) { %>
+                    <img 
+                        src="<%= data.photo_url_complete %>" 
+                        alt="Photo de <%= data.informations_personnelles.nom %> <%= data.informations_personnelles.prenoms %>" 
+                        class="student-photo image-loading"
+                        onload="this.classList.add('image-loaded'); this.nextElementSibling.style.display='none';"
+                        onerror="this.style.display='none'; this.nextElementSibling.style.display='none';"
+                    >
+                    <div class="photo-placeholder photo-error" style="display: none;">
+                        <!-- Ne rien afficher quand la photo n'est pas disponible -->
+                    </div>
+                <% } else { %>
+                    <!-- Ne rien afficher quand la photo n'est pas disponible -->
+                <% } %>
+            </div>
+        </div>
+
+        <!-- Informations Académiques sous forme de tableau horizontal -->
+        <div class="academic-table-container">
+            <table class="academic-table">
+                <thead>
+                    <tr>
+                        <th>Filière</th>
+                        <th>Niveau</th>
+                        <th>Année académique</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% 
+                    // Vérifier si le niveau est BTS 2
+                    var isBTS2 = false;
+                    var previousAcademicYear = '';
+                    
+                    if (data.informations_academiques.niveau.libelle && 
+                        data.informations_academiques.niveau.libelle.includes('BTS 2')) {
+                        isBTS2 = true;
+                        
+                        // Calculer l'année académique précédente (ex: 2024-2025 → 2023-2024)
+                        if (data.informations_academiques.annee_academique.annee) {
+                            var yearParts = data.informations_academiques.annee_academique.annee.split('-');
+                            if (yearParts.length === 2) {
+                                var startYear = parseInt(yearParts[0]);
+                                var endYear = parseInt(yearParts[1]);
+                                previousAcademicYear = (startYear - 1) + '-' + (endYear - 1);
+                            }
+                        }
+                    }
+                    %>
+                    
+                    <!-- Afficher la ligne BTS 1 si c'est BTS 2 -->
+                    <% if (isBTS2) { %>
+                    <tr class="previous-year-row">
+                        <td><%= data.informations_academiques.filiere.nom || '<span class="data-missing">Non spécifié</span>' %></td>
+                        <td>BTS 1</td>
+                        <td><%= previousAcademicYear || '<span class="data-missing">Non spécifié</span>' %></td>
+                    </tr>
+                    <% } %>
+                    
+                    <!-- Ligne actuelle (BTS 2 ou autre niveau) -->
+                    <tr>
+                        <td><%= data.informations_academiques.filiere.nom || '<span class="data-missing">Non spécifié</span>' %></td>
+                        <td><%= data.informations_academiques.niveau.libelle || '<span class="data-missing">Non spécifié</span>' %></td>
+                        <td><%= data.informations_academiques.annee_academique.annee || '<span class="data-missing">Non spécifié</span>' %></td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <span class="conclusion-text">
+                est régulièrement inscrit(e) au titre de l'année académique <%= data.informations_academiques.annee_academique.annee %>, 
+                à l'Institut International Polytechnique des Elites d'Abidjan (IIPEA).
+            </span>
+        </div>
+
+        <!-- QR Code et Signature -->
+        <div class="footer-section">
+            <div class="qrcode-container">
+                <% if (data.qrCodeImage) { %>
+                    <img src="<%= data.qrCodeImage %>" alt="QR Code de vérification" class="qrcode-image">
+                    <span style="font-size: 10px; display: block; margin-top: 5px;">
+                        Code de vérification
+                    </span>
+                <% } else { %>
+                    <div style="width: 120px; height: 120px; background: #f5f5f5; display: flex; align-items: center; justify-content: center; margin: 0 auto; border: 1px dashed #ccc;">
+                        <span style="font-size: 10px; color: #666; text-align: center;">QR Code<br>Non Généré</span>
+                    </div>
+                <% } %>
+            </div>
+            
+            <div class="signature-container">
+                <span class="date-text">
+                    Fait à Abidjan, le <%= data.date_emission %>
+                </span>
+                
+                <div class="signature-line">
+                    <span class="signature-text">Le Directeur des Études</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Notes de bas de page -->
+        <div class="notes-section">
+            <span class="note-text">
+                <strong>NB:</strong> L'authenticité du présent document peut être vérifiée en scannant le QR code ou auprès du service scolarité.
+            </span>
+            <span class="note-text">
+                Ce certificat doit être imprimé en couleur sur papier A4.
+            </span>
+            <span class="note-text">
+                Document généré le : <%= new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) %>
+            </span>
+        </div>
+
+        <!-- Pied de page -->
+        <div class="footer">
+            <span class="footer-text">
+                Cocody Riviera 2, Route d'Attoban / Riviera Triangle /Abobo/ Yamoussoukro 
+            </span>
+            <span class="footer-text">
+                Tel : +225 05 44 02 60 60 / +225 07 08 08 87 87
+            </span>
+            <span class="footer-text">
+                Email : secretariat@iipea.com | Copyright © IIPEA Tous droits réservés
+            </span>
+        </div>
+    </div>
+
+    <script>
+        // Script de gestion du chargement des images
+        document.addEventListener('DOMContentLoaded', function() {
+            // Préchargement des images critiques
+            const criticalImages = document.querySelectorAll('.school-logo, .student-photo');
+            criticalImages.forEach(img => {
+                if (img.complete) {
+                    img.classList.add('image-loaded');
+                    // Si l'image est chargée, masquer le placeholder d'erreur
+                    if (img.classList.contains('student-photo')) {
+                        const errorPlaceholder = img.nextElementSibling;
+                        if (errorPlaceholder && errorPlaceholder.classList.contains('photo-error')) {
+                            errorPlaceholder.style.display = 'none';
+                        }
+                    }
+                }
+            });
+
+            // Timeout de secours pour les images
+            setTimeout(() => {
+                document.querySelectorAll('.image-loading:not(.image-loaded)').forEach(img => {
+                    img.style.opacity = '1';
+                });
+            }, 3000);
+
+            // Gestion spécifique des photos d'étudiants
+            const studentPhotos = document.querySelectorAll('.student-photo');
+            studentPhotos.forEach(photo => {
+                photo.addEventListener('error', function() {
+                    this.style.display = 'none';
+                    const errorPlaceholder = this.nextElementSibling;
+                    if (errorPlaceholder && errorPlaceholder.classList.contains('photo-error')) {
+                        errorPlaceholder.style.display = 'none'; // Ne rien afficher
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>

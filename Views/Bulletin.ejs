@@ -1,0 +1,551 @@
+<!-- views/Bulletin.ejs -->
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Relevé de Notes - <%= etudiant.nom %> <%= etudiant.prenoms %></title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            background: white;
+            padding: 20px;
+            margin: 0;
+            line-height: 1.5;
+        }
+        
+        .bulletin {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 50px 35px 35px 35px;
+            position: relative;
+            border: 1px solid #ddd;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+        }
+        
+        /* ===== SECTION 1 : TITRE ===== */
+        .section1 {
+            text-align: center;
+            margin-bottom: 25px;
+        }
+        
+        .section1 h1 {
+            font-size: 32px;
+            font-weight: bold;
+            text-transform: uppercase;
+            color: #2c3e50;
+            letter-spacing: 1.5px;
+            margin-bottom: 8px;
+        }
+        
+        .section1 .niveau {
+            font-size: 18px;
+            color: #555;
+            border-bottom: 1px solid #ccc;
+            padding-bottom: 12px;
+            font-weight: normal;
+        }
+        
+        /* ===== SECTION 2 : INFORMATIONS ÉTUDIANT ===== */
+        .section2 {
+            margin-bottom: 30px;
+        }
+        
+        .info-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px 20px;
+            border: 1px solid #ccc;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 6px;
+        }
+        
+        .info-item {
+            font-size: 14px;
+            display: flex;
+            align-items: baseline;
+        }
+        
+        .info-item strong {
+            font-weight: bold;
+            min-width: 110px;
+            color: #2c3e50;
+        }
+        
+        .info-item span {
+            color: #333;
+        }
+        
+        .redoublant-oui {
+            background: #fee;
+            color: #c0392b;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 13px;
+            border: 1px solid #e74c3c;
+        }
+        
+        .redoublant-non {
+            background: #e8f5e9;
+            color: #27ae60;
+            padding: 2px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 13px;
+            border: 1px solid #2ecc71;
+        }
+        
+        /* ===== SECTION 3 : TABLEAU ===== */
+        .section3 {
+            margin-bottom: 30px;
+        }
+        
+        .sous-titre {
+            font-size: 15px;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 12px;
+            padding-left: 8px;
+            border-left: 4px solid #2c3e50;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        
+        th {
+            background: #e9ecef;
+            font-weight: bold;
+            text-align: center;
+            padding: 10px 5px;
+            border: 1px solid #333;
+            font-size: 12px;
+            text-transform: uppercase;
+        }
+        
+        td {
+            padding: 8px 5px;
+            border: 1px solid #999;
+            vertical-align: middle;
+            text-align: center;
+        }
+        
+        .ue-row {
+            background: #f1f5f9;
+            font-weight: bold;
+        }
+        
+        .ue-row td:first-child {
+            text-align: left;
+            padding-left: 12px;
+        }
+        
+        .ecue-row td:first-child {
+            text-align: left;
+            padding-left: 28px;
+        }
+        
+        .mention {
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-weight: bold;
+            display: inline-block;
+        }
+        
+        .mention-passable { background: #fff3cd; color: #856404; }
+        .mention-assez-bien { background: #d1ecf1; color: #0c5460; }
+        .mention-bien { background: #d4edda; color: #155724; }
+        .mention-tres-bien { background: #d1c4e9; color: #311b92; }
+        
+        .admis { color: #27ae60; font-weight: bold; }
+        .refuse { color: #c0392b; font-weight: bold; }
+        
+        .harmonisee-note {
+            font-size: 10px;
+            color: #7f8c8d;
+            font-style: italic;
+            margin-left: 5px;
+        }
+        
+        /* ===== SECTION 4 : RÉCAPITULATIF ===== */
+        .section4 {
+            margin-top: 30px;
+            border-top: 2px solid #2c3e50;
+            padding-top: 20px;
+        }
+        
+        .recap-semestres {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 25px;
+            margin-bottom: 25px;
+        }
+        
+        .semestre-box {
+            border: 1px solid #ccc;
+            padding: 15px;
+            background: #f9f9f9;
+            border-radius: 6px;
+        }
+        
+        .semestre-box h4 {
+            font-size: 15px;
+            font-weight: bold;
+            color: #2c3e50;
+            margin-bottom: 12px;
+            padding-bottom: 5px;
+            border-bottom: 1px solid #999;
+            text-align: center;
+        }
+        
+        .semestre-box p {
+            display: flex;
+            justify-content: space-between;
+            margin: 8px 0;
+            font-size: 14px;
+        }
+        
+        .resultat-annuel {
+            background: #e9ecef;
+            padding: 15px 20px;
+            border: 1px solid #999;
+            border-radius: 6px;
+            display: flex;
+            justify-content: space-around;
+            margin: 20px 0;
+            font-weight: bold;
+            font-size: 15px;
+        }
+        
+        .decision-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin: 20px 0 25px;
+            padding: 15px 20px;
+            background: white;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+        }
+        
+        .decision-badge {
+            font-size: 20px;
+            font-weight: bold;
+            padding: 6px 20px;
+            border-radius: 30px;
+        }
+        
+        .decision-badge.admis {
+            background: #27ae60;
+            color: white;
+        }
+        
+        .decision-badge.ajourne {
+            background: #c0392b;
+            color: white;
+        }
+        
+        .mention-annuelle {
+            font-size: 18px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        /* ===== PIED DE PAGE ===== */
+        .footer {
+            margin-top: 40px;
+            display: flex;
+            justify-content: flex-end;
+        }
+        
+        .signature {
+            text-align: center;
+            width: 280px;
+        }
+        
+        .signature .date {
+            font-style: italic;
+            margin-bottom: 35px;
+            font-size: 14px;
+            color: #555;
+        }
+        
+        .signature .ligne {
+            border-top: 1px solid #333;
+            padding-top: 8px;
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        /* Pied de page institutionnel */
+        .institution-footer {
+            margin-top: 35px;
+            padding-top: 15px;
+            border-top: 1px solid #ccc;
+            text-align: center;
+            font-size: 12px;
+            color: #555;
+        }
+        
+        .institution-footer .nom {
+            font-weight: bold;
+            font-size: 13px;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        
+        /* Impression */
+        @media print {
+            body { padding: 0; background: white; }
+            .bulletin { 
+                border: none; 
+                padding: 50px 35px 35px 35px;
+                box-shadow: none;
+            }
+            .no-print { display: none; }
+            .decision-badge { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        }
+        
+        .no-print {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .btn-print, .btn-close {
+            padding: 8px 16px;
+            margin: 0 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .btn-print { background: #2c3e50; color: white; }
+        .btn-close { background: #95a5a6; color: white; }
+    </style>
+</head>
+<body>
+    <div class="no-print">
+        <button class="btn-print" onclick="window.print()">🖨️ Imprimer / PDF</button>
+        <button class="btn-close" onclick="window.close()">❌ Fermer</button>
+    </div>
+
+    <div class="bulletin">
+        <!-- SECTION 1 : TITRE -->
+        <div class="section1">
+            <h1>RELEVÉ DE NOTES</h1>
+            <div class="niveau">NIVEAU : <%= etudiant.niveau_id || 'LICENCE 1' %></div>
+        </div>
+
+        <!-- SECTION 2 : INFORMATIONS ÉTUDIANT -->
+        <div class="section2">
+            <div class="info-grid">
+                <div class="info-item">
+                    <strong>Matricule MESRS :</strong>
+                    <span><%= etudiant.matricule_mesrs %></span>
+                </div>
+                <div class="info-item">
+                    <strong>Matricule IIPEA :</strong>
+                    <span><%= etudiant.matricule_iipea %></span>
+                </div>
+                <div class="info-item">
+                    <strong>Nom et Prénoms :</strong>
+                    <span><%= etudiant.nom %> <%= etudiant.prenoms %></span>
+                </div>
+                <div class="info-item">
+                    <strong>Date naissance :</strong>
+                    <span><%= etudiant.date_naissance %></span>
+                </div>
+                <div class="info-item">
+                    <strong>Lieu naissance :</strong>
+                    <span><%= etudiant.lieu_naissance %></span>
+                </div>
+                <div class="info-item">
+                    <strong>Genre :</strong>
+                    <span><%= etudiant.genre %></span>
+                </div>
+                <div class="info-item">
+                    <strong>Nationalité :</strong>
+                    <span><%= etudiant.nationalite || 'Ivoirienne' %></span>
+                </div>
+                <div class="info-item">
+                    <strong>Filière :</strong>
+                    <span><%= maquette.filiere %> (<%= maquette.sigle %>)</span>
+                </div>
+                <div class="info-item">
+                    <strong>Classe :</strong>
+                    <span><%= groupe.nom %></span>
+                </div>
+                <div class="info-item">
+                    <strong>Redoublant :</strong>
+                    <% 
+                        let redoublant = 'NON';
+                        const typeLower = (type_filiere || '').toLowerCase();
+                        const moyenne = etudiant.moyenne_generale || 0;
+                        const credits = etudiant.credits_valides || 0;
+                        
+                        if (typeLower.includes('universitaire')) {
+                            if (moyenne < 10 || credits < 48) redoublant = 'OUI';
+                        } else {
+                            if (moyenne < 10) redoublant = 'OUI';
+                        }
+                    %>
+                    <span class="<%= redoublant === 'OUI' ? 'redoublant-oui' : 'redoublant-non' %>">
+                        <%= redoublant %>
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECTION 3 : TABLEAU -->
+        <div class="section3">
+            <div class="sous-titre">
+                <%= type_filiere %> — <%= maquette.parcour %>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Unité d'Enseignement</th>
+                        <th>ECUE</th>
+                        <th>Crédits</th>
+                        <th>Moy. ECUE</th>
+                        <th>Moy. UE</th>
+                        <th>Mention</th>
+                        <th>Décision</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% 
+                    let sommeMoyennes = 0;
+                    let nbUE = 0;
+                    
+                    etudiant.ues.forEach(function(ue) { 
+                        const moyUE = ue.moyenne_affichage || ue.moyenne || 0;
+                        sommeMoyennes += moyUE;
+                        nbUE++;
+                    %>
+                        <!-- Ligne UE -->
+                        <tr class="ue-row">
+                            <td><%= ue.libelle %></td>
+                            <td></td>
+                            <td></td>
+                            <td></td>
+                            <td><%= moyUE.toFixed(2) %></td>
+                            <td>
+                                <% 
+                                    let mention = '';
+                                    if (moyUE >= 16) mention = 'TRÈS BIEN';
+                                    else if (moyUE >= 14) mention = 'BIEN';
+                                    else if (moyUE >= 12) mention = 'ASSEZ BIEN';
+                                    else if (moyUE >= 10) mention = 'PASSABLE';
+                                    else mention = 'INSUFFISANT';
+                                    
+                                    let mentionClass = '';
+                                    if (moyUE >= 16) mentionClass = 'mention-tres-bien';
+                                    else if (moyUE >= 14) mentionClass = 'mention-bien';
+                                    else if (moyUE >= 12) mentionClass = 'mention-assez-bien';
+                                    else if (moyUE >= 10) mentionClass = 'mention-passable';
+                                %>
+                                <span class="mention <%= mentionClass %>"><%= mention %></span>
+                            </td>
+                            <td class="<%= ue.valide ? 'admis' : 'refuse' %>">
+                                <%= ue.valide ? 'ADMIS' : 'REFUSÉ' %>
+                            </td>
+                        </tr>
+                        
+                        <!-- ECUE -->
+                        <% ue.matieres.forEach(function(matiere) { 
+                            if (matiere.a_note) {
+                                const moyECUE = matiere.moyenne_affichage || matiere.moyenne || 0;
+                        %>
+                            <tr class="ecue-row">
+                                <td></td>
+                                <td style="text-align: left;">
+                                    <%= matiere.nom %>
+                                    <% if (matiere.harmonisee) { %>
+                                        <span class="harmonisee-note">(orig: <%= (matiere.moyenne_originale || 0).toFixed(2) %>)</span>
+                                    <% } %>
+                                </td>
+                                <td><%= matiere.coefficient %></td>
+                                <td><%= moyECUE.toFixed(2) %></td>
+                                <td></td>
+                                <td></td>
+                                <td></td>
+                            </tr>
+                        <% } 
+                        }); %>
+                        
+                        <tr><td colspan="7" style="height: 2px; background: #eee;"></td></tr>
+                    <% }); %>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- SECTION 4 : RÉCAPITULATIF -->
+        <div class="section4">
+            <div class="recap-semestres">
+                <div class="semestre-box">
+                    <h4>SEMESTRE 1</h4>
+                    <p><span>Moyenne :</span> <strong><%= (etudiant.moyenne_s1 || 0).toFixed(2) %>/20</strong></p>
+                    <p><span>Crédits :</span> <strong><%= etudiant.credits_s1 || 0 %>/30</strong></p>
+                </div>
+                <div class="semestre-box">
+                    <h4>SEMESTRE 2</h4>
+                    <p><span>Moyenne :</span> <strong><%= (etudiant.moyenne_s2 || 0).toFixed(2) %>/20</strong></p>
+                    <p><span>Crédits :</span> <strong><%= etudiant.credits_s2 || 0 %>/30</strong></p>
+                </div>
+            </div>
+
+            <div class="resultat-annuel">
+                <span>Moyenne Annuelle : <strong><%= (etudiant.moyenne_annuelle || etudiant.moyenne_generale || 0).toFixed(2) %>/20</strong></span>
+                <span>Crédits Annuels : <strong><%= etudiant.credits_annuels || etudiant.credits_valides || 0 %>/60</strong></span>
+            </div>
+
+            <div class="decision-container">
+                <div class="decision-badge <%= (etudiant.decision || '').toLowerCase() === 'admis' ? 'admis' : 'ajourne' %>">
+                    <%= etudiant.decision || 'INDÉTERMINÉ' %>
+                </div>
+                <div class="mention-annuelle">
+                    <% 
+                        let mentionAnnuelle = '';
+                        const ma = etudiant.moyenne_annuelle || etudiant.moyenne_generale || 0;
+                        if (ma >= 16) mentionAnnuelle = 'MENTION TRÈS BIEN';
+                        else if (ma >= 14) mentionAnnuelle = 'MENTION BIEN';
+                        else if (ma >= 12) mentionAnnuelle = 'MENTION ASSEZ BIEN';
+                        else if (ma >= 10) mentionAnnuelle = 'MENTION PASSABLE';
+                        else mentionAnnuelle = 'MENTION INSUFFISANTE';
+                    %>
+                    <%= mentionAnnuelle %>
+                </div>
+            </div>
+
+            <!-- Signature -->
+            <div class="footer">
+                <div class="signature">
+                    <div class="date">Abidjan, le <%= new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }) %></div>
+                    <div class="ligne">La Direction de la Scolarité</div>
+                </div>
+            </div>
+
+            <!-- Pied de page -->
+            <div class="institution-footer">
+                <div class="nom">INSTITUT INTERNATIONAL POLYTECHNIQUE DES ÉLITES D'ABIDJAN (IIPEA)</div>
+                <div>📞 +225 05 44 02 60 60  •  +225 07 08 08 87 87</div>
+                <div>🌐 www.iipea.com  •  ✉️ secretariat@iipea.com</div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

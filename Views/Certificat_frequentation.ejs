@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certificat de Fréquentation - <%= data.informations_personnelles.nom %> <%= data.informations_personnelles.prenoms %></title>
+    <style>
+        /* Styles généraux */
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Arial', sans-serif;
+            background: white;
+            color: #000;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            position: relative;
+        }
+
+        /* Conteneur principal avec filigrane */
+        .page-container {
+            position: relative;
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto;
+            background: white;
+            overflow: hidden;
+        }
+
+        /* Filigrane logo en arrière-plan - CORRIGÉ ET CENTRÉ */
+  
+        .watermark {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+            pointer-events: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            opacity: 0.1; /* VISIBLE mais transparent */
+        }
+
+        .watermark-logo {
+            width: 500px;
+            height: auto;
+            max-width: 80%;
+            max-height: 80%;
+            object-fit: contain;
+            /* filter: grayscale(100%) brightness(120%); */
+        }
+        
+        .certificat-container {
+            width: 100%;
+            min-height: 297mm;
+            padding: 30px;
+            box-sizing: border-box;
+            border: 2px solid #d9d9d9;
+            border-radius: 4px;
+            background: transparent;
+            position: relative;
+            z-index: 2;
+            page-break-inside: avoid;
+        }
+        
+        /* En-tête ministère */
+        .header-ministry {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 15px;
+            position: relative;
+        }
+        
+        .ministry-left, .ministry-right {
+            text-align: left;
+            flex: 1;
+        }
+
+        .ministry-right {
+            text-align: right;
+            flex: 1;
+        }
+        
+        .ministry-text {
+            font-size: 10px;
+            color: #003366;
+            display: block;
+            margin: 0;
+            line-height: 1.2;
+        }
+        
+        .ministry-text strong {
+            font-weight: bold;
+        }
+        
+        /* Barre de séparation */
+        .separator-bar {
+            border-bottom: 3px solid #003366;
+            margin: 15px 0 20px 0;
+            width: 100%;
+            position: relative;
+        }
+        
+        /* Logo et nom école */
+        .school-header {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            position: relative;
+        }
+        
+        .school-logo {
+            height: 60px;
+            width: auto;
+            margin-right: 15px;
+            max-width: 100%;
+        }
+        
+        .school-name {
+            font-size: 16px;
+            color: #003366;
+            font-weight: bold;
+            text-align: center;
+            margin: 10px 0;
+        }
+        
+        /* Titre principal */
+        .main-title-container {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 25px;
+            position: relative;
+        }
+        
+        .main-title {
+            border: 2px solid #003366;
+            border-radius: 10px;
+            padding: 10px 40px;
+            text-align: center;
+            background-color: #f0f8ff;
+            width: fit-content;
+        }
+        
+        .main-title-text {
+            color: #003366;
+            text-align: center;
+            font-size: 20px;
+            font-weight: bold;
+            text-transform: uppercase;
+            margin: 0;
+        }
+        
+        /* Année universitaire */
+        .academic-year {
+            text-align: center;
+            margin-bottom: 25px;
+            position: relative;
+        }
+        
+        .academic-year-text {
+            font-size: 16px;
+            color: #003366;
+            font-weight: bold;
+            margin: 0;
+        }
+        
+        /* Corps du certificat */
+        .certificate-body {
+            display: flex;
+            gap: 30px;
+            margin-bottom: 25px;
+            align-items: flex-start;
+            position: relative;
+        }
+        
+        .student-info {
+            flex: 2;
+            min-width: 0;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        
+        .student-photo-container {
+            flex: 1;
+            text-align: center;
+            min-width: 150px;
+            position: relative;
+        }
+        
+        .student-photo {
+            width: 120px;
+            height: 150px;
+            border-radius: 4px;
+            border: 1px solid #d9d9d9;
+            object-fit: cover;
+            background-color: #f5f5f5;
+            display: block;
+            margin: 0 auto;
+        }
+        
+        .photo-placeholder {
+            width: 120px;
+            height: 150px;
+            border: 1px dashed #ccc;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #f9f9f9;
+            color: #666;
+            font-size: 12px;
+            text-align: center;
+            margin: 0 auto;
+        }
+        
+        .photo-error {
+            display: none;
+        }
+        
+        .intro-text {
+            font-size: 14px;
+            font-weight: bold;
+            display: block;
+            margin-bottom: 15px;
+        }
+        
+        .info-line {
+            margin-bottom: 10px;
+            padding: 2px 0;
+        }
+        
+        .info-label {
+            font-weight: bold;
+            display: inline-block;
+            min-width: 140px;
+        }
+        
+        /* Tableau historique académique */
+        .history-table-container {
+            margin-bottom: 25px;
+            position: relative;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        
+        .history-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 20px;
+            border: 1px solid #d9d9d9;
+            font-size: 12px;
+            background: white;
+        }
+        
+        .history-table th,
+        .history-table td {
+            border: 1px solid #d9d9d9;
+            padding: 8px;
+            text-align: left;
+            vertical-align: top;
+        }
+        
+        .history-table th {
+            background-color: #f9f9f9;
+            font-weight: bold;
+        }
+        
+        .conclusion-text {
+            font-size: 14px;
+            display: block;
+            margin-top: 20px;
+            line-height: 1.5;
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+        }
+
+        /* Styles pour données manquantes */
+        .data-missing {
+            color: #999;
+            font-style: italic;
+        }
+        
+        .data-error {
+            color: #d9534f;
+            font-style: italic;
+            font-size: 0.9em;
+        }
+        
+        /* QR Code et signature */
+        .footer-section {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            margin-top: 40px;
+            flex-wrap: wrap;
+            position: relative;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        
+        .qrcode-container, .signature-container {
+            text-align: center;
+            flex: 1;
+            min-width: 150px;
+            margin-bottom: 20px;
+        }
+        
+        .qrcode-image {
+            width: 120px;
+            height: 120px;
+            border: 1px solid #d9d9d9;
+            display: block;
+            margin: 0 auto 5px auto;
+            background: white;
+        }
+        
+        .date-text {
+            display: block;
+            margin-bottom: 100px;
+            font-size: 14px;
+        }
+        
+        .signature-line {
+            border-top: 1px solid #000;
+            width: 200px;
+            margin: 0 auto;
+            padding-top: 5px;
+        }
+        
+        .signature-text {
+            font-weight: bold;
+            font-size: 14px;
+        }
+        
+        /* Notes de bas de page */
+        .notes-section {
+            margin-top: 40px;
+            border-top: 1px solid #d9d9d9;
+            padding-top: 15px;
+            position: relative;
+            background: white;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        
+        .note-text {
+            font-size: 11px;
+            color: #666;
+            display: block;
+            margin-bottom: 5px;
+            line-height: 1.4;
+        }
+        
+        /* Pied de page */
+        .footer {
+            margin-top: 30px;
+            text-align: center;
+            border-top: 1px solid #d9d9d9;
+            padding-top: 15px;
+            position: relative;
+            background: white;
+            padding: 15px;
+            border-radius: 4px;
+        }
+        
+        .footer-text {
+            font-size: 11px;
+            color: #666;
+            display: block;
+            margin-bottom: 3px;
+        }
+
+        /* Styles pour le chargement des images */
+        .image-loading {
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+        
+        .image-loaded {
+            opacity: 1;
+        }
+        
+        /* Styles d'impression améliorés */
+        @media print {
+            body {
+                margin: 0 !important;
+                padding: 0 !important;
+                background: white !important;
+            }
+            
+            .page-container {
+                margin: 0 auto;
+                box-shadow: none;
+                page-break-after: always;
+            }
+            
+            .certificat-container {
+                border: none !important;
+                box-shadow: none !important;
+                padding: 20px !important;
+                margin: 0 auto !important;
+                width: 100% !important;
+                min-height: auto !important;
+                page-break-inside: avoid;
+            }
+            
+            .watermark {
+                opacity: 0.1;
+            }
+            
+            .student-photo,
+            .qrcode-image {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            
+            .no-print {
+                display: none !important;
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .page-container {
+                width: 100%;
+            }
+            
+            .certificate-body {
+                flex-direction: column;
+            }
+            
+            .student-photo-container {
+                order: -1;
+                margin-bottom: 20px;
+            }
+            
+            .main-title {
+                padding: 10px 20px;
+            }
+            
+            .main-title-text {
+                font-size: 18px;
+            }
+            
+            .history-table {
+                font-size: 10px;
+            }
+            
+            .watermark-logo {
+                width: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Conteneur principal avec filigrane -->
+    <div class="page-container">
+        <!-- Filigrane en arrière-plan - CORRIGÉ ET CENTRÉ -->
+        <div class="watermark">
+            <img 
+                src="/public/logo.webp"
+                alt="Logo IIPEA Filigrane" 
+                class="watermark-logo"
+                onload="console.log('✅ Filigrane chargé avec succès')"
+                onerror="console.error('❌ Erreur chargement filigrane:', this.src); this.style.display='none'"
+            >
+        </div>
+
+        <div class="certificat-container">
+            <!-- En-tête avec informations ministère -->
+            <div class="header-ministry">
+                <div class="ministry-left">
+                    <span class="ministry-text">MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR</span>
+                    <span class="ministry-text">ET DE LA RECHERCHE SCIENTIFIQUE</span>
+                </div>
+                
+                <div class="ministry-right">
+                    <span class="ministry-text">RÉPUBLIQUE DE CÔTE D'IVOIRE</span>
+                    <span class="ministry-text">Union - Discipline - Travail</span>
+                </div>
+            </div>
+
+            <!-- Barre de soulignement -->
+            <div class="separator-bar"></div>
+
+            <!-- Logo et nom de l'école -->
+            <div class="school-header">
+                <img 
+                    src="/public/IIPEA-Photoroom.webp"
+                    alt="Logo IIPEA" 
+                    class="school-logo image-loading"
+                    onload="this.classList.add('image-loaded')"
+                    onerror="this.style.display='none'; console.log('Logo non chargé: ' + this.src)"
+                >
+                <span class="school-name">
+                    Institut International Polytechnique des Elites d'Abidjan - (IIPEA)
+                </span>
+            </div>
+
+            <!-- Titre Principal -->
+            <div class="main-title-container">
+                <div class="main-title">
+                    <h1 class="main-title-text">CERTIFICAT DE FRÉQUENTATION</h1>
+                </div>
+            </div>
+
+            <!-- Année universitaire -->
+            <div class="academic-year">
+                <span class="academic-year-text">
+                    ANNÉE UNIVERSITAIRE : 
+                    <% if (data.informations_academiques && data.informations_academiques.annee_academique && data.informations_academiques.annee_academique.annee) { %>
+                        <%= data.informations_academiques.annee_academique.annee %>
+                    <% } else { %>
+                        <span class="data-missing">Non spécifiée</span>
+                    <% } %>
+                </span>
+            </div>
+
+            <!-- Corps du Certificat -->
+            <div class="certificate-body">
+                <!-- Informations Personnelles -->
+                <div class="student-info">
+                    <span class="intro-text">Nous certifions que,</span>
+                    
+                    <div class="info-line">
+                        <span class="info-label">Etudiant(e) : </span>
+                        <span>
+                            <% if (data.informations_personnelles && data.informations_personnelles.nom) { %>
+                                <%= data.informations_personnelles.nom %> <%= data.informations_personnelles.prenoms || '' %>
+                            <% } else { %>
+                                <span class="data-missing">Informations non disponibles</span>
+                            <% } %>
+                        </span>
+                    </div>
+                    
+                    <div class="info-line">
+                        <span class="info-label">Né(e) le : </span>
+                        <span>
+                            <% if (data.date_naissance_formatee && data.informations_personnelles.lieu_naissance) { %>
+                                <%= data.date_naissance_formatee %> à <%= data.informations_personnelles.lieu_naissance %>
+                            <% } else { %>
+                                <span class="data-missing">Date ou lieu de naissance non spécifié</span>
+                            <% } %>
+                        </span>
+                    </div>
+                    
+                    <div class="info-line">
+                        <span class="info-label">Nationalité : </span>
+                        <span>
+                            <% if (data.nationalite_formatee) { %>
+                                <%= data.nationalite_formatee %>
+                            <% } else { %>
+                                <span class="data-missing">Non spécifiée</span>
+                            <% } %>
+                        </span>
+                    </div>
+                    
+                    <div class="info-line">
+                        <span class="info-label">Matricule IIPEA : </span>
+                        <span>
+                            <% if (data.informations_personnelles && data.informations_personnelles.matricule_iipea) { %>
+                                <%= data.informations_personnelles.matricule_iipea %>
+                            <% } else { %>
+                                <span class="data-missing">Non attribué</span>
+                            <% } %>
+                        </span>
+                    </div>
+                    
+                    <div class="info-line">
+                        <span class="info-label">Elites-ID : </span>
+                        <span>
+                            <% if (data.informations_personnelles && data.informations_personnelles.code_unique) { %>
+                                <%= data.informations_personnelles.code_unique %>
+                            <% } else { %>
+                                <span class="data-missing">Non attribué</span>
+                            <% } %>
+                        </span>
+                    </div>
+                    
+                    <div class="info-line">
+                        <span class="info-label">Matricule MESRS : </span>
+                        <span>
+                            <% if (data.informations_personnelles && data.informations_personnelles.matricule) { %>
+                                <%= data.informations_personnelles.matricule %>
+                            <% } else { %>
+                                <span class="data-missing">Non attribué</span>
+                            <% } %>
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Photo avec gestion d'erreur améliorée -->
+                <div class="student-photo-container">
+                    <% if (data.photo_url_complete && data.photo_url_complete.trim() !== '' && !data.photo_url_complete.includes('default-avatar')) { %>
+                        <img 
+                            src="<%= data.photo_url_complete %>" 
+                            alt="Photo de <%= data.informations_personnelles.nom %> <%= data.informations_personnelles.prenoms %>" 
+                            class="student-photo image-loading"
+                            onload="this.classList.add('image-loaded'); if(this.nextElementSibling) this.nextElementSibling.style.display='none';"
+                            onerror="this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='flex';"
+                        >
+                        <div class="photo-placeholder photo-error">
+                            Photo<br>Non Disponible
+                        </div>
+                    <% } else { %>
+                        <div class="photo-placeholder" style="display: flex;">
+                            Photo<br>Non Disponible
+                        </div>
+                    <% } %>
+                </div>
+            </div>
+
+            <!-- Historique des années académiques -->
+            <div class="history-table-container">
+                <table class="history-table">
+                    <thead>
+                        <tr>
+                            <th>Année Académique</th>
+                            <th>Niveau</th>
+                            <th>Filière</th>
+                            <th>Date d'Inscription</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <% 
+                        let hasAcademicHistory = false;
+                        let historiqueAnnees = [];
+                        
+                        if (data.historique_annees && Array.isArray(data.historique_annees)) {
+                            historiqueAnnees = data.historique_annees.filter(annee => 
+                                annee && (annee.annee || annee.niveau || annee.filiere)
+                            );
+                            hasAcademicHistory = historiqueAnnees.length > 0;
+                        }
+                        
+                        if (hasAcademicHistory) { %>
+                            <% historiqueAnnees.forEach(function(annee) { %>
+                                <tr>
+                                    <td><%= annee.annee || '<span class="data-missing">Non spécifié</span>' %></td>
+                                    <td><%= annee.niveau || '<span class="data-missing">Non spécifié</span>' %></td>
+                                    <td><%= annee.filiere || '<span class="data-missing">Non spécifié</span>' %></td>
+                                    <td>
+                                        <% if (annee.date_inscription) { %>
+                                            <%= new Date(annee.date_inscription).toLocaleDateString('fr-FR') %>
+                                        <% } else { %>
+                                            <span class="data-missing">Non spécifié</span>
+                                        <% } %>
+                                    </td>
+                                </tr>
+                            <% }); %>
+                        <% } else { %>
+                            <tr>
+                                <td colspan="4" style="text-align: center; font-style: italic;" class="data-missing">
+                                    Aucun historique académique disponible
+                                    <% if (!data.historique_annees) { %>
+                                        <br><small class="data-error">(Données historiques non fournies)</small>
+                                    <% } else if (!Array.isArray(data.historique_annees)) { %>
+                                        <br><small class="data-error">(Format des données historiques invalide)</small>
+                                    <% } else { %>
+                                        <br><small class="data-error">(Aucune année académique enregistrée)</small>
+                                    <% } %>
+                                </td>
+                            </tr>
+                        <% } %>
+                    </tbody>
+                </table>
+                
+                <span class="conclusion-text">
+                    a fréquenté régulièrement les cours de l'Institut International Polytechnique des Elites d'Abidjan (IIPEA) 
+                    depuis son inscription le 
+                    <% if (data.date_inscription_formatee) { %>
+                        <%= data.date_inscription_formatee %>
+                    <% } else { %>
+                        <span class="data-missing">date non spécifiée</span>
+                    <% } %>.
+                </span>
+            </div>
+
+            <!-- QR Code et Signature -->
+            <div class="footer-section">
+                <div class="qrcode-container">
+                    <% if (data.qrCodeImage) { %>
+                        <img src="<%= data.qrCodeImage %>" alt="QR Code de vérification" class="qrcode-image">
+                        <span style="font-size: 10px; display: block; margin-top: 5px;">
+                            Code de vérification
+                        </span>
+                    <% } else { %>
+                        <div style="width: 120px; height: 120px; background: #f5f5f5; display: flex; align-items: center; justify-content: center; margin: 0 auto; border: 1px dashed #ccc;">
+                            <span style="font-size: 10px; color: #666; text-align: center;">QR Code<br>Non Généré</span>
+                        </div>
+                    <% } %>
+                </div>
+                
+                <div class="signature-container">
+                    <span class="date-text">
+                        Fait à Abidjan, le 
+                        <% if (data.date_emission) { %>
+                            <%= data.date_emission %>
+                        <% } else { %>
+                            <span class="data-missing"><%= new Date().toLocaleDateString('fr-FR') %></span>
+                        <% } %>
+                    </span>
+                    
+                    <div class="signature-line">
+                        <span class="signature-text">Le Directeur des Études</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Notes de bas de page -->
+            <div class="notes-section">
+                <span class="note-text">
+                    <strong>NB:</strong> L'authenticité du présent document peut être vérifiée en scannant le QR code ou auprès du service scolarité.
+                </span>
+                <span class="note-text">
+                    Ce certificat atteste de la fréquentation régulière de l'étudiant depuis son inscription à l'IIPEA.
+                </span>
+                <span class="note-text">
+                    Document généré le : <%= new Date().toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) %>
+                </span>
+            </div>
+
+            <!-- Pied de page -->
+            <div class="footer">
+                <span class="footer-text">
+                    Cocody Riviera 2, Route d'Attoban / Riviera Triangle /Abobo/ Yamoussoukro 
+                </span>
+                <span class="footer-text">
+                    Tel : +225 05 44 02 60 60 / +225 07 08 08 87 87
+                </span>
+                <span class="footer-text">
+                    Email : secretariat@iipea.com | Copyright © IIPEA Tous droits réservés
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Script de gestion du chargement des images
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('Début du chargement des images...');
+            
+            // Préchargement des images critiques
+            const criticalImages = document.querySelectorAll('.school-logo, .student-photo, .watermark-logo');
+            criticalImages.forEach(img => {
+                if (img.complete) {
+                    img.classList.add('image-loaded');
+                    console.log('✅ Image chargée:', img.src);
+                    if (img.classList.contains('student-photo')) {
+                        const errorPlaceholder = img.nextElementSibling;
+                        if (errorPlaceholder && errorPlaceholder.classList.contains('photo-error')) {
+                            errorPlaceholder.style.display = 'none';
+                        }
+                    }
+                }
+            });
+
+            // Vérification spécifique du filigrane
+            const watermark = document.querySelector('.watermark-logo');
+            if (watermark) {
+                if (watermark.complete) {
+                    console.log('✅ Filigrane préchargé');
+                }
+                watermark.onload = function() {
+                    console.log('✅ Filigrane chargé avec succès');
+                };
+                watermark.onerror = function() {
+                    console.error('❌ Erreur chargement filigrane:', this.src);
+                    this.style.display = 'none';
+                };
+            }
+
+            // Timeout de secours pour les images
+            setTimeout(() => {
+                const loadingImages = document.querySelectorAll('.image-loading:not(.image-loaded)');
+                console.log('Images restantes en chargement:', loadingImages.length);
+                loadingImages.forEach(img => {
+                    img.style.opacity = '1';
+                    console.log('🔄 Image chargée par timeout:', img.src);
+                });
+            }, 3000);
+
+            // Gestion spécifique des photos d'étudiants
+            const studentPhotos = document.querySelectorAll('.student-photo');
+            studentPhotos.forEach(photo => {
+                photo.addEventListener('error', function() {
+                    console.error('❌ Erreur photo étudiant:', this.src);
+                    this.style.display = 'none';
+                    const errorPlaceholder = this.nextElementSibling;
+                    if (errorPlaceholder && errorPlaceholder.classList.contains('photo-error')) {
+                        errorPlaceholder.style.display = 'flex';
+                    }
+                });
+            });
+
+            console.log('✅ Script de chargement terminé');
+        });
+    </script>
+</body>
+</html>

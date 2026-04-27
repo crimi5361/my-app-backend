@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Certificats de <%= type_certificat === 'scolarite' ? 'Scolarité' : 'Fréquentation' %> - IIPEA</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: #f5f5f5;
+        }
+        
+        .header-controls {
+            text-align: center;
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        .control-button {
+            padding: 10px 20px;
+            margin: 0 10px;
+            background: #003366;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .control-button:hover {
+            background: #002244;
+        }
+        
+        .certificats-container {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        
+        .certificat-wrapper {
+            page-break-after: always;
+            margin-bottom: 20px;
+        }
+        
+        @media print {
+            body {
+                background: white;
+                padding: 0;
+                margin: 0;
+            }
+            .header-controls {
+                display: none;
+            }
+            .certificat-wrapper {
+                margin-bottom: 0;
+                page-break-after: always;
+            }
+            .certificat-wrapper:last-child {
+                page-break-after: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header-controls">
+        <h2><%= certificats.length %> Certificats de <%= type_certificat === 'scolarite' ? 'Scolarité' : 'Fréquentation' %></h2>
+        <button class="control-button" onclick="window.print()">🖨️ Imprimer Tous</button>
+        <button class="control-button" onclick="window.close()">❌ Fermer</button>
+        <button class="control-button" onclick="printOneByOne()">🖨️ Imprimer Un par Un</button>
+    </div>
+
+    <div class="certificats-container">
+        <% certificats.forEach((certificat, index) => { %>
+            <div class="certificat-wrapper" id="certificat-<%= index %>">
+                <!-- Inclure le template individuel -->
+                <% if (type_certificat === 'scolarite') { %>
+                    <%- include('Certificat_scolarite', { data: certificat }) %>
+                <% } else { %>
+                    <%- include('Certificat_frequentation', { data: certificat }) %>
+                <% } %>
+            </div>
+        <% }); %>
+    </div>
+
+    <script>
+        function printOneByOne() {
+            const certificats = document.querySelectorAll('.certificat-wrapper');
+            let currentIndex = 0;
+            
+            function printNext() {
+                if (currentIndex >= certificats.length) {
+                    alert('Tous les certificats ont été imprimés !');
+                    return;
+                }
+                
+                // Masquer tous les certificats
+                certificats.forEach(cert => cert.style.display = 'none');
+                
+                // Afficher seulement le certificat courant
+                certificats[currentIndex].style.display = 'block';
+                
+                // Imprimer
+                window.print();
+                
+                // Remettre l'affichage normal
+                setTimeout(() => {
+                    certificats.forEach(cert => cert.style.display = 'block');
+                    currentIndex++;
+                    
+                    if (currentIndex < certificats.length) {
+                        if (confirm(`Certificat ${currentIndex}/${certificats.length} imprimé. Imprimer le suivant ?`)) {
+                            printNext();
+                        }
+                    }
+                }, 1000);
+            }
+            
+            printNext();
+        }
+        
+        // Auto-scroll pour preview
+        window.onload = function() {
+            console.log(`✅ ${document.querySelectorAll('.certificat-wrapper').length} certificats chargés`);
+        };
+    </script>
+</body>
+</html>

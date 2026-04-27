@@ -1,0 +1,722 @@
+<!-- views/Bulletin_multiple.ejs -->
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bulletins - <%= groupe.nom %></title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Times New Roman', Times, serif;
+            background: white;
+            padding: 0;
+            margin: 0;
+            line-height: 1.3;
+        }
+        
+        .bulletin {
+            width: 21cm;
+            min-height: 29.7cm;
+            margin: 0 auto;
+            background: white;
+            border: 1px solid #000;
+            padding: 4.5cm 1cm 1cm 1cm;
+            position: relative;
+            page-break-after: always;
+            box-shadow: 0 0 5px rgba(0,0,0,0.1);
+        }
+        
+        .bulletin:last-child {
+            page-break-after: auto;
+        }
+        
+        /* ===== SECTION 1 : TITRE ===== */
+        .section1 {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        
+        .section1 h1 {
+            font-size: 24px;
+            font-weight: bold;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #2c3e50;
+            margin-bottom: 5px;
+        }
+        
+        .section1 .niveau  {
+            font-size: 14px;
+            font-weight: normal;
+            color: #555;
+            border-bottom: 1px solid #ddd;
+            padding-bottom: 6px;
+        }
+
+       .annee-academique  {
+            font-size: 14px;
+            font-weight: normal;
+            color: #555;
+            padding-bottom: 6px;
+        }
+        
+        /* ===== SECTION 2 : INFORMATIONS ÉTUDIANT ===== */
+        .section2 {
+            margin-bottom: 20px;
+        }
+        
+        .ligne1 {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        
+        .ligne1 .gauche, .ligne1 .droite {
+            display: flex;
+            align-items: baseline;
+        }
+        
+        .ligne1 .gauche .label, .ligne1 .droite .label {
+            font-weight: bold;
+            min-width: 110px;
+            color: #2c3e50;
+            font-size: 13px;
+        }
+        
+        .ligne1 .gauche .valeur, .ligne1 .droite .valeur {
+            color: #333;
+            font-size: 13px;
+            margin-left: 2px;
+        }
+        
+        .ligne2 {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        
+        .ligne2 .item {
+            display: flex;
+            align-items: baseline;
+            flex: 1;
+        }
+        
+        .ligne2 .item .label {
+            font-weight: bold;
+            min-width: 95px;
+            color: #2c3e50;
+            font-size: 13px;
+        }
+        
+        .ligne2 .item .valeur {
+            color: #333;
+            font-size: 13px;
+            margin-left: 2px;
+        }
+        
+        .ligne3 {
+            display: flex;
+            align-items: baseline;
+            margin-bottom: 8px;
+            gap: 15px;
+        }
+        
+        .ligne3 .classe {
+            display: flex;
+            align-items: baseline;
+            flex: 2;
+        }
+        
+        .ligne3 .classe .label {
+            font-weight: bold;
+            min-width: 70px;
+            color: #2c3e50;
+            font-size: 13px;
+        }
+        
+        .ligne3 .classe .valeur {
+            color: #333;
+            font-size: 13px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        
+        .ligne3 .redoublant {
+            display: flex;
+            align-items: baseline;
+            flex: 1;
+        }
+        
+        .ligne3 .redoublant .label {
+            font-weight: bold;
+            min-width: 80px;
+            color: #2c3e50;
+            font-size: 13px;
+        }
+        
+        .ligne3 .redoublant .valeur {
+            color: #333;
+            font-size: 13px;
+            margin-left: 2px;
+        }
+        
+        .ligne3 .semestre {
+            display: flex;
+            align-items: baseline;
+            flex: 1;
+        }
+        
+        .ligne3 .semestre .label {
+            font-weight: bold;
+            min-width: 65px;
+            color: #2c3e50;
+            font-size: 13px;
+        }
+        
+        .ligne3 .semestre .valeur {
+            color: #333;
+            font-size: 13px;
+            margin-left: 2px;
+        }
+        
+        .ligne4 {
+            text-align: center;
+            margin: 15px 0 12px 0;
+            padding: 6px 0;
+            border-top: 1px dashed #ccc;
+            border-bottom: 1px dashed #ccc;
+            font-size: 14px;
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        /* ===== SECTION 3 : TABLEAU ===== */
+        .section3 {
+            margin-bottom: 15px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+        
+        th {
+            background: white;
+            font-weight: bold;
+            text-align: center;
+            padding: 6px 3px;
+            border: 1px solid #333;
+            font-size: 10px;
+            text-transform: uppercase;
+        }
+        
+        td {
+            padding: 5px 3px;
+            border: 1px solid #999;
+            vertical-align: middle;
+            text-align: center;
+            font-weight: normal;
+        }
+        
+        .ue-row {
+            font-weight: normal;
+            background: white;
+        }
+        
+        .ue-row td:first-child {
+            text-align: left;
+            padding-left: 6px;
+            font-weight: bold;
+        }
+        
+        .ecue-row td:first-child {
+            text-align: left;
+            padding-left: 20px;
+            font-weight: normal;
+        }
+        
+        .mention {
+            font-size: 10px;
+            padding: 2px 5px;
+            font-weight: normal;
+            background: white;
+            white-space: nowrap;
+        }
+        
+        .admis, .refuse {
+            font-weight: bold;
+        }
+        
+        /* ===== SECTION 4 : RÉCAPITULATIF ===== */
+        .section4 {
+            margin-top: 15px;
+            padding: 12px;
+            background: white;
+            border: 1px solid #999;
+            border-radius: 4px;
+        }
+
+        .recap-s1 {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 15px;
+            font-size: 13px;
+            flex-wrap: wrap;
+        }
+
+        .recap-s1 .recap-gauche {
+            display: flex;
+            gap: 25px;
+            flex-wrap: wrap;
+        }
+        
+        .recap-item {
+            display: flex;
+            align-items: baseline;
+            gap: 3px;
+        }
+        
+        .recap-item .label {
+            font-weight: bold;
+            color: #2c3e50;
+        }
+        
+        .recap-item .valeur {
+            font-weight: bold;
+        }
+
+        .recap-s2 {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        
+        .semestres-container {
+            display: flex;
+            justify-content: space-between;
+            padding-bottom: 8px;
+            border-bottom: 1px dashed #ccc;
+            gap: 10px;
+        }
+        
+        .semestre-box {
+            flex: 1;
+            text-align: center;
+            padding: 5px 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        
+        .semestre-box .titre {
+            font-weight: bold;
+            font-size: 11px;
+            color: #2c3e50;
+            margin-bottom: 3px;
+            text-transform: uppercase;
+        }
+        
+        .semestre-box .valeur {
+            font-size: 12px;
+        }
+
+        .annuel-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+            padding: 5px 0;
+        }
+        
+        .annuel-item {
+            display: flex;
+            align-items: baseline;
+            gap: 3px;
+        }
+        
+        .annuel-item .label {
+            font-weight: bold;
+            color: #2c3e50;
+            font-size: 13px;
+        }
+        
+        .annuel-item .valeur {
+            font-weight: bold;
+            font-size: 13px;
+        }
+
+        .decision-badge {
+            font-size: 13px;
+            font-weight: bold;
+            padding: 3px 15px;
+            white-space: nowrap;
+        }
+        
+        .jury-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 3px;
+            padding-top: 8px;
+            border-top: 1px solid #999;
+        }
+        
+        .jury-container .jury-label {
+            font-weight: bold;
+            font-size: 14px;
+            color: #2c3e50;
+        }
+        
+        .jury-container .jury-valeur {
+            font-size: 16px;
+            font-weight: bold;
+            padding: 4px 22px;
+        }
+        
+        .jury-container .jury-valeur.admis {
+            border-color: #27ae60;
+            color: #27ae60;
+        }
+        
+        .jury-container .jury-valeur.ajourne {
+            border-color: #c0392b;
+            color: #c0392b;
+        }
+        
+        .footer {
+            margin-top: 20px;
+            display: flex;
+            justify-content: flex-end;
+            font-size: 11px;
+        }
+        
+        .signature {
+            text-align: center;
+            width: 220px;
+        }
+        
+        .signature .date {
+            margin-bottom: 4px;
+        }
+        
+        .signature .ligne {
+            border-top: 1px solid #333;
+            padding-top: 4px;
+            font-weight: bold;
+            font-size: 11px;
+        }
+        
+        @media print {
+            body { 
+                padding: 0; 
+                background: white; 
+                width: 21cm;
+                margin: 0 auto;
+            }
+            .bulletin { 
+                border: none; 
+                padding: 4.5cm 1cm 1cm 1cm;
+                margin: 0;
+                page-break-after: always;
+                box-shadow: none;
+                width: 21cm;
+                min-height: 29.7cm;
+            }
+            .no-print { display: none; }
+        }
+        
+        .no-print {
+            text-align: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        
+        .btn-print, .btn-close {
+            padding: 8px 16px;
+            margin: 0 5px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .btn-print { background: #2c3e50; color: white; }
+        .btn-close { background: #95a5a6; color: white; }
+    </style>
+</head>
+<body>
+    <div class="no-print">
+        <button class="btn-print" onclick="window.print()">🖨️ Imprimer tous les bulletins</button>
+        <button class="btn-close" onclick="window.close()">❌ Fermer</button>
+        <span style="margin-left: 20px; font-size: 14px;">
+            <%= etudiants.length %> bulletins à imprimer • Semestre <%= semestre ? semestre.id : '1' %>
+        </span>
+    </div>
+
+    <!-- Boucle sur tous les étudiants -->
+    <% 
+    const semestreNum = semestre ? parseInt(semestre.id) : 1;
+
+    etudiants.forEach(function(etudiant, index) { 
+
+        let sommePondereeS1 = 0, sommeCoeffsS1 = 0;
+        let sommePondereeS2 = 0, sommeCoeffsS2 = 0;
+        let creditsS1 = 0, creditsValidesS1 = 0;
+        let creditsS2 = 0, creditsValidesS2 = 0;
+        
+        etudiant.ues.forEach(function(ue) { 
+            const moyUE = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
+            const credUE = ue.credits || 0;
+            const credValUE = ue.credits_valides || 0;
+
+            if (ue.semestre_id === 1) {
+                sommePondereeS1 += moyUE * credUE;
+                sommeCoeffsS1   += credUE;
+                creditsS1        += credUE;
+                creditsValidesS1 += credValUE;
+            } else if (ue.semestre_id === 2) {
+                sommePondereeS2 += moyUE * credUE;
+                sommeCoeffsS2   += credUE;
+                creditsS2        += credUE;
+                creditsValidesS2 += credValUE;
+            }
+        });
+        
+        const moyenneS1 = sommeCoeffsS1 > 0 ? sommePondereeS1 / sommeCoeffsS1 : 0;
+        const moyenneS2 = sommeCoeffsS2 > 0 ? sommePondereeS2 / sommeCoeffsS2 : 0;
+
+        const totalCoeffsAnnuel = sommeCoeffsS1 + sommeCoeffsS2;
+        const moyenneAnnuelle = totalCoeffsAnnuel > 0 
+            ? (sommePondereeS1 + sommePondereeS2) / totalCoeffsAnnuel 
+            : 0;
+        const creditsAnnuels = creditsValidesS1 + creditsValidesS2;
+
+        const decisionS1 = creditsValidesS1 === creditsS1 ? 'ADMIS' : 'AJOURNÉ';
+        const decisionS1Class = decisionS1.toLowerCase() === 'admis' ? 'admis' : 'ajourne';
+
+        const decisionS2 = creditsValidesS2 === creditsS2 ? 'ADMIS' : 'AJOURNÉ';
+        const decisionS2Class = decisionS2.toLowerCase() === 'admis' ? 'admis' : 'ajourne';
+
+        let decisionJury = '';
+        let decisionJuryClass = '';
+        
+        if (creditsAnnuels === 60) {
+            decisionJury = 'ADMIS';
+            decisionJuryClass = 'admis';
+        } else if (creditsAnnuels >= 48 && creditsAnnuels <= 59) {
+            decisionJury = 'DÉROGÉ';
+            decisionJuryClass = 'deroge';
+        } else {
+            decisionJury = 'AJOURNÉ(E)';
+            decisionJuryClass = 'ajourne';
+        }
+
+        let redoublant = 'NON';
+        const typeF = (type_filiere || '').toLowerCase();
+        if (typeF.includes('universitaire')) {
+            if (moyenneAnnuelle < 10 || creditsAnnuels < 48) redoublant = 'OUI';
+        } else {
+            if (moyenneAnnuelle < 10) redoublant = 'OUI';
+        }
+
+        const uesTableau = etudiant.ues.filter(ue => ue.semestre_id === semestreNum);
+    %>
+    <div class="bulletin">
+
+        <!-- SECTION 1 : TITRE -->
+        <div class="section1">
+            <h1>RELEVÉ DE NOTES</h1>
+            <div class="annee-academique"> <%= groupe.annee_academique %></div>
+            <div class="niveau">NIVEAU : <%= etudiant.niveau_libelle || etudiant.niveau_id || '' %></div>
+        </div>
+
+        <!-- SECTION 2 : INFORMATIONS ÉTUDIANT -->
+        <div class="section2">
+            <div class="ligne1">
+                <div class="gauche">
+                    <span class="label">Nom et Prénoms :</span>
+                    <span class="valeur"><%= etudiant.nom %> <%= etudiant.prenoms %></span>
+                </div>
+                <div class="droite">
+                    <span class="label">Date naissance :</span>
+                    <span class="valeur"><%= etudiant.date_naissance || '-' %></span>
+                </div>
+            </div>
+            <div class="ligne2">
+                <div class="item">
+                    <span class="label">Lieu naissance :</span>
+                    <span class="valeur"><%= etudiant.lieu_naissance || '-' %></span>
+                </div>
+                <div class="item">
+                    <span class="label">Genre :</span>
+                    <span class="valeur"><%= etudiant.genre || '-' %></span>
+                </div>
+                <div class="item">
+                    <span class="label">Matricule MESRS :</span>
+                    <span class="valeur"><%= etudiant.matricule_mesrs %></span>
+                </div>
+            </div>
+            <div class="ligne3">
+                <div class="classe">
+                    <span class="label">Classe :</span>
+                    <span class="valeur"><%= groupe.nom %></span>
+                </div>
+                <div class="redoublant">
+                    <span class="label">Redoublant :</span>
+                    <span class="valeur"><%= redoublant %></span>
+                </div>
+                <div class="semestre">
+                    <span class="label">Semestre :</span>
+                    <span class="valeur"><%= semestreNum %></span>
+                </div>
+            </div>
+            <div class="ligne4">Parcours : <%= maquette.filiere %> (<%= maquette.sigle %>)</div>
+        </div>
+
+        <!-- SECTION 3 : TABLEAU -->
+        <div class="section3">
+            <table>
+                <thead>
+                    <tr>
+                        <th>UE</th>
+                        <th>ECUE</th>
+                        <th>Moy. ECUE</th>
+                        <th>Coef</th>
+                        <th>Moy. UE</th>
+                        <th>Crédits</th>
+                        <th>Mention</th>
+                        <th>Décision UE</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <% uesTableau.forEach(function(ue) { 
+                        const moyUE = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
+                        const ecuesAvecNote = ue.matieres.filter(m => m.a_note);
+                        const rowspan = ecuesAvecNote.length > 0 ? ecuesAvecNote.length : 1;
+                        let mention = '';
+                        if (moyUE >= 16)      mention = 'Très-bien';
+                        else if (moyUE >= 14) mention = 'Bien';
+                        else if (moyUE >= 12) mention = 'Assez-bien';
+                        else if (moyUE >= 10) mention = 'Passable';
+                        else                  mention = 'Insuffisant';
+                    %>
+                        <tr class="ue-row">
+                            <td rowspan="<%= rowspan %>"><%= ue.libelle %></td> 
+                            <% if (ecuesAvecNote.length > 0) { 
+                                const premierECUE = ecuesAvecNote[0];
+                                const moyECUE = premierECUE.moyenne_affichage !== undefined ? premierECUE.moyenne_affichage : premierECUE.moyenne;
+                            %>
+                                <td class="matiere-nom"><%= premierECUE.nom %></td>
+                                <td><%= moyECUE.toFixed(2) %></td>
+                                <td><%= premierECUE.coefficient %></td>
+                            <% } else { %>
+                                <td colspan="3">Aucune note</td>
+                            <% } %>
+                            <td rowspan="<%= rowspan %>"><%= moyUE.toFixed(2) %></td>
+                            <td rowspan="<%= rowspan %>"><%= ue.credits_valides || 0 %>/<%= ue.credits %></td>
+                            <td rowspan="<%= rowspan %>">
+                                <span class="mention"><%= mention %></span>
+                            </td>
+                            <td rowspan="<%= rowspan %>" class="<%= ue.valide ? 'admis' : 'refuse' %>">
+                                <%= ue.valide ? 'ADMIS' : 'REFUSÉ' %>
+                            </td>
+                        </tr>
+                        <% for (let i = 1; i < ecuesAvecNote.length; i++) { 
+                            const ecue = ecuesAvecNote[i];
+                            const moyECUE = ecue.moyenne_affichage !== undefined ? ecue.moyenne_affichage : ecue.moyenne;
+                        %>
+                        <tr class="ecue-row">
+                            <td class="matiere-nom"><%= ecue.nom %></td>
+                            <td><%= moyECUE.toFixed(2) %></td>
+                            <td><%= ecue.coefficient %></td>
+                        </tr>
+                        <% } %>
+                    <% }); %>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- ===== SECTION 4 : RÉCAPITULATIF ===== -->
+        <div class="section4">
+
+            <% if (semestreNum === 1) { %>
+            <!-- ======== SEMESTRE 1 : 1 seule ligne ======== -->
+            <div class="recap-s1">
+                <div class="recap-gauche">
+                    <div class="recap-item">
+                        <span class="label">Moyenne Semestre 1 :</span>
+                        <span class="valeur"><%= moyenneS1.toFixed(2) %> /20</span>
+                    </div>
+                    <div class="recap-item">
+                        <span class="label">Crédits cumulés S1 :</span>
+                        <span class="valeur"><%= creditsValidesS1 %> / <%= creditsS1 || 30 %></span>
+                    </div>
+                </div>
+                <div class="decision-badge <%= decisionS1Class %>">
+                    Résultat Semestre 1 : <%= decisionS1 %>
+                </div>
+            </div>
+
+            <% } else { %>
+            <!-- ======== SEMESTRE 2 : bloc complet ======== -->
+            <div class="recap-s2">
+
+                <div class="semestres-container">
+                    <div class="semestre-box">
+                        <div class="titre">Semestre 1</div>
+                        <div class="valeur">Moyenne : <%= moyenneS1.toFixed(2) %> /20</div>
+                        <div class="valeur">Crédits : <%= creditsValidesS1 %> / <%= creditsS1 || 30 %></div>
+                    </div>
+                    <div class="semestre-box">
+                        <div class="titre">Semestre 2</div>
+                        <div class="valeur">Moyenne : <%= moyenneS2.toFixed(2) %> /20</div>
+                        <div class="valeur">Crédits : <%= creditsValidesS2 %> / <%= creditsS2 || 30 %></div>
+                    </div>
+                </div>
+
+                <div class="annuel-container">
+                    <div class="annuel-item">
+                        <span class="label">Moyenne générale annuelle :</span>
+                        <span class="valeur"><%= moyenneAnnuelle.toFixed(2) %> /20</span>
+                    </div>
+                    <div class="annuel-item">
+                        <span class="label">Crédits totaux cumulés :</span>
+                        <span class="valeur"><%= creditsAnnuels %> / 60</span>
+                    </div>
+                    <div class="decision-badge <%= decisionS2Class %>">
+                        Résultat Semestre 2 : <%= decisionS2 %>
+                    </div>
+                </div>
+
+                <div class="jury-container">
+                    <span class="jury-label">DÉCISION DU JURY :</span>
+                    <span class="jury-valeur <%= decisionJuryClass %>"><%= decisionJury %></span>
+                </div>
+
+            </div>
+            <% } %>
+
+        </div>
+        <!-- FIN SECTION 4 -->
+
+        <!-- PIED DE PAGE -->
+        <div class="footer">
+            <div class="signature">
+                <div class="date">Abidjan, le <%= new Date().toLocaleDateString('fr-FR') %></div>
+                <div class="ligne">La Sous-Direction de la Scolarité</div>
+            </div>
+        </div>
+    </div>
+    <% }); %>
+</body>
+</html>
