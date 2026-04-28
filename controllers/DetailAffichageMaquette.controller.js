@@ -32,7 +32,7 @@ exports.getMaquetteDetailStructured = async (req, res) => {
     
     const maquette = maquetteResult.rows[0];
     
-    // 2. Récupérer tous les semestres (même ceux sans UE)
+    // 2. Récupérer tous les semestres
     const semestresQuery = `
       SELECT id, nom as libelle 
       FROM semestre 
@@ -42,18 +42,18 @@ exports.getMaquetteDetailStructured = async (req, res) => {
     const semestresResult = await db.query(semestresQuery);
     const semestres = semestresResult.rows;
     
-    // 3. Pour chaque semestre, récupérer les UE et leurs matières
     const structuredData = {
       maquette: maquette,
       semestres: []
     };
     
     for (const semestre of semestres) {
-      // Récupérer les UE de ce semestre pour cette maquette
+      // ✅ CORRECTION : ajout de ue.code_ue dans le SELECT
       const uesQuery = `
         SELECT 
           ue.id,
           ue.libelle,
+          ue.code_ue,
           ue.categorie_id,
           c.nom as categorie_nom
         FROM ue
@@ -65,15 +65,16 @@ exports.getMaquetteDetailStructured = async (req, res) => {
       const uesResult = await db.query(uesQuery, [id, semestre.id]);
       const ues = uesResult.rows;
       
-      // Pour chaque UE, récupérer ses matières
       const uesWithMatieres = [];
       
       for (const ue of ues) {
+        // ✅ CORRECTION : ajout de m.code_ecue dans le SELECT
         const matieresQuery = `
           SELECT 
             m.id,
             m.nom,
             m.coefficient,
+            m.code_ecue,
             m.ue_id,
             m.volume_horaire_cm,
             m.taux_horaire_cm,
@@ -87,18 +88,18 @@ exports.getMaquetteDetailStructured = async (req, res) => {
         const matieresResult = await db.query(matieresQuery, [ue.id]);
         const matieres = matieresResult.rows;
         
-        // Calculer le crédit total de l'UE (somme des coefficients)
         const creditTotal = matieres.reduce((total, matiere) => {
-          return total + (matiere.coefficient || 0);
+          return total + (parseFloat(matiere.coefficient) || 0);
         }, 0);
         
         uesWithMatieres.push({
           ...ue,
           matieres: matieres,
-          credit_total: creditTotal // Ajout du crédit total de l'UE
+          credit_total: creditTotal
         });
       }
       
+      // Ne pousser que les semestres ayant des UE (optionnel, retire si tu veux tous les semestres)
       structuredData.semestres.push({
         id: semestre.id,
         libelle: semestre.libelle,
