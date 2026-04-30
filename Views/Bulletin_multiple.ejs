@@ -51,7 +51,7 @@
             margin-bottom: 5px;
         }
         
-        .section1 .niveau  {
+        .section1 .niveau {
             font-size: 14px;
             font-weight: normal;
             color: #555;
@@ -59,7 +59,7 @@
             padding-bottom: 6px;
         }
 
-       .annee-academique  {
+        .annee-academique {
             font-size: 14px;
             font-weight: normal;
             color: #555;
@@ -199,6 +199,7 @@
         /* ===== SECTION 3 : TABLEAU ===== */
         .section3 {
             margin-bottom: 15px;
+            overflow-x: auto;
         }
         
         table {
@@ -208,7 +209,6 @@
         }
         
         th {
-            background: white;
             font-weight: bold;
             text-align: center;
             padding: 6px 3px;
@@ -222,36 +222,28 @@
             border: 1px solid #999;
             vertical-align: middle;
             text-align: center;
-            font-weight: normal;
-        }
-        
-        .ue-row {
-            font-weight: normal;
-            background: white;
-        }
-        
-        .ue-row td:first-child {
-            text-align: left;
-            padding-left: 6px;
-            font-weight: bold;
-        }
-        
-        .ecue-row td:first-child {
-            text-align: left;
-            padding-left: 20px;
-            font-weight: normal;
         }
         
         .mention {
             font-size: 10px;
             padding: 2px 5px;
             font-weight: normal;
-            background: white;
             white-space: nowrap;
         }
         
-        .admis, .refuse {
+        .admis {
             font-weight: bold;
+            color: #27ae60;
+        }
+        
+        .refuse {
+            font-weight: bold;
+            color: #c0392b;
+        }
+        
+        .code-cell {
+            font-family: monospace;
+            font-size: 10px;
         }
         
         /* ===== SECTION 4 : RÉCAPITULATIF ===== */
@@ -360,6 +352,14 @@
             white-space: nowrap;
         }
         
+        .decision-badge.admis {
+            color: #27ae60;
+        }
+        
+        .decision-badge.ajourne {
+            color: #c0392b;
+        }
+        
         .jury-container {
             display: flex;
             justify-content: space-between;
@@ -382,13 +382,15 @@
         }
         
         .jury-container .jury-valeur.admis {
-            border-color: #27ae60;
             color: #27ae60;
         }
         
         .jury-container .jury-valeur.ajourne {
-            border-color: #c0392b;
             color: #c0392b;
+        }
+        
+        .jury-container .jury-valeur.deroge {
+            color: #f39c12;
         }
         
         .footer {
@@ -474,23 +476,25 @@
         let creditsS1 = 0, creditsValidesS1 = 0;
         let creditsS2 = 0, creditsValidesS2 = 0;
         
-        etudiant.ues.forEach(function(ue) { 
-            const moyUE = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
-            const credUE = ue.credits || 0;
-            const credValUE = ue.credits_valides || 0;
+        if (etudiant.ues && etudiant.ues.length > 0) {
+            etudiant.ues.forEach(function(ue) { 
+                const moyUE = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
+                const credUE = ue.credits || 0;
+                const credValUE = ue.credits_valides || 0;
 
-            if (ue.semestre_id === 1) {
-                sommePondereeS1 += moyUE * credUE;
-                sommeCoeffsS1   += credUE;
-                creditsS1        += credUE;
-                creditsValidesS1 += credValUE;
-            } else if (ue.semestre_id === 2) {
-                sommePondereeS2 += moyUE * credUE;
-                sommeCoeffsS2   += credUE;
-                creditsS2        += credUE;
-                creditsValidesS2 += credValUE;
-            }
-        });
+                if (ue.semestre_id === 1) {
+                    sommePondereeS1 += moyUE * credUE;
+                    sommeCoeffsS1   += credUE;
+                    creditsS1        += credUE;
+                    creditsValidesS1 += credValUE;
+                } else if (ue.semestre_id === 2) {
+                    sommePondereeS2 += moyUE * credUE;
+                    sommeCoeffsS2   += credUE;
+                    creditsS2        += credUE;
+                    creditsValidesS2 += credValUE;
+                }
+            });
+        }
         
         const moyenneS1 = sommeCoeffsS1 > 0 ? sommePondereeS1 / sommeCoeffsS1 : 0;
         const moyenneS2 = sommeCoeffsS2 > 0 ? sommePondereeS2 / sommeCoeffsS2 : 0;
@@ -529,14 +533,14 @@
             if (moyenneAnnuelle < 10) redoublant = 'OUI';
         }
 
-        const uesTableau = etudiant.ues.filter(ue => ue.semestre_id === semestreNum);
+        const uesTableau = etudiant.ues ? etudiant.ues.filter(ue => ue.semestre_id === semestreNum) : [];
     %>
     <div class="bulletin">
 
         <!-- SECTION 1 : TITRE -->
         <div class="section1">
             <h1>RELEVÉ DE NOTES</h1>
-            <div class="annee-academique"> <%= groupe.annee_academique %></div>
+            <div class="annee-academique"><%= groupe.annee_academique %></div>
             <div class="niveau">NIVEAU : <%= etudiant.niveau_libelle || etudiant.niveau_id || '' %></div>
         </div>
 
@@ -563,7 +567,7 @@
                 </div>
                 <div class="item">
                     <span class="label">Matricule MESRS :</span>
-                    <span class="valeur"><%= etudiant.matricule_mesrs %></span>
+                    <span class="valeur"><%= etudiant.matricule_mesrs || etudiant.matricule_iipea %></span>
                 </div>
             </div>
             <div class="ligne3">
@@ -588,7 +592,9 @@
             <table>
                 <thead>
                     <tr>
+                        <th>CODE UE</th>
                         <th>UE</th>
+                        <th>CODE ECUE</th>
                         <th>ECUE</th>
                         <th>Moy. ECUE</th>
                         <th>Coef</th>
@@ -599,34 +605,35 @@
                     </tr>
                 </thead>
                 <tbody>
-                    <% uesTableau.forEach(function(ue) { 
-                        const moyUE = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
-                        const ecuesAvecNote = ue.matieres.filter(m => m.a_note);
-                        const rowspan = ecuesAvecNote.length > 0 ? ecuesAvecNote.length : 1;
-                        let mention = '';
-                        if (moyUE >= 16)      mention = 'Très-bien';
-                        else if (moyUE >= 14) mention = 'Bien';
-                        else if (moyUE >= 12) mention = 'Assez-bien';
-                        else if (moyUE >= 10) mention = 'Passable';
-                        else                  mention = 'Insuffisant';
+                    <% if (uesTableau.length > 0) { 
+                        uesTableau.forEach(function(ue) { 
+                            const moyUE = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
+                            const ecuesAvecNote = ue.matieres ? ue.matieres.filter(m => m.a_note) : [];
+                            const rowspan = ecuesAvecNote.length > 0 ? ecuesAvecNote.length : 1;
+                            let mention = '';
+                            if (moyUE >= 16)      mention = 'Très bien';
+                            else if (moyUE >= 14) mention = 'Bien';
+                            else if (moyUE >= 12) mention = 'Assez bien';
+                            else if (moyUE >= 10) mention = 'Passable';
+                            else                  mention = 'Insuffisant';
                     %>
-                        <tr class="ue-row">
-                            <td rowspan="<%= rowspan %>"><%= ue.libelle %></td> 
+                        <tr>
+                            <td rowspan="<%= rowspan %>" class="code-cell"><%= ue.code_ue || '-' %></td>
+                            <td rowspan="<%= rowspan %>"><%= ue.libelle %></td>
                             <% if (ecuesAvecNote.length > 0) { 
                                 const premierECUE = ecuesAvecNote[0];
                                 const moyECUE = premierECUE.moyenne_affichage !== undefined ? premierECUE.moyenne_affichage : premierECUE.moyenne;
                             %>
-                                <td class="matiere-nom"><%= premierECUE.nom %></td>
-                                <td><%= moyECUE.toFixed(2) %></td>
-                                <td><%= premierECUE.coefficient %></td>
+                                <td class="code-cell"><%= premierECUE.code_ecue || '-' %></td>
+                                <td><%= premierECUE.nom %></td>
+                                <td><%= moyECUE ? moyECUE.toFixed(2) : '-' %></td>
+                                <td><%= premierECUE.coefficient || 0 %></td>
                             <% } else { %>
-                                <td colspan="3">Aucune note</td>
+                                <td colspan="4">Aucune note</td>
                             <% } %>
                             <td rowspan="<%= rowspan %>"><%= moyUE.toFixed(2) %></td>
-                            <td rowspan="<%= rowspan %>"><%= ue.credits_valides || 0 %>/<%= ue.credits %></td>
-                            <td rowspan="<%= rowspan %>">
-                                <span class="mention"><%= mention %></span>
-                            </td>
+                            <td rowspan="<%= rowspan %>"><%= ue.credits_valides || 0 %>/<%= ue.credits || 0 %></td>
+                            <td rowspan="<%= rowspan %>"><span class="mention"><%= mention %></span></td>
                             <td rowspan="<%= rowspan %>" class="<%= ue.valide ? 'admis' : 'refuse' %>">
                                 <%= ue.valide ? 'ADMIS' : 'REFUSÉ' %>
                             </td>
@@ -635,13 +642,19 @@
                             const ecue = ecuesAvecNote[i];
                             const moyECUE = ecue.moyenne_affichage !== undefined ? ecue.moyenne_affichage : ecue.moyenne;
                         %>
-                        <tr class="ecue-row">
-                            <td class="matiere-nom"><%= ecue.nom %></td>
-                            <td><%= moyECUE.toFixed(2) %></td>
-                            <td><%= ecue.coefficient %></td>
+                        <tr>
+                            <td class="code-cell"><%= ecue.code_ecue || '-' %></td>
+                            <td><%= ecue.nom %></td>
+                            <td><%= moyECUE ? moyECUE.toFixed(2) : '-' %></td>
+                            <td><%= ecue.coefficient || 0 %></td>
                         </tr>
                         <% } %>
-                    <% }); %>
+                    <% }); 
+                    } else { %>
+                        <tr>
+                            <td colspan="10" style="text-align: center;">Aucune UE trouvée pour ce semestre</td>
+                        </tr>
+                    <% } %>
                 </tbody>
             </table>
         </div>
@@ -650,7 +663,6 @@
         <div class="section4">
 
             <% if (semestreNum === 1) { %>
-            <!-- ======== SEMESTRE 1 : 1 seule ligne ======== -->
             <div class="recap-s1">
                 <div class="recap-gauche">
                     <div class="recap-item">
@@ -668,9 +680,7 @@
             </div>
 
             <% } else { %>
-            <!-- ======== SEMESTRE 2 : bloc complet ======== -->
             <div class="recap-s2">
-
                 <div class="semestres-container">
                     <div class="semestre-box">
                         <div class="titre">Semestre 1</div>
@@ -702,18 +712,15 @@
                     <span class="jury-label">DÉCISION DU JURY :</span>
                     <span class="jury-valeur <%= decisionJuryClass %>"><%= decisionJury %></span>
                 </div>
-
             </div>
             <% } %>
 
         </div>
-        <!-- FIN SECTION 4 -->
 
-        <!-- PIED DE PAGE -->
         <div class="footer">
             <div class="signature">
                 <div class="date">Abidjan, le <%= new Date().toLocaleDateString('fr-FR') %></div>
-                <div class="ligne">La Sous-Direction de la Scolarité</div>
+                <div class="ligne">La Direction de la Scolarité</div>
             </div>
         </div>
     </div>
