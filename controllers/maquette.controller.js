@@ -197,6 +197,7 @@ exports.getMaquetteUes = async (req, res) => {
       SELECT 
         u.id,
         u.libelle,
+        u.code_ue,
         u.semestre_id,
         s.nom as semestre_libelle,
         u.categorie_id,
@@ -226,6 +227,7 @@ exports.getMaquetteMatieres = async (req, res) => {
         m.id,
         m.nom,
         m.coefficient,
+        m.code_ecue, 
         m.ue_id,
         u.libelle as ue_libelle,
         m.volume_horaire_cm,
