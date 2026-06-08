@@ -2,7 +2,7 @@ const db = require('../config/db.config');
 
 exports.createUE = async (req, res) => {
   try {
-    const { libelle, semestre_id, categorie_id, maquette_id, code_UE } = req.body;
+    const { libelle, semestre_id, categorie_id, maquette_id, code_ue } = req.body;
     
     // Validation des données
     if (!libelle || !semestre_id || !categorie_id || !maquette_id) {
@@ -13,10 +13,10 @@ exports.createUE = async (req, res) => {
     }
     
     // Validation du code_UE (optionnel mais recommandé)
-    if (code_UE) {
+    if (code_ue) {
       // Vérifier si le code existe déjà
       const checkQuery = 'SELECT id FROM ue WHERE code_UE = $1';
-      const checkResult = await db.query(checkQuery, [code_UE]);
+      const checkResult = await db.query(checkQuery, [code_ue]);
       
       if (checkResult.rows.length > 0) {
         return res.status(400).json({
@@ -27,12 +27,12 @@ exports.createUE = async (req, res) => {
     }
     
     const query = `
-      INSERT INTO ue (libelle, semestre_id, categorie_id, maquette_id, code_UE)
+      INSERT INTO ue (libelle, semestre_id, categorie_id, maquette_id, code_ue)
       VALUES ($1, $2, $3, $4, $5)
       RETURNING *
     `;
     
-    const values = [libelle, semestre_id, categorie_id, maquette_id, code_UE || null];
+    const values = [libelle, semestre_id, categorie_id, maquette_id, code_ue || null];
     const result = await db.query(query, values);
     
     res.status(201).json({ 

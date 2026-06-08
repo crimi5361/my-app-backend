@@ -1,14 +1,14 @@
 const jwt = require('jsonwebtoken');
 
 const authenticateToken = (req, res, next) => {
-    console.log('Headers reçus:', req.headers);
+    //console.log('Headers reçus:', req.headers);
     console.log('URL appelée:', req.originalUrl);
     
     const token = req.headers.authorization?.split(' ')[1] || 
                 req.headers['x-access-token'] || 
                 req.query.token;
     
-    console.log('Token extrait:', token);
+    //console.log('Token extrait:', token);
     
     if (!token) {
         console.log('Aucun token trouvé dans la requête. Headers:', req.headers);
