@@ -441,4 +441,8 @@ router.get('/vue/groupe/:groupeId/bulletins', authenticateToken, pvController.af
  */
 router.get('/vue/groupe/:groupeId/bulletins/semestre/:semestreId', authenticateToken, pvController.afficherBulletinsMultiples);
 
+// Statistiques générales des résultats
+router.get('/stats/resultats', authenticateToken, pvController.getStatsResultats);
+router.get('/stats/recap', authenticateToken, pvController.getRecapFiliereNiveau);
+
 module.exports = router;

@@ -6,5 +6,6 @@ const dataController = require('../controllers/data.controller');
 router.get('/villes', dataController.getAllville);
 router.get('/series-bac', dataController.getAllserie);
 router.get('/annees-bac', dataController.getAllannee);
+router.get('/pays', dataController.getAllpays);
 
 module.exports = router;

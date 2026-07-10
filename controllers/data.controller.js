@@ -48,3 +48,20 @@ exports.getAllannee = async (req, res) => {
         });
     }
 };
+
+
+exports.getAllpays = async (req, res) => {
+    try {
+        const { rows } = await db.query(`SELECT id, code_iso, nom, nationalite FROM public.pays`);
+        res.status(200).json({
+            success: true,
+            data: rows
+        });
+    } catch (error) {
+        console.error('Error fetching countries:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Erreur serveur lors de la récupération des pays'
+        });
+    }
+};
