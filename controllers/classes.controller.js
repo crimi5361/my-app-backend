@@ -154,8 +154,10 @@ exports.getGroupeSimpleInfo = async (req, res) => {
     const query = `
       SELECT 
         g.id,
-        g.nom
+        g.nom,
+        c.description AS classe_description
       FROM groupe g
+      LEFT JOIN classe c ON g.classe_id = c.id
       WHERE g.id = $1
     `;
     
@@ -171,10 +173,9 @@ exports.getGroupeSimpleInfo = async (req, res) => {
     console.error('Erreur:', error);
     res.status(500).json({ message: 'Erreur serveur', error: error.message });
   } finally {
-    client.release(); // Important : libérer la connexion
+    client.release();
   }
 };
-
 
 // Route pour DetailGroupe (détails d'un groupe spécifique)
 exports.getDetailGroupe = async (req, res) => {

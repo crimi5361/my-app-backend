@@ -7,5 +7,7 @@ router.get('/etudiant/:etudiant_id/paiements', paiementEspaceController.getPaiem
 router.get('/etudiant/paiement/:id', paiementEspaceController.getPaiementWithRecu);
 router.get('/etudiant/:etudiant_id/recus', paiementEspaceController.getRecusByEtudiantId);
 router.get('/etudiant/:etudiant_id/stats', paiementEspaceController.getPaiementStatsByEtudiantId);
+router.get('/etudiant/:etudiant_id/scolarite', paiementEspaceController.getScolariteByEtudiantId);
+
 
 module.exports = router;

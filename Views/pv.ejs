@@ -789,6 +789,19 @@
                 <tbody>
                     <% data.etudiants.forEach((etudiant, etudiantIndex) => { 
                         const estNonSolde = !etudiant.scolarite_soldee;
+                        // ✅ Calcul des crédits à partir des UE (après repêchage)
+                        // ✅ CODE CORRIGÉ
+                    let creditsValides = etudiant.credits_valides || 0;
+                    let creditsTotal = etudiant.credits_total || 0;
+
+                    // Fallback sécurisé : si les données serveur sont absentes, on recalcul proprement.
+                    if (creditsTotal === 0 && etudiant.ues) {
+                        etudiant.ues.forEach(ue => {
+                            creditsTotal += ue.credits || 0;
+                            // ✅ On utilise 'credits_valides' de l'UE (déjà calculé par le serveur !)
+                            creditsValides += ue.credits_valides || 0;
+                        });
+                    }
                     %>
                     <tr class="student-row <%= estNonSolde ? 'non-solde' : '' %>" 
                         data-scolarite="<%= etudiant.scolarite_soldee ? 'solde' : 'non-solde' %>">
@@ -801,7 +814,9 @@
                         
                         <!-- Notes par matière -->
                         <% etudiant.ues.forEach((ue) => { 
-                            const ueValidee = ue.moyenne_affichage >= 10;
+                            // ✅ Utiliser moyenne_affichage si disponible (après repêchage)
+                            const ueValidee = ue.valide || false;
+                            const ueMoyenne = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : ue.moyenne;
                             
                             ue.matieres.forEach((matiere) => { 
                                 let moyenneECUE = null;
@@ -949,10 +964,10 @@
                             <strong><%= etudiant.moyenne_generale %></strong>
                         </td>
                         
-                        <!-- Crédits - Utilisation du type_traitement -->
+                        <!-- ✅ Crédits recalculés à partir des UE -->
                         <% if (data.type_traitement === 'universitaire') { %>
                             <td class="note-cell">
-                                <%= etudiant.credits_valides %>/<%= etudiant.credits_total %>
+                                <%= creditsValides %>/<%= creditsTotal %>
                             </td>
                         <% } %>
                         

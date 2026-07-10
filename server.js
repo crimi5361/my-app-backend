@@ -100,6 +100,7 @@ const apiRoutes = [
   { path: '/api/categorie',         route: require('./routes/categorie.routes') },
   { path: '/api/ues',               route: require('./routes/ue.routes') },
   { path: '/api/matiere',           route: require('./routes/matiere.routes') },
+  { path: '/api/CarteEtudiante',    route: require('./routes/cartes.routes') },
 
   // Étudiants & inscriptions
   { path: '/api/etudiants',         route: require('./routes/etudiant.routes') },
@@ -132,6 +133,7 @@ const apiRoutes = [
   // Espace étudiant
   { path: '/api/donneeespaceetudiant',    route: require('./routes/donneeespaceetudiant.routes') },
   { path: '/api/detailaffichageMaquette', route: require('./routes/DetailAffichageMaquette.routes') },
+  { path: '/api/memoire',                 route: require('./routes/memoire.routes') },
 
   // Emploi du temps & divers
   { path: '/api/emploiDuTemps',   route: require('./routes/EDT.routes') },

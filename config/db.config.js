@@ -21,3 +21,25 @@ console.log('DB_HOST:', process.env.DB_HOST);
 console.log('DB_PORT:', process.env.DB_PORT);
 
 module.exports = pool;
+
+
+
+// const { Pool } = require("pg");
+// require("dotenv").config();
+
+// const pool = new Pool({
+//   connectionString: process.env.DATABASE_URL,
+//   ssl: {
+//     rejectUnauthorized: false
+//   }
+// });
+
+// pool.connect((err) => {
+//   if (err) {
+//     console.error("❌ Erreur connexion DB", err);
+//   } else {
+//     console.log("✅ Connecté à Neon PostgreSQL");
+//   }
+// });
+
+// module.exports = pool;
