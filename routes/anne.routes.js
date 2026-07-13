@@ -1,12 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const anneeController = require('../controllers/annee.controller');
+const authenticateToken = require('../middleware/auth.middleware');
+const authorizeRoles = require('../middleware/authorize.middleware');
 
-router.get('/', anneeController.getAllAnnees);
-router.get('/anneeValide' , anneeController.getAllAnneesValide);
-router.post('/ajouter', anneeController.addAnnee);
-router.post('/:id/fermer', anneeController.closeAnnee);
-router.post('/:id/reouvrir', anneeController.reopenAnnee);
+router.get('/', authenticateToken, anneeController.getAllAnnees);
+router.get('/anneeValide', authenticateToken, anneeController.getAllAnneesValide);
+router.post('/ajouter', authenticateToken, authorizeRoles('admin'), anneeController.addAnnee);
+router.post('/:id/fermer', authenticateToken, authorizeRoles('admin'), anneeController.closeAnnee);
+router.post('/:id/reouvrir', authenticateToken, authorizeRoles('admin'), anneeController.reopenAnnee);
 
 
 module.exports = router;

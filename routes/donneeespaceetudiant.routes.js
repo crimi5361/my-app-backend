@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const etudiantController = require('../controllers/donneeespaceetudiant.controller');
 const { uploadStudentFiles } = require('../middleware/upload');
+const authenticateToken = require('../middleware/auth.middleware');
 
 /**
  * @swagger
@@ -278,7 +279,7 @@ const { uploadStudentFiles } = require('../middleware/upload');
  *       500:
  *         description: Erreur serveur
  */
-router.get('/profile/:id', etudiantController.getStudentProfile);
+router.get('/profile/:id', authenticateToken, etudiantController.getStudentProfile);
 
 /**
  * @swagger
@@ -321,7 +322,7 @@ router.get('/profile/:id', etudiantController.getStudentProfile);
  *       500:
  *         description: Erreur serveur
  */
-router.get('/infoProfile/:id', etudiantController.getinfoProfile);
+router.get('/infoProfile/:id', authenticateToken, etudiantController.getinfoProfile);
 
 /**
  * @swagger
@@ -387,7 +388,7 @@ router.get('/infoProfile/:id', etudiantController.getinfoProfile);
  *       500:
  *         description: Erreur serveur
  */
-router.post('/mise-a-jour-profile/:id', etudiantController.updateStudentProfile);
+router.post('/mise-a-jour-profile/:id', authenticateToken, etudiantController.updateStudentProfile);
 
 /**
  * @swagger
@@ -447,6 +448,6 @@ router.post('/mise-a-jour-profile/:id', etudiantController.updateStudentProfile)
  *       500:
  *         description: Erreur serveur
  */
-router.post('/profile/:id/photo', uploadStudentFiles().single('photo'), etudiantController.updateStudentPhoto);
+router.post('/profile/:id/photo', authenticateToken, uploadStudentFiles().single('photo'), etudiantController.updateStudentPhoto);
 
 module.exports = router;

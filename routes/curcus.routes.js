@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const curcusController = require('../controllers/curcus.controller');   
+const curcusController = require('../controllers/curcus.controller');
+const authenticateToken = require('../middleware/auth.middleware');
 
-router.get('/', curcusController.getAllCursus); 
+router.get('/', authenticateToken, curcusController.getAllCursus);
 
 module.exports = router;

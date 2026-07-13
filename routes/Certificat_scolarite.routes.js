@@ -4,6 +4,19 @@ const db = require('../config/db.config');
 const router = express.Router();
 const path = require('path');
 const fs = require('fs');
+const authenticateToken = require('../middleware/auth.middleware');
+const authorizeRoles = require('../middleware/authorize.middleware');
+const staffOnly = [authenticateToken, authorizeRoles('admin', 'scolarite')];
+
+// Ces routes servent le rendu HTML via un formulaire (pas un fetch), le token
+// arrive donc dans req.body plutôt que dans le header Authorization.
+const bodyTokenToQuery = (req, res, next) => {
+    if (req.body?.token && !req.query.token) {
+        req.query.token = req.body.token;
+    }
+    next();
+};
+const staffOnlyFromBody = [bodyTokenToQuery, authenticateToken, authorizeRoles('admin', 'scolarite')];
 
 // === FONCTIONS AMÉLIORÉES ===
 function generateQRCodeValue(studentData) {
@@ -318,57 +331,8 @@ function formatNationalite(nationalite) {
     return nationalites[nationalite] || nationalite;
 }
 
-// === MIDDLEWARE POUR TRAITER LE TOKEN ===
-router.use('/certificats/html/masse', (req, res, next) => {
-    try {
-        // Vérifier le token depuis le body (formulaire) ou header
-        const token = req.body.token || req.headers.authorization?.replace('Bearer ', '');
-        
-        if (!token) {
-            return res.status(401).json({
-                success: false,
-                message: 'Token manquant'
-            });
-        }
-        
-        // Ajouter le token aux headers pour les middlewares suivants
-        req.headers.authorization = `Bearer ${token}`;
-        next();
-    } catch (error) {
-        console.error('❌ Erreur middleware token:', error);
-        return res.status(401).json({
-            success: false,
-            message: 'Token invalide'
-        });
-    }
-});
-
-router.use('/certificats/html/masse/groupe', (req, res, next) => {
-    try {
-        // Vérifier le token depuis le body (formulaire) ou header
-        const token = req.body.token || req.headers.authorization?.replace('Bearer ', '');
-        
-        if (!token) {
-            return res.status(401).json({
-                success: false,
-                message: 'Token manquant'
-            });
-        }
-        
-        // Ajouter le token aux headers pour les middlewares suivants
-        req.headers.authorization = `Bearer ${token}`;
-        next();
-    } catch (error) {
-        console.error('❌ Erreur middleware token:', error);
-        return res.status(401).json({
-            success: false,
-            message: 'Token invalide'
-        });
-    }
-});
-
 // === ROUTE POUR AFFICHAGE HTML EN MASSE PAR DÉPARTEMENT ===
-router.post('/certificats/html/masse', async (req, res) => {
+router.post('/certificats/html/masse', staffOnlyFromBody, async (req, res) => {
     let startTime = Date.now();
     
     try {
@@ -495,7 +459,7 @@ router.post('/certificats/html/masse', async (req, res) => {
 });
 
 // === NOUVELLE ROUTE : GÉNÉRATION PAR GROUPE ===
-router.post('/certificats/html/masse/groupe', async (req, res) => {
+router.post('/certificats/html/masse/groupe', staffOnlyFromBody, async (req, res) => {
     let startTime = Date.now();
     
     try {
@@ -694,7 +658,7 @@ router.get('/verify-certificat', async (req, res) => {
 });
 
 // Nouvelle route pour obtenir la liste des étudiants triés
-router.get('/etudiants/departement/:departement_id', async (req, res) => {
+router.get('/etudiants/departement/:departement_id', staffOnly, async (req, res) => {
     try {
         const { departement_id } = req.params;
         
@@ -716,7 +680,7 @@ router.get('/etudiants/departement/:departement_id', async (req, res) => {
 });
 
 // Nouvelle route pour obtenir les étudiants d'un groupe
-router.get('/etudiants/groupe/:groupe_id', async (req, res) => {
+router.get('/etudiants/groupe/:groupe_id', staffOnly, async (req, res) => {
     try {
         const { groupe_id } = req.params;
         
