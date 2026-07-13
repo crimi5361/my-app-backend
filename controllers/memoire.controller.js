@@ -295,10 +295,56 @@ exports.getMemoiresByFiliereEtClasse = async (req, res) => {
     }
 };
 
+// ✅ Traite (validation + sauvegarde) un fichier de rapport d'analyse uploadé
+// via multer, pour un mémoire donné. Retourne le chemin relatif à stocker en
+// base, ou null si aucun fichier n'a été fourni. Nettoie le fichier temporaire
+// en cas d'erreur ou de rejet (type/taille invalide).
+const traiterRapportUpload = async (fichierRapport, memoire, suffix) => {
+    if (!fichierRapport) return { rapportPath: null };
+
+    if (fichierRapport.mimetype !== 'application/pdf') {
+        if (fs.existsSync(fichierRapport.path)) fs.unlinkSync(fichierRapport.path);
+        return { error: { status: 400, message: "Le rapport doit être au format PDF" } };
+    }
+
+    if (fichierRapport.size > 5 * 1024 * 1024) {
+        if (fs.existsSync(fichierRapport.path)) fs.unlinkSync(fichierRapport.path);
+        return { error: { status: 400, message: "Le rapport ne doit pas dépasser 5 Mo" } };
+    }
+
+    const etudiantInfo = await getEtudiantFiliereEtClasse(memoire.etudiant_id);
+
+    const rapportFolder = getRapportFolder(
+        etudiantInfo.filiere,
+        etudiantInfo.niveau,
+        etudiantInfo.matricule,
+        etudiantInfo.nom,
+        etudiantInfo.prenoms
+    );
+
+    const targetDir = path.join(RAPPORT_BASE_DIR, rapportFolder);
+    if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+
+    const fileName = generateRapportFileName(
+        etudiantInfo.matricule,
+        etudiantInfo.nom,
+        etudiantInfo.prenoms,
+        suffix
+    );
+
+    const finalPath = path.join(targetDir, fileName);
+    fs.renameSync(fichierRapport.path, finalPath);
+
+    return { rapportPath: `/uploads/rapports/${rapportFolder}/${fileName}` };
+};
+
 /**
  * PUT /api/memoire/:id/valider
+ * Accepte optionnellement un fichier "rapport_analyse" (multipart) contenant
+ * le rapport d'analyse rédigé par l'agent après examen du mémoire.
  */
 exports.validerMemoire = async (req, res) => {
+    const fichierRapport = req.file;
     try {
         const { id } = req.params;
         const { traite_par } = req.body;
@@ -306,15 +352,19 @@ exports.validerMemoire = async (req, res) => {
         console.log(`[valider] id=${id} | traite_par reçu=${traite_par} (type: ${typeof traite_par})`);
 
         const memoireCheck = await db.query(
-            `SELECT id, statut, traite_par FROM public.memoire WHERE id = $1`,
+            `SELECT id, statut, traite_par, etudiant_id FROM public.memoire WHERE id = $1`,
             [id]
         );
-        if (memoireCheck.rows.length === 0) return res.status(404).json({ success: false, message: "Mémoire non trouvé" });
+        if (memoireCheck.rows.length === 0) {
+            if (fichierRapport && fs.existsSync(fichierRapport.path)) fs.unlinkSync(fichierRapport.path);
+            return res.status(404).json({ success: false, message: "Mémoire non trouvé" });
+        }
 
         const memoire = memoireCheck.rows[0];
         console.log(`[valider] traite_par en DB=${memoire.traite_par} (type: ${typeof memoire.traite_par})`);
 
         if (memoire.statut !== 'encours') {
+            if (fichierRapport && fs.existsSync(fichierRapport.path)) fs.unlinkSync(fichierRapport.path);
             return res.status(400).json({
                 success: false,
                 message: `Seul un mémoire en cours de traitement peut être validé (statut actuel: ${memoire.statut})`
@@ -322,6 +372,7 @@ exports.validerMemoire = async (req, res) => {
         }
 
         if (!isSameUser(memoire.traite_par, traite_par)) {
+            if (fichierRapport && fs.existsSync(fichierRapport.path)) fs.unlinkSync(fichierRapport.path);
             console.log(`[valider] REFUS : DB="${memoire.traite_par}" vs reçu="${traite_par}"`);
             return res.status(403).json({
                 success: false,
@@ -329,13 +380,33 @@ exports.validerMemoire = async (req, res) => {
             });
         }
 
-        const result = await db.query(
-            `UPDATE public.memoire SET statut = 'valide', date_traitement = NOW() WHERE id = $1 RETURNING *`,
-            [id]
-        );
-        return res.status(200).json({ success: true, message: "Mémoire validé avec succès", memoire: result.rows[0] });
+        const { rapportPath, error } = await traiterRapportUpload(fichierRapport, memoire, `memoire_${id}`);
+        if (error) return res.status(error.status).json({ success: false, message: error.message });
+
+        let query = `UPDATE public.memoire SET statut = 'valide', date_traitement = NOW()`;
+        const params = [];
+        let paramIndex = 1;
+
+        if (rapportPath) {
+            query += `, rapport_analyse = $${paramIndex}`;
+            params.push(rapportPath);
+            paramIndex++;
+        }
+
+        query += ` WHERE id = $${paramIndex} RETURNING *`;
+        params.push(id);
+
+        const result = await db.query(query, params);
+        return res.status(200).json({
+            success: true,
+            message: rapportPath ? "Mémoire validé avec rapport d'analyse" : "Mémoire validé avec succès",
+            memoire: result.rows[0]
+        });
     } catch (error) {
         console.error("Erreur dans validerMemoire:", error);
+        if (fichierRapport?.path && fs.existsSync(fichierRapport.path)) {
+            try { fs.unlinkSync(fichierRapport.path); } catch (e) { console.error(e); }
+        }
         return res.status(500).json({ success: false, message: "Erreur interne du serveur", error: error.message });
     }
 };
@@ -417,64 +488,8 @@ exports.rejeterMemoire = async (req, res) => {
             });
         }
 
-        let rapportPath = null;
-
-        // ✅ Traitement du fichier rapport d'analyse
-        if (fichierRapport) {
-            try {
-                // Vérification du fichier
-                if (fichierRapport.mimetype !== 'application/pdf') {
-                    if (fs.existsSync(fichierRapport.path)) fs.unlinkSync(fichierRapport.path);
-                    return res.status(400).json({ success: false, message: "Le rapport doit être au format PDF" });
-                }
-
-                if (fichierRapport.size > 5 * 1024 * 1024) {
-                    if (fs.existsSync(fichierRapport.path)) fs.unlinkSync(fichierRapport.path);
-                    return res.status(400).json({ success: false, message: "Le rapport ne doit pas dépasser 5 Mo" });
-                }
-
-                // ✅ Récupérer les infos de l'étudiant
-                const etudiantInfo = await getEtudiantFiliereEtClasse(memoire.etudiant_id);
-                
-                // ✅ Créer le dossier pour le rapport
-                const rapportFolder = getRapportFolder(
-                    etudiantInfo.filiere,
-                    etudiantInfo.niveau,
-                    etudiantInfo.matricule,
-                    etudiantInfo.nom,
-                    etudiantInfo.prenoms
-                );
-                
-                const targetDir = path.join(RAPPORT_BASE_DIR, rapportFolder);
-                if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-
-                // ✅ Générer le nom du fichier avec le nom de l'étudiant
-                const fileName = generateRapportFileName(
-                    etudiantInfo.matricule,
-                    etudiantInfo.nom,
-                    etudiantInfo.prenoms,
-                    `memoire_${id}`
-                );
-                
-                // ✅ Déplacer le fichier vers le dossier des rapports
-                const finalPath = path.join(targetDir, fileName);
-                fs.renameSync(fichierRapport.path, finalPath);
-                
-                // ✅ Chemin relatif pour la base de données
-                rapportPath = `/uploads/rapports/${rapportFolder}/${fileName}`;
-                
-                console.log(`[rejeter] Rapport sauvegardé: ${rapportPath}`);
-
-            } catch (error) {
-                console.error("Erreur lors du traitement du rapport:", error);
-                if (fichierRapport && fs.existsSync(fichierRapport.path)) fs.unlinkSync(fichierRapport.path);
-                return res.status(500).json({ 
-                    success: false, 
-                    message: "Erreur lors du traitement du rapport d'analyse", 
-                    error: error.message 
-                });
-            }
-        }
+        const { rapportPath, error: rapportError } = await traiterRapportUpload(fichierRapport, memoire, `memoire_${id}`);
+        if (rapportError) return res.status(rapportError.status).json({ success: false, message: rapportError.message });
 
         // ✅ Mise à jour de la base de données
         let query = `UPDATE public.memoire SET statut = 'rejete', motif_refus = $1, date_traitement = NOW()`;
