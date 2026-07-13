@@ -2,6 +2,8 @@
 const express = require('express');
 const router = express.Router();
 const maquetteController = require('../controllers/maquette.controller');
+const authenticateToken = require('../middleware/auth.middleware');
+const authorizeRoles = require('../middleware/authorize.middleware');
 
 /**
  * @swagger
@@ -197,7 +199,7 @@ const maquetteController = require('../controllers/maquette.controller');
  *       500:
  *         description: Erreur serveur
  */
-router.post('/create-maquettes', maquetteController.createMaquette);
+router.post('/create-maquettes', authenticateToken, authorizeRoles('admin', 'scolarite'), maquetteController.createMaquette);
 
 /**
  * @swagger
@@ -235,7 +237,7 @@ router.post('/create-maquettes', maquetteController.createMaquette);
  *       500:
  *         description: Erreur serveur
  */
-router.get('/', maquetteController.getAllMaquettes);
+router.get('/', authenticateToken, maquetteController.getAllMaquettes);
 
 /**
  * @swagger
@@ -265,7 +267,7 @@ router.get('/', maquetteController.getAllMaquettes);
  *       500:
  *         description: Erreur serveur
  */
-router.get('/annees-accademique', maquetteController.getAllAnnee);
+router.get('/annees-accademique', authenticateToken, maquetteController.getAllAnnee);
 
 /**
  * @swagger
@@ -301,7 +303,7 @@ router.get('/annees-accademique', maquetteController.getAllAnnee);
  *       500:
  *         description: Erreur serveur
  */
-router.get('/maquettes/:id', maquetteController.getMaquetteDetail);
+router.get('/maquettes/:id', authenticateToken, maquetteController.getMaquetteDetail);
 
 /**
  * @swagger
@@ -346,7 +348,7 @@ router.get('/maquettes/:id', maquetteController.getMaquetteDetail);
  *       500:
  *         description: Erreur serveur
  */
-router.get('/maquettes/:id/ues', maquetteController.getMaquetteUes);
+router.get('/maquettes/:id/ues', authenticateToken, maquetteController.getMaquetteUes);
 
 /**
  * @swagger
@@ -398,6 +400,6 @@ router.get('/maquettes/:id/ues', maquetteController.getMaquetteUes);
  *       500:
  *         description: Erreur serveur
  */
-router.get('/maquettes/:id/matieres', maquetteController.getMaquetteMatieres);
+router.get('/maquettes/:id/matieres', authenticateToken, maquetteController.getMaquetteMatieres);
 
 module.exports = router;

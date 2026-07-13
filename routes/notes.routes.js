@@ -1,9 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const notesController = require('../controllers/chargementNote');
+const authenticateToken = require('../middleware/auth.middleware');
+const authorizeRoles = require('../middleware/authorize.middleware');
 
 // Utilisez uploadMiddleware au lieu de handleUpload
 const uploadMiddleware = notesController.uploadMiddleware;
+const staffOnly = [authenticateToken, authorizeRoles('admin', 'scolarite')];
 
 /**
  * @swagger
@@ -156,7 +159,7 @@ router.options('/upload', (req, res) => {
  *       200:
  *         description: API fonctionnelle
  */
-router.post('/test', notesController.testAPI);
+router.post('/test', staffOnly, notesController.testAPI);
 
 /**
  * @swagger
@@ -181,7 +184,7 @@ router.post('/test', notesController.testAPI);
  *       200:
  *         description: Test réussi
  */
-router.post('/test-upload', uploadMiddleware, (req, res) => {
+router.post('/test-upload', staffOnly, uploadMiddleware, (req, res) => {
   console.log('✅ Test FormData réussi');
   console.log('📁 Fichier reçu:', req.file);
   console.log('📦 Body reçu:', req.body);
@@ -238,7 +241,7 @@ router.post('/test-upload', uploadMiddleware, (req, res) => {
  *       500:
  *         description: Erreur serveur
  */
-router.post('/upload', uploadMiddleware, notesController.uploadNotes);
+router.post('/upload', staffOnly, uploadMiddleware, notesController.uploadNotes);
 
 /**
  * @swagger
@@ -276,7 +279,7 @@ router.post('/upload', uploadMiddleware, notesController.uploadNotes);
  *       500:
  *         description: Erreur serveur
  */
-router.get('/template/:groupeId/:matiereId', notesController.downloadTemplate);
+router.get('/template/:groupeId/:matiereId', staffOnly, notesController.downloadTemplate);
 
 /**
  * @swagger
@@ -298,7 +301,7 @@ router.get('/template/:groupeId/:matiereId', notesController.downloadTemplate);
  *       500:
  *         description: Erreur serveur
  */
-router.get('/groupe/:groupeId', notesController.getNotesByGroupe);
+router.get('/groupe/:groupeId', staffOnly, notesController.getNotesByGroupe);
 
 /**
  * @swagger
@@ -311,7 +314,7 @@ router.get('/groupe/:groupeId', notesController.getNotesByGroupe);
  *       200:
  *         description: Statistiques récupérées
  */
-router.get('/status', notesController.getUploadStatus);
+router.get('/status', staffOnly, notesController.getUploadStatus);
 
 /**
  * @swagger
@@ -333,7 +336,7 @@ router.get('/status', notesController.getUploadStatus);
  *       404:
  *         description: Groupe non trouvé
  */
-router.get('/groupe/:groupeId/details', notesController.getGroupeDetails);
+router.get('/groupe/:groupeId/details', staffOnly, notesController.getGroupeDetails);
 
 /**
  * @swagger
@@ -370,7 +373,7 @@ router.get('/groupe/:groupeId/details', notesController.getGroupeDetails);
  *             schema:
  *               $ref: '#/components/schemas/CheckExistingNotesResponse'
  */
-router.get('/check-existing/:groupeId/:matiereId', notesController.checkExistingNotes);
+router.get('/check-existing/:groupeId/:matiereId', staffOnly, notesController.checkExistingNotes);
 
 /**
  * @swagger
@@ -405,7 +408,7 @@ router.get('/check-existing/:groupeId/:matiereId', notesController.checkExisting
  *       404:
  *         description: Matière non trouvée
  */
-router.get('/type-evaluation/:matiereId', notesController.getTypeEvaluation);
+router.get('/type-evaluation/:matiereId', staffOnly, notesController.getTypeEvaluation);
 
 /**
  * @swagger
@@ -437,26 +440,6 @@ router.get('/type-evaluation/:matiereId', notesController.getTypeEvaluation);
  *       404:
  *         description: Matière non trouvée
  */
-router.put('/type-evaluation/:matiereId', notesController.updateTypeEvaluation);
-
-/**
- * @swagger
- * /api/notes/debug-exports:
- *   get:
- *     summary: Debug - Lister les exports du contrôleur
- *     description: Route de debug pour vérifier les fonctions disponibles
- *     tags: [Debug]
- *     responses:
- *       200:
- *         description: Liste des fonctions exportées
- */
-router.get('/debug-exports', (req, res) => {
-  res.json({
-    success: true,
-    exports: Object.keys(notesController).filter(key => typeof notesController[key] === 'function'),
-    uploadMiddlewareExists: typeof uploadMiddleware === 'function',
-    timestamp: new Date().toISOString()
-  });
-});
+router.put('/type-evaluation/:matiereId', staffOnly, notesController.updateTypeEvaluation);
 
 module.exports = router;

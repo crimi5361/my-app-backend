@@ -4,6 +4,19 @@ const db = require('../config/db.config');
 const router = express.Router();
 const path = require('path');
 const fs = require('fs');
+const authenticateToken = require('../middleware/auth.middleware');
+const authorizeRoles = require('../middleware/authorize.middleware');
+const staffOnly = [authenticateToken, authorizeRoles('admin', 'scolarite')];
+
+// Ces routes servent le rendu HTML via un formulaire (pas un fetch), le token
+// arrive donc dans req.body plutôt que dans le header Authorization.
+const bodyTokenToQuery = (req, res, next) => {
+    if (req.body?.token && !req.query.token) {
+        req.query.token = req.body.token;
+    }
+    next();
+};
+const staffOnlyFromBody = [bodyTokenToQuery, authenticateToken, authorizeRoles('admin', 'scolarite')];
 
 // === FONCTIONS AMÉLIORÉES POUR CERTIFICAT DE FRÉQUENTATION ===
 
@@ -421,55 +434,10 @@ async function prepareTemplateDataFrequentation(studentData) {
 };
 }
 
-// === MIDDLEWARE POUR TRAITER LE TOKEN ===
-router.use('/certificats-frequentation/html/masse', (req, res, next) => {
-    try {
-        const token = req.body.token || req.headers.authorization?.replace('Bearer ', '');
-        
-        if (!token) {
-            return res.status(401).json({
-                success: false,
-                message: 'Token manquant'
-            });
-        }
-        
-        req.headers.authorization = `Bearer ${token}`;
-        next();
-    } catch (error) {
-        console.error('❌ Erreur middleware token:', error);
-        return res.status(401).json({
-            success: false,
-            message: 'Token invalide'
-        });
-    }
-});
-
-router.use('/certificats-frequentation/html/masse/groupe', (req, res, next) => {
-    try {
-        const token = req.body.token || req.headers.authorization?.replace('Bearer ', '');
-        
-        if (!token) {
-            return res.status(401).json({
-                success: false,
-                message: 'Token manquant'
-            });
-        }
-        
-        req.headers.authorization = `Bearer ${token}`;
-        next();
-    } catch (error) {
-        console.error('❌ Erreur middleware token:', error);
-        return res.status(401).json({
-            success: false,
-            message: 'Token invalide'
-        });
-    }
-});
-
 // === ROUTES AMÉLIORÉES ===
 
 // Route pour un certificat individuel
-router.get('/certificat-frequentation/etudiant/:id', async (req, res) => {
+router.get('/certificat-frequentation/etudiant/:id', staffOnly, async (req, res) => {
     let startTime = Date.now();
     
     try {
@@ -523,7 +491,7 @@ router.get('/certificat-frequentation/etudiant/:id', async (req, res) => {
 });
 
 // === NOUVELLE ROUTE : GÉNÉRATION PAR GROUPE ===
-router.post('/certificats-frequentation/html/masse/groupe', async (req, res) => {
+router.post('/certificats-frequentation/html/masse/groupe', staffOnlyFromBody, async (req, res) => {
     let startTime = Date.now();
     
     try {
@@ -671,7 +639,7 @@ router.post('/certificats-frequentation/html/masse/groupe', async (req, res) => 
 });
 
 // Route pour affichage HTML en masse avec tri alphabétique (département)
-router.post('/certificats-frequentation/html/masse', async (req, res) => {
+router.post('/certificats-frequentation/html/masse', staffOnlyFromBody, async (req, res) => {
     let startTime = Date.now();
     
     try {
@@ -856,7 +824,7 @@ router.get('/verify-certificat-frequentation', async (req, res) => {
 });
 
 // Route pour obtenir la liste des étudiants triés par département
-router.get('/etudiants-frequentation/departement/:departement_id', async (req, res) => {
+router.get('/etudiants-frequentation/departement/:departement_id', staffOnly, async (req, res) => {
     try {
         const { departement_id } = req.params;
         
@@ -879,7 +847,7 @@ router.get('/etudiants-frequentation/departement/:departement_id', async (req, r
 });
 
 // NOUVELLE ROUTE : Obtenir les étudiants d'un groupe pour la fréquentation
-router.get('/etudiants-frequentation/groupe/:groupe_id', async (req, res) => {
+router.get('/etudiants-frequentation/groupe/:groupe_id', staffOnly, async (req, res) => {
     try {
         const { groupe_id } = req.params;
         
