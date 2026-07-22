@@ -51,7 +51,7 @@ exports.getAllCertificatFrequentation = async (req, res) => {
         
         a.id as annee_academique_id,
         a.annee as annee_academique,
-        a.etat as annee_etat,
+        aas.etat as annee_etat,
         
         g.id as groupe_id,
         g.nom as groupe_nom,
@@ -73,6 +73,7 @@ exports.getAllCertificatFrequentation = async (req, res) => {
       LEFT JOIN filiere f ON e.id_filiere = f.id
       LEFT JOIN niveau n ON e.niveau_id = n.id
       LEFT JOIN anneeacademique a ON e.annee_academique_id = a.id
+      LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
       LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN classe c ON g.classe_id = c.id
       LEFT JOIN document d ON e.document_id = d.id

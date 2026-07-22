@@ -42,13 +42,14 @@ const getRapportFolder = (filiere, niveau, matricule, etudiantNom, etudiantPreno
 
 const getEtudiantFiliereEtClasse = async (etudiantId) => {
     const query = `
-        SELECT 
+        SELECT
             e.id,
             e.matricule,
             e.nom,
             e.prenoms,
             f.nom as filiere,
             n.libelle as niveau,
+            e.annee_academique_id,
             ac.annee as annee_academique
         FROM public.etudiant e
         LEFT JOIN public.filiere f ON e.id_filiere = f.id
@@ -140,13 +141,11 @@ exports.postChargerPdf = async (req, res) => {
         const relativePath = `/uploads/memoires/${folderName}/${fileName}`;
         fs.renameSync(fichier.path, path.join(targetDir, fileName));
 
-        let anneeAcademiqueId = null;
-        try {
-            const anneeAcademique = await db.query(`SELECT id FROM public.anneeacademique WHERE etat = 'en cour' ORDER BY id DESC LIMIT 1`);
-            if (anneeAcademique.rows.length > 0) anneeAcademiqueId = anneeAcademique.rows[0].id;
-        } catch (err) {
-            console.warn("Table anneeacademique non trouvée ou erreur:", err.message);
-        }
+        // L'année du mémoire est celle où l'étudiant est effectivement inscrit au moment du
+        // dépôt (etudiant.annee_academique_id) — pas une notion globale "en cour" indépendante
+        // du site, qui n'existe d'ailleurs plus sur anneeacademique (colonne etat supprimée
+        // lors du passage au modèle multi-site anneeacademique_site).
+        const anneeAcademiqueId = etudiantInfo.annee_academique_id ?? null;
 
         const result = await db.query(
             `INSERT INTO public.memoire (etudiant_id, annee_academique_id, theme, fichier_pdf, statut, date_depot)
@@ -224,16 +223,27 @@ exports.getMemoireById = async (req, res) => {
  */
 exports.getAllMemoires = async (req, res) => {
     try {
+        const { anneeacademique_id } = req.query;
+        const conditions = [];
+        const params = [];
+        if (anneeacademique_id) {
+            params.push(anneeacademique_id);
+            conditions.push(`m.annee_academique_id = $${params.length}`);
+        }
+        const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
         const result = await db.query(
             `SELECT m.id, m.etudiant_id, m.theme, m.fichier_pdf, m.statut, m.motif_refus, m.rapport_analyse,
-                    m.date_depot, m.date_traitement, m.traite_par,
+                    m.date_depot, m.date_traitement, m.traite_par, m.annee_academique_id,
                     e.nom, e.prenoms, e.matricule_iipea, e.email,
                     f.nom as nom_filiere, n.libelle as nom_niveau
              FROM public.memoire m
              LEFT JOIN public.etudiant e ON m.etudiant_id = e.id
              LEFT JOIN public.filiere f ON e.id_filiere = f.id
              LEFT JOIN public.niveau n ON e.niveau_id = n.id
-             ORDER BY m.date_depot DESC`
+             ${whereClause}
+             ORDER BY m.date_depot DESC`,
+            params
         );
 
         const memoiresAvecAgent = await Promise.all(

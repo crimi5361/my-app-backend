@@ -12,7 +12,7 @@ exports.login = async (req, res) => {
               d.id AS departement_id, d.nom AS departement_nom
        FROM utilisateur u
        JOIN role r ON u.role_id = r.id
-       JOIN departement d ON u.departement_id = d.id
+       JOIN site d ON u.site_id = d.id
        WHERE u.email = $1 AND u.statut = 'active'`,
       [email]
     );
@@ -23,10 +23,10 @@ exports.login = async (req, res) => {
     // 2. Si pas trouvé dans utilisateur, vérifier dans etudiant
     if (result.rows.length === 0) {
       result = await db.query(
-        `SELECT id, nom, prenoms, email, password as mot_de_passe, 
-                matricule as code, departement_id,
+        `SELECT id, nom, prenoms, email, password as mot_de_passe,
+                matricule as code, site_id as departement_id,
                 statut_scolaire as statut
-         FROM etudiant 
+         FROM etudiant
          WHERE email = $1 AND standing = 'Inscrit'`,
         [email]
       );

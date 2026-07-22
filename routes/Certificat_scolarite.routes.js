@@ -34,9 +34,9 @@ function generateQRCodeValue(studentData) {
 async function getAllStudentsByDepartement(departementId) {
     try {
         const query = `
-        SELECT id, nom, prenoms, matricule 
-        FROM etudiant 
-        WHERE departement_id = $1 
+        SELECT id, nom, prenoms, matricule
+        FROM etudiant
+        WHERE site_id = $1
         AND standing = 'Inscrit'
         ORDER BY nom ASC, prenoms ASC, matricule ASC
         `;
@@ -162,11 +162,12 @@ async function getCertificatData(studentId) {
             n.prix_formation as niveau_prix,
             a.id as annee_academique_id,
             a.annee as annee_academique,
-            a.etat as annee_etat
+            aas.etat as annee_etat
         FROM etudiant e
         LEFT JOIN filiere f ON e.id_filiere = f.id
         LEFT JOIN niveau n ON e.niveau_id = n.id
         LEFT JOIN anneeacademique a ON e.annee_academique_id = a.id
+        LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
         WHERE e.id = $1
         `;
 

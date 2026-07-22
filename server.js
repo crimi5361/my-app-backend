@@ -88,6 +88,8 @@ const apiRoutes = [
   { path: '/api/utilisateurs',      route: require('./routes/user.routes') },
 
   // Structure académique
+  { path: '/api/ecoles',            route: require('./routes/ecole.routes') },
+  { path: '/api/sites',             route: require('./routes/site.routes') },
   { path: '/api/departements',      route: require('./routes/departement.routes') },
   { path: '/api/typesfiliere',      route: require('./routes/typesFiliere.routes') },
   { path: '/api/filieres',          route: require('./routes/filieres.routes') },
@@ -100,10 +102,13 @@ const apiRoutes = [
   { path: '/api/categorie',         route: require('./routes/categorie.routes') },
   { path: '/api/ues',               route: require('./routes/ue.routes') },
   { path: '/api/matiere',           route: require('./routes/matiere.routes') },
+  { path: '/api/tarifs',            route: require('./routes/tarif.routes') },
   { path: '/api/CarteEtudiante',    route: require('./routes/cartes.routes') },
 
   // Étudiants & inscriptions
   { path: '/api/etudiants',         route: require('./routes/etudiant.routes') },
+  { path: '/api/reinscription',     route: require('./routes/reinscription.routes') },
+  { path: '/api/caisse',            route: require('./routes/caisse.routes') },
   { path: '/api/effectifs',         route: require('./routes/effectifs.routes') },
   { path: '/api/StatsInscriptions', route: require('./routes/StatsInscriptions.routes') },
 

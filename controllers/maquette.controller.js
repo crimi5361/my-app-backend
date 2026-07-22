@@ -126,7 +126,7 @@ exports.getAllMaquettes = async (req, res) => {
 exports.getAllAnnee = async (req, res) => {
   try {
     const query = `
-      SELECT id, annee, etat
+      SELECT id, annee
       FROM anneeacademique;
     `;
     

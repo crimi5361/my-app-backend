@@ -4,7 +4,7 @@ exports.getStatsInscriptions = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const departementId = req.user.departement_id;
-    const anneeAcademiqueId = req.query.anneeAcademiqueId || await getAnneeAcademiqueCourante();
+    const anneeAcademiqueId = req.query.anneeAcademiqueId || await getAnneeAcademiqueCourante(departementId);
 
     let dateCondition = '';
     let dateParams = [anneeAcademiqueId, departementId];
@@ -19,7 +19,7 @@ exports.getStatsInscriptions = async (req, res) => {
       SELECT COUNT(*) AS total
       FROM etudiant e
       WHERE e.annee_academique_id = $1 
-        AND e.departement_id = $2 
+        AND e.site_id = $2
         AND e.standing = 'Inscrit'
         ${dateCondition}
     `, dateParams);
@@ -29,7 +29,7 @@ exports.getStatsInscriptions = async (req, res) => {
       SELECT COUNT(*) AS total
       FROM etudiant e
       WHERE e.annee_academique_id = $1 
-        AND e.departement_id = $2 
+        AND e.site_id = $2
         AND DATE(e.date_inscription) = CURRENT_DATE
     `, [anneeAcademiqueId, departementId]);
 
@@ -38,7 +38,7 @@ exports.getStatsInscriptions = async (req, res) => {
       SELECT COUNT(*) AS total
       FROM etudiant e
       WHERE e.annee_academique_id = $1 
-        AND e.departement_id = $2 
+        AND e.site_id = $2
         AND e.standing = 'en attente'  
         ${dateCondition}
     `, dateParams);
@@ -48,7 +48,7 @@ exports.getStatsInscriptions = async (req, res) => {
       SELECT COUNT(*) AS total
       FROM etudiant e
       WHERE e.annee_academique_id = $1 
-        AND e.departement_id = $2 
+        AND e.site_id = $2
         AND e.standing = 'Inscrit'
         AND DATE(e.date_inscription) = CURRENT_DATE
     `, [anneeAcademiqueId, departementId]);
@@ -65,7 +65,7 @@ exports.getStatsInscriptions = async (req, res) => {
       FROM utilisateur u
       LEFT JOIN etudiant e ON u.id = e.inscrit_par::integer
       WHERE e.annee_academique_id = $1 
-        AND e.departement_id = $2
+        AND e.site_id = $2
         ${startDate && endDate ? 'AND DATE(e.date_inscription) BETWEEN $3 AND $4' : ''}
       GROUP BY u.id, u.nom, u.email
       ORDER BY total_inscrits DESC
@@ -79,7 +79,7 @@ exports.getStatsInscriptions = async (req, res) => {
         SUM(CASE WHEN standing = 'Inscrit' THEN 1 ELSE 0 END) AS confirmes
       FROM etudiant
       WHERE annee_academique_id = $1 
-        AND departement_id = $2
+        AND site_id = $2
         ${startDate && endDate ? 'AND DATE(date_inscription) BETWEEN $3 AND $4' : ''}
       GROUP BY DATE(date_inscription)
       ORDER BY date DESC
@@ -92,7 +92,7 @@ exports.getStatsInscriptions = async (req, res) => {
         COUNT(*) AS nombre
       FROM etudiant
       WHERE annee_academique_id = $1 
-        AND departement_id = $2
+        AND site_id = $2
         ${startDate && endDate ? 'AND DATE(date_inscription) BETWEEN $3 AND $4' : ''}
       GROUP BY statut_scolaire
       ORDER BY nombre DESC
@@ -110,7 +110,7 @@ exports.getStatsInscriptions = async (req, res) => {
       LEFT JOIN etudiant e ON p.etudiant_id = e.id
       WHERE p.id IS NOT NULL
         AND e.annee_academique_id = $1
-        AND e.departement_id = $2
+        AND e.site_id = $2
         ${startDate && endDate ? 'AND DATE(p.date_paiement) BETWEEN $3 AND $4' : ''}
       GROUP BY u.id, u.nom, u.email
       ORDER BY nombre_paiements DESC
@@ -122,7 +122,7 @@ exports.getStatsInscriptions = async (req, res) => {
       FROM paiement p
       JOIN etudiant e ON p.etudiant_id = e.id
       WHERE e.annee_academique_id = $1
-        AND e.departement_id = $2
+        AND e.site_id = $2
         ${startDate && endDate ? 'AND DATE(p.date_paiement) BETWEEN $3 AND $4' : ''}
     `, dateParams);
 
@@ -155,12 +155,15 @@ exports.getStatsInscriptions = async (req, res) => {
   }
 };
 
-// Fonction utilitaire pour obtenir l'année académique courante
-async function getAnneeAcademiqueCourante() {
+// Fonction utilitaire pour obtenir l'année académique courante d'un site
+async function getAnneeAcademiqueCourante(siteId) {
   try {
     const result = await db.query(`
-      SELECT id FROM anneeacademique WHERE etat = 'en cour' LIMIT 1
-    `);
+      SELECT a.id FROM anneeacademique a
+      JOIN anneeacademique_site s ON s.anneeacademique_id = a.id
+      WHERE s.site_id = $1 AND s.etat = 'en cour'
+      LIMIT 1
+    `, [siteId]);
     return result.rows[0]?.id;
   } catch (error) {
     console.error('Erreur récupération année académique:', error);
@@ -173,7 +176,7 @@ exports.getStatsDetaillees = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const departementId = req.user.departement_id;
-    const anneeAcademiqueId = req.query.anneeAcademiqueId || await getAnneeAcademiqueCourante();
+    const anneeAcademiqueId = req.query.anneeAcademiqueId || await getAnneeAcademiqueCourante(departementId);
 
     const params = [anneeAcademiqueId, departementId];
     let dateCondition = '';
@@ -199,7 +202,7 @@ exports.getStatsDetaillees = async (req, res) => {
         
       FROM etudiant
       WHERE annee_academique_id = $1 
-        AND departement_id = $2
+        AND site_id = $2
         ${dateCondition}
     `, params);
 

@@ -76,7 +76,7 @@ exports.getPECEnAttente = async (req, res) => {
       JOIN scolarite s ON e.scolarite_id = s.id
       WHERE p.statut = 'en_attente'
         AND e.annee_academique_id = $1
-        AND e.departement_id = $2
+        AND e.site_id = $2
       ORDER BY p.date_demande DESC
     `;
 
@@ -149,7 +149,7 @@ exports.getPECTraitees = async (req, res) => {
       JOIN scolarite s ON e.scolarite_id = s.id
       WHERE p.statut IN ('valide', 'refuse')  
         AND e.annee_academique_id = $1
-        AND e.departement_id = $2
+        AND e.site_id = $2
       ORDER BY p.date_validation DESC, e.nom, e.prenoms
     `;
 
@@ -199,7 +199,7 @@ exports.getStatsPECtraitees = async (req, res) => {
       JOIN etudiant e ON p.etudiant_id = e.id
       WHERE p.statut IN ('valide', 'refuse')
         AND e.annee_academique_id = $1
-        AND e.departement_id = $2
+        AND e.site_id = $2
       GROUP BY p.type_pec
       ORDER BY count_type DESC
     `;

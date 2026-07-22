@@ -388,82 +388,91 @@ exports.genererPVBySemestre = async (req, res) => {
     }
 };
 
+// ✅ Extrait de genererPVByEtudiant : calcul pur (sans req/res), réutilisable par
+// d'autres modules (ex: Réinscription) pour le contrôle académique d'un étudiant.
+// Le handler HTTP ci-dessous ne fait plus qu'appeler cette fonction et sérialiser le résultat —
+// aucun changement de comportement ni de logique de calcul.
+exports.calculerResultatsAnnuelsEtudiant = async (etudiantId) => {
+    const etudiantQuery = `
+        SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
+               e.niveau_id, e.annee_academique_id, e.id_filiere,
+               s.statut_etudiant
+        FROM etudiant e
+        LEFT JOIN scolarite s ON s.id = e.scolarite_id
+        WHERE e.id = $1
+    `;
+    const etudiantResult = await db.query(etudiantQuery, [etudiantId]);
+    if (etudiantResult.rows.length === 0) {
+        const notFound = new Error(`Étudiant ${etudiantId} non trouvé`);
+        notFound.statusCode = 404;
+        throw notFound;
+    }
+    const etudiant = etudiantResult.rows[0];
+
+    const groupeQuery = `
+        SELECT g.id, g.nom, f.nom as filiere, f.sigle, tf.libelle as type_filiere
+        FROM groupe g
+        LEFT JOIN etudiant et ON et.groupe_id = g.id AND et.id = $1
+        LEFT JOIN filiere f ON f.id = et.id_filiere
+        LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+        WHERE g.id = $2
+        LIMIT 1
+    `;
+    const groupeResult = await db.query(groupeQuery, [etudiantId, etudiant.groupe_id]);
+    const groupeInfo = groupeResult.rows[0];
+
+    const typeTraitement = determinerTypeTraitement(groupeInfo.type_filiere, groupeInfo.nom);
+
+    // ✅ Résolution DIRECTE via la filière/niveau propre de l'étudiant (plus via son groupe)
+    const structureAcademique = await getStructureAcademiqueParFiliereNiveau(etudiant.id_filiere, etudiant.niveau_id, null);
+    const totalCreditsMaquette = calculerTotalCreditsMaquette(structureAcademique.ues);
+
+    const notes = await getNotesEtudiantAvecDetailsFonction(etudiantId, structureAcademique.maquette_id);
+
+    let uesAvecResultats = [];
+    for (const ue of structureAcademique.ues) {
+        const resultatsUE = await calculerResultatsUEAvecDetailsFonction(ue, notes, typeTraitement);
+        uesAvecResultats.push(resultatsUE);
+    }
+
+    const totaux = calculerTotauxFonction(uesAvecResultats, typeTraitement, totalCreditsMaquette);
+
+    const decision = determinerDecisionFonction(
+        totaux.creditsValides, totaux.creditsTotal, typeTraitement,
+        totaux.moyenneGenerale, totaux.uesAvecNotes
+    );
+
+    const aSoldeScolarite = (etudiant.statut_etudiant || '').toUpperCase() === 'SOLDE';
+    const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats);
+
+    return {
+        etudiant: { id: etudiant.id, matricule_iipea: etudiant.matricule_iipea, nom: etudiant.nom, prenoms: etudiant.prenoms, niveau_id: etudiant.niveau_id },
+        groupe: { id: groupeInfo.id, nom: groupeInfo.nom },
+        type_filiere: groupeInfo.type_filiere,
+        type_traitement: typeTraitement,
+        moyenne_generale: totaux.moyenneGenerale,
+        credits_valides: totaux.creditsValides,
+        credits_total: totaux.creditsTotal,
+        decision,
+        ues: uesAvecResultats,
+        ecue_a_reprendre: ecueAReprendre,
+        scolarite_soldee: aSoldeScolarite,
+        statut_etudiant: etudiant.statut_etudiant || 'NON_DEFINI',
+        date_generation: new Date().toISOString()
+    };
+};
+
 exports.genererPVByEtudiant = async (req, res) => {
     try {
         const { etudiantId } = req.params;
         console.log(`🎓 Génération PV pour étudiant: ${etudiantId}`);
-
-        const etudiantQuery = `
-            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
-                   e.niveau_id, e.annee_academique_id, e.id_filiere,
-                   s.statut_etudiant
-            FROM etudiant e
-            LEFT JOIN scolarite s ON s.id = e.scolarite_id
-            WHERE e.id = $1
-        `;
-        const etudiantResult = await db.query(etudiantQuery, [etudiantId]);
-        if (etudiantResult.rows.length === 0) {
-            return res.status(404).json({ success: false, error: `Étudiant ${etudiantId} non trouvé` });
-        }
-        const etudiant = etudiantResult.rows[0];
-
-        const groupeQuery = `
-            SELECT g.id, g.nom, f.nom as filiere, f.sigle, tf.libelle as type_filiere
-            FROM groupe g
-            LEFT JOIN etudiant et ON et.groupe_id = g.id AND et.id = $1
-            LEFT JOIN filiere f ON f.id = et.id_filiere
-            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-            WHERE g.id = $2
-            LIMIT 1
-        `;
-        const groupeResult = await db.query(groupeQuery, [etudiantId, etudiant.groupe_id]);
-        const groupeInfo = groupeResult.rows[0];
-
-        const typeTraitement = determinerTypeTraitement(groupeInfo.type_filiere, groupeInfo.nom);
-        console.log(`📌 Type de traitement: ${typeTraitement}`);
-
-        // ✅ Résolution DIRECTE via la filière/niveau propre de l'étudiant (plus via son groupe)
-        const structureAcademique = await getStructureAcademiqueParFiliereNiveau(etudiant.id_filiere, etudiant.niveau_id, null);
-        const totalCreditsMaquette = calculerTotalCreditsMaquette(structureAcademique.ues);
-
-        const notes = await getNotesEtudiantAvecDetailsFonction(etudiantId, structureAcademique.maquette_id);
-
-        let uesAvecResultats = [];
-        for (const ue of structureAcademique.ues) {
-            const resultatsUE = await calculerResultatsUEAvecDetailsFonction(ue, notes, typeTraitement);
-            uesAvecResultats.push(resultatsUE);
-        }
-
-        const totaux = calculerTotauxFonction(uesAvecResultats, typeTraitement, totalCreditsMaquette);
-
-        // ✅ UTILISER LA NOUVELLE FONCTION DE DÉCISION
-        const decision = determinerDecisionFonction(
-            totaux.creditsValides, totaux.creditsTotal, typeTraitement,
-            totaux.moyenneGenerale, totaux.uesAvecNotes
-        );
-
-        const aSoldeScolarite = (etudiant.statut_etudiant || '').toUpperCase() === 'SOLDE';
-        const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats);
-
+        const resultats = await exports.calculerResultatsAnnuelsEtudiant(etudiantId);
         console.log('✅ PV étudiant généré avec succès');
-        res.json({
-            success: true,
-            etudiant: { id: etudiant.id, matricule_iipea: etudiant.matricule_iipea, nom: etudiant.nom, prenoms: etudiant.prenoms, niveau_id: etudiant.niveau_id },
-            groupe: { id: groupeInfo.id, nom: groupeInfo.nom },
-            type_filiere: groupeInfo.type_filiere,
-            type_traitement: typeTraitement,
-            moyenne_generale: totaux.moyenneGenerale,
-            credits_valides: totaux.creditsValides,
-            credits_total: totaux.creditsTotal,
-            decision,
-            ues: uesAvecResultats,
-            ecue_a_reprendre: ecueAReprendre,
-            scolarite_soldee: aSoldeScolarite,
-            statut_etudiant: etudiant.statut_etudiant || 'NON_DEFINI',
-            date_generation: new Date().toISOString()
-        });
-
+        res.json({ success: true, ...resultats });
     } catch (error) {
+        if (error.statusCode === 404) {
+            return res.status(404).json({ success: false, error: error.message });
+        }
         console.error('❌ Erreur génération PV étudiant:', error.message);
         res.status(500).json({ success: false, error: 'Erreur lors de la génération du PV étudiant', details: error.message });
     }
@@ -2003,7 +2012,7 @@ exports.getStatsResultats = async (req, res) => {
         // Récupérer les filières, niveaux et années pour les filtres
         const filieresQuery = `SELECT id, nom, sigle, type_filiere_id FROM filiere ORDER BY nom`;
         const niveauxQuery = `SELECT id, libelle, filiere_id, prix_formation FROM niveau ORDER BY libelle`;
-        const anneeQuery = `SELECT id, annee, etat, departement_id FROM anneeacademique ORDER BY annee DESC`;
+        const anneeQuery = `SELECT id, annee FROM anneeacademique ORDER BY annee DESC`;
 
         const [filieresResult, niveauxResult, anneeResult] = await Promise.all([
             db.query(filieresQuery),

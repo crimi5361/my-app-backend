@@ -1,4 +1,5 @@
 const db = require('../config/db.config');
+const { affecterClasseEtGroupe } = require('../services/classeGroupe.service');
 
 exports.createPaiement = async (req, res) => {
   const client = await db.connect();
@@ -87,6 +88,11 @@ exports.createPaiement = async (req, res) => {
       );
     }
 
+    // Année académique courante de l'étudiant, tracée sur le paiement pour permettre de
+    // filtrer l'historique par année (les transitions d'année ne sont pas déductibles après coup).
+    const anneeResult = await client.query('SELECT annee_academique_id FROM etudiant WHERE id = $1', [etudiant_id]);
+    const anneeAcademiqueId = anneeResult.rows[0]?.annee_academique_id || null;
+
     // 2. Créer le reçu avec un numéro unique
     const numeroRecu = `RECU-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const recuQuery = `
@@ -106,8 +112,8 @@ exports.createPaiement = async (req, res) => {
     // 3. Enregistrement du paiement avec le reçu
     const paiementQuery = `
       INSERT INTO paiement (
-        montant, date_paiement, methode, effectue_par, etudiant_id, recu_id
-      ) VALUES ($1, $2, $3, $4, $5, $6) 
+        montant, date_paiement, methode, effectue_par, etudiant_id, recu_id, annee_academique_id
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING id
     `;
     const paiementResult = await client.query(paiementQuery, [
@@ -116,14 +122,17 @@ exports.createPaiement = async (req, res) => {
       methode,
       userId,
       etudiant_id,
-      recuId
+      recuId,
+      anneeAcademiqueId
     ]);
 
     // 4. Récupération des infos étudiant AVEC TYPE DE FILIERE
     const etudiantQuery = `
-     SELECT 
-        e.id, 
+     SELECT
+        e.id,
         e.curcus_id,
+        e.id_filiere,
+        e.niveau_id,
         c.type_parcours as cursus,
         f.nom as filiere, 
         f.sigle as filiere_sigle, 
@@ -212,81 +221,18 @@ exports.createPaiement = async (req, res) => {
 
     // 7. Gestion spécifique pour le premier paiement - AVEC CAPACITÉ DYNAMIQUE
     if (isPremierPaiement) {
-      const nomClasse = `${etudiant.filiere} ${etudiant.filiere_sigle} ${etudiant.niveau}`;
-      const descriptionClass = `${etudiant.filiere} ${etudiant.filiere_sigle} ${etudiant.niveau}  ${etudiant.cursus}`;
-      
-      // Créer ou trouver la classe
-      let classeResult = await client.query(
-        'SELECT id FROM classe WHERE nom = $1', [nomClasse]
-      );
-      
-      let classeId;
-      if (classeResult.rows.length > 0) {
-        classeId = classeResult.rows[0].id;
-      } else {
-        const newClasseResult = await client.query(
-          `INSERT INTO classe (nom, description) 
-           VALUES ($1, $2) RETURNING id`,
-          [nomClasse, `Classe pour ${descriptionClass}`]
-        );
-        classeId = newClasseResult.rows[0].id;
-      }
-
-      // Déterminer la capacité maximale selon le type de filière
-      let capaciteMax;
-      switch(etudiant.type_filiere) {
-        case 'Universitaire':
-        case 'Classique':
-          capaciteMax = 100;
-          break;
-        case 'Professionnelle':
-        case 'Technique':
-          capaciteMax = 50;
-          break;
-        default:
-          capaciteMax = 50; // Valeur par défaut
-      }
-
-      // Trouver le dernier groupe disponible pour cette classe
-      let groupeResult = await client.query(
-        `SELECT g.id, g.nom, COUNT(e.id) as count_etudiants
-         FROM groupe g 
-         LEFT JOIN etudiant e ON e.groupe_id = g.id
-         WHERE g.classe_id = $1 
-         GROUP BY g.id, g.nom, g.capacite_max
-         HAVING COUNT(e.id) < g.capacite_max
-         ORDER BY g.nom
-         LIMIT 1`,
-        [classeId]
-      );
-
-      let groupeId;
-      if (groupeResult.rows.length > 0) {
-        // Groupe avec de la place disponible trouvé
-        groupeId = groupeResult.rows[0].id;
-      } else {
-        // Aucun groupe avec de la place, créer un nouveau groupe
-        const countGroupesResult = await client.query(
-          `SELECT COUNT(*) as count_groupes FROM groupe WHERE classe_id = $1`,
-          [classeId]
-        );
-        
-        const numeroNouveauGroupe = parseInt(countGroupesResult.rows[0].count_groupes) + 1;
-        const nomGroupe = `${nomClasse} Groupe ${numeroNouveauGroupe}`;
-        
-        const newGroupe = await client.query(
-          `INSERT INTO groupe (nom, capacite_max, classe_id) 
-           VALUES ($1, $2, $3) RETURNING id`,
-          [nomGroupe, capaciteMax, classeId]
-        );
-        groupeId = newGroupe.rows[0].id;
-      }
-
-      // Assigner l'étudiant au groupe trouvé ou créé
-      await client.query(
-        `UPDATE etudiant SET groupe_id = $1, standing = 'Inscrit' WHERE id = $2`,
-        [groupeId, etudiant_id]
-      );
+      await affecterClasseEtGroupe(client, {
+        etudiantId: etudiant_id,
+        filiereNom: etudiant.filiere,
+        filiereSigle: etudiant.filiere_sigle,
+        niveauLibelle: etudiant.niveau,
+        cursus: etudiant.cursus,
+        typeFiliere: etudiant.type_filiere,
+        anneeAcademiqueId,
+        filiereId: etudiant.id_filiere,
+        niveauId: etudiant.niveau_id,
+      });
+      await client.query(`UPDATE etudiant SET standing = 'Inscrit' WHERE id = $1`, [etudiant_id]);
     }
 
     await client.query('COMMIT');
@@ -642,8 +588,11 @@ exports.getPaiementsByDepartement = async (req, res) => {
 
     // Vérifier que l'année académique existe
     const yearCheck = await db.query(
-      `SELECT id, annee, etat FROM anneeacademique WHERE id = $1`,
-      [anneeAcademiqueId]
+      `SELECT a.id, a.annee, s.etat
+       FROM anneeacademique a
+       LEFT JOIN anneeacademique_site s ON s.anneeacademique_id = a.id AND s.site_id = $2
+       WHERE a.id = $1`,
+      [anneeAcademiqueId, departementId]
     );
 
     if (yearCheck.rows.length === 0) {
@@ -707,12 +656,13 @@ exports.getPaiementsByDepartement = async (req, res) => {
         d.nom as nom_departement,
         u.nom as nom_utilisateur_effectue_par,
         a.annee as annee_academique,
-        a.etat as etat_annee
+        aas.etat as etat_annee
       FROM paiement p
       INNER JOIN recu r ON p.recu_id = r.id
       INNER JOIN etudiant e ON p.etudiant_id = e.id
-      INNER JOIN departement d ON e.departement_id = d.id
+      INNER JOIN site d ON e.site_id = d.id
       INNER JOIN anneeacademique a ON e.annee_academique_id = a.id
+      LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = d.id
       LEFT JOIN filiere f ON e.id_filiere = f.id
       LEFT JOIN niveau n ON e.niveau_id = n.id
       LEFT JOIN utilisateur u ON p.effectue_par::integer = u.id
@@ -726,7 +676,7 @@ exports.getPaiementsByDepartement = async (req, res) => {
       SELECT COUNT(*) 
       FROM paiement p
       INNER JOIN etudiant e ON p.etudiant_id = e.id
-      INNER JOIN departement d ON e.departement_id = d.id
+      INNER JOIN site d ON e.site_id = d.id
       INNER JOIN anneeacademique a ON e.annee_academique_id = a.id
       LEFT JOIN filiere f ON e.id_filiere = f.id
       LEFT JOIN niveau n ON e.niveau_id = n.id

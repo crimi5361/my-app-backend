@@ -5,8 +5,8 @@ exports.getEffectifsParFiliereNiveau = async (req, res) => {
   
   try {
     const { annee_id } = req.query;
-    // Récupérer l'ID du département de l'utilisateur connecté
-    const departement_id = req.user?.departement_id || req.headers.departement_id || localStorage.getItem("departement_id");
+    // Récupérer l'ID du site de l'utilisateur connecté
+    const departement_id = req.user?.departement_id || req.headers.departement_id;
 
     if (!departement_id) {
       return res.status(400).json({
@@ -28,7 +28,7 @@ exports.getEffectifsParFiliereNiveau = async (req, res) => {
       JOIN curcus c ON e.curcus_id = c.id
       JOIN anneeacademique aa ON e.annee_academique_id = aa.id
       WHERE aa.id = $1
-      AND e.departement_id = $2  -- FILTRE PAR DÉPARTEMENT
+      AND e.site_id = $2  -- FILTRE PAR SITE
       GROUP BY f.nom, f.sigle, n.libelle, c.type_parcours
       ORDER BY f.nom, n.libelle
     `;
@@ -41,7 +41,7 @@ exports.getEffectifsParFiliereNiveau = async (req, res) => {
       FROM etudiant e
       JOIN anneeacademique aa ON e.annee_academique_id = aa.id
       WHERE aa.id = $1
-      AND e.departement_id = $2  -- FILTRE PAR DÉPARTEMENT
+      AND e.site_id = $2  -- FILTRE PAR SITE
     `;
     
     const totalResult = await client.query(totalQuery, [annee_id || 1, departement_id]);
@@ -69,13 +69,15 @@ exports.getAnneesAcademiques = async (req, res) => {
   const client = await db.connect();
   
   try {
+    const departement_id = req.user?.departement_id;
     const query = `
-      SELECT id, annee, etat
-      FROM anneeacademique
-      ORDER BY annee DESC
+      SELECT a.id, a.annee, s.etat
+      FROM anneeacademique a
+      LEFT JOIN anneeacademique_site s ON s.anneeacademique_id = a.id AND s.site_id = $1
+      ORDER BY a.annee DESC
     `;
 
-    const result = await client.query(query);
+    const result = await client.query(query, [departement_id]);
 
     res.status(200).json({
       success: true,

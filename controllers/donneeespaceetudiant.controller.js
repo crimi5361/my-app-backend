@@ -11,7 +11,7 @@ exports.getStudentProfile = async (req, res) => {
       SELECT 
         e.*,
         a.annee as annee_academique,
-        a.etat as etat_annee,
+        aas.etat as etat_annee,
         n.libelle as niveau_libelle,
         n.prix_formation,
         n.type_filiere as type_filiere_niveau,
@@ -36,6 +36,7 @@ exports.getStudentProfile = async (req, res) => {
         s.prise_en_charge_id
       FROM etudiant e
       LEFT JOIN anneeacademique a ON e.annee_academique_id = a.id
+      LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
       LEFT JOIN niveau n ON e.niveau_id = n.id
       LEFT JOIN filiere f ON e.id_filiere = f.id
       LEFT JOIN typefiliere tf ON f.type_filiere_id = tf.id
@@ -125,7 +126,7 @@ exports.getStudentProfile = async (req, res) => {
         inscrit_par: studentData.inscrit_par
       },
       administration: {
-        departement_id: studentData.departement_id,
+        departement_id: studentData.site_id,
         matricule_iipea: studentData.matricule_iipea,
         ip_ministere: studentData.ip_ministere
       }

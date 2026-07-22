@@ -112,11 +112,47 @@ exports.getRecusByEtudiantId = async (req, res) => {
  * 
  * La liaison se fait via: etudiant.scolarite_id = scolarite.id
  */
+// ✅ Extrait, réutilisable (ex: module Réinscription) : calcul pur sans req/res.
+// Retourne null si l'étudiant n'a pas de ligne scolarite (comportement identique à l'ancien 404).
+exports.getSituationFinanciere = async (etudiantId) => {
+    const query = `
+        SELECT
+            s.id,
+            s.montant_scolarite,
+            s.scolarite_verse,
+            s.statut_etudiant,
+            s.scolarite_restante,
+            s.prise_en_charge_id,
+            e.id as etudiant_id,
+            e.matricule,
+            e.nom,
+            e.prenoms
+        FROM public.scolarite s
+        INNER JOIN public.etudiant e ON e.scolarite_id = s.id
+        WHERE e.id = $1
+        ORDER BY s.id DESC
+        LIMIT 1
+    `;
+    const result = await db.query(query, [etudiantId]);
+    if (result.rows.length === 0) return null;
+
+    const scolarite = result.rows[0];
+    const isSolde = (Number(scolarite.scolarite_restante) === 0)
+                    && scolarite.statut_etudiant?.toUpperCase() === 'SOLDE';
+
+    return {
+        is_solde: isSolde,
+        scolarite_restante: parseFloat(scolarite.scolarite_restante || 0),
+        statut_etudiant: scolarite.statut_etudiant,
+        montant_total: parseFloat(scolarite.montant_scolarite || 0),
+        montant_verse: parseFloat(scolarite.scolarite_verse || 0),
+    };
+};
+
 exports.getScolariteByEtudiantId = async (req, res) => {
     try {
         const { etudiant_id } = req.params;
 
-        // Vérifier que l'ID est fourni
         if (!etudiant_id) {
             return res.status(400).json({
                 success: false,
@@ -124,31 +160,9 @@ exports.getScolariteByEtudiantId = async (req, res) => {
             });
         }
 
-        // Requête avec jointure entre etudiant et scolarite
-        // La liaison se fait via etudiant.scolarite_id = scolarite.id
-        const query = `
-            SELECT 
-                s.id, 
-                s.montant_scolarite, 
-                s.scolarite_verse, 
-                s.statut_etudiant, 
-                s.scolarite_restante, 
-                s.prise_en_charge_id,
-                e.id as etudiant_id,
-                e.matricule,
-                e.nom,
-                e.prenoms
-            FROM public.scolarite s
-            INNER JOIN public.etudiant e ON e.scolarite_id = s.id
-            WHERE e.id = $1
-            ORDER BY s.id DESC
-            LIMIT 1
-        `;
+        const situation = await exports.getSituationFinanciere(etudiant_id);
 
-        const result = await db.query(query, [etudiant_id]);
-
-        // Si aucune scolarité trouvée
-        if (result.rows.length === 0) {
+        if (!situation) {
             return res.status(404).json({
                 success: false,
                 message: "Aucune information de scolarité trouvée pour cet étudiant",
@@ -158,22 +172,10 @@ exports.getScolariteByEtudiantId = async (req, res) => {
             });
         }
 
-        const scolarite = result.rows[0];
-
-        // Vérifier si la scolarité est soldée
-        // Condition: scolarite_restante = 0 ET statut_etudiant = 'SOLDE'
-        const isSolde = (Number(scolarite.scolarite_restante) === 0) 
-                        && scolarite.statut_etudiant?.toUpperCase() === 'SOLDE';
-
-        // Retourner la réponse
         return res.status(200).json({
             success: true,
-            is_solde: isSolde,
-            scolarite_restante: parseFloat(scolarite.scolarite_restante || 0),
-            statut_etudiant: scolarite.statut_etudiant,
-            montant_total: parseFloat(scolarite.montant_scolarite || 0),
-            montant_verse: parseFloat(scolarite.scolarite_verse || 0),
-            message: isSolde 
+            ...situation,
+            message: situation.is_solde
                 ? "La scolarité est soldée, l'étudiant peut déposer son mémoire"
                 : "La scolarité n'est pas soldée, l'étudiant ne peut pas déposer son mémoire"
         });

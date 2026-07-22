@@ -22,7 +22,7 @@ exports.getClasses = async (req, res) => {
             FROM classe c
             LEFT JOIN groupe g ON g.classe_id = c.id
             LEFT JOIN etudiant e ON e.groupe_id = g.id
-            WHERE e.departement_id = $1 OR $1 IS NULL
+            WHERE e.site_id = $1 OR $1 IS NULL
             GROUP BY c.id, c.nom, c.description
             ORDER BY c.nom
         `;
@@ -61,7 +61,7 @@ exports.getGroupesByClasse = async (req, res) => {
                 g.capacite_max,
                 COUNT(e.id) as effectif_actuel
             FROM groupe g
-            LEFT JOIN etudiant e ON e.groupe_id = g.id AND e.departement_id = $2
+            LEFT JOIN etudiant e ON e.groupe_id = g.id AND e.site_id = $2
             WHERE g.classe_id = $1
             GROUP BY g.id, g.nom, g.capacite_max
             ORDER BY g.nom
@@ -106,7 +106,7 @@ exports.getEtudiantsByGroupe = async (req, res) => {
                 COUNT(e.id) as effectif_total
             FROM groupe g
             JOIN classe c ON c.id = g.classe_id
-            LEFT JOIN etudiant e ON e.groupe_id = g.id AND e.departement_id = $2
+            LEFT JOIN etudiant e ON e.groupe_id = g.id AND e.site_id = $2
             WHERE g.id = $1
             GROUP BY g.id, g.nom, c.id, c.nom, c.description
         `;
@@ -142,7 +142,7 @@ exports.getEtudiantsByGroupe = async (req, res) => {
             LEFT JOIN curcus curs ON e.curcus_id = curs.id
             LEFT JOIN anneeacademique aa ON e.annee_academique_id = aa.id
             WHERE e.groupe_id = $1
-            AND e.departement_id = $2
+            AND e.site_id = $2
         `;
         
         const params = [groupe_id, departement_id];
@@ -185,17 +185,18 @@ exports.getAnneesAcademiques = async (req, res) => {
         const departement_id = req.user?.departement_id;
         
         const query = `
-            SELECT 
-                id, 
-                annee, 
-                etat
-            FROM anneeacademique
-            WHERE departement_id = $1
-            ORDER BY 
-                CASE WHEN etat = 'en cour' THEN 0 ELSE 1 END,
-                annee DESC
+            SELECT
+                a.id,
+                a.annee,
+                s.etat
+            FROM anneeacademique a
+            JOIN anneeacademique_site s ON s.anneeacademique_id = a.id
+            WHERE s.site_id = $1
+            ORDER BY
+                CASE WHEN s.etat = 'en cour' THEN 0 ELSE 1 END,
+                a.annee DESC
         `;
-        
+
         const result = await client.query(query, [departement_id]);
         
         res.status(200).json({
@@ -250,7 +251,7 @@ exports.getEtudiantDetails = async (req, res) => {
             LEFT JOIN niveau n ON e.niveau_id = n.id
             LEFT JOIN curcus curs ON e.curcus_id = curs.id
             LEFT JOIN anneeacademique aa ON e.annee_academique_id = aa.id
-            WHERE e.id = $1 AND e.departement_id = $2
+            WHERE e.id = $1 AND e.site_id = $2
         `;
         
         const result = await client.query(query, [etudiant_id, departement_id]);
@@ -295,22 +296,23 @@ exports.getCarteInitialData = async (req, res) => {
             FROM classe c
             LEFT JOIN groupe g ON g.classe_id = c.id
             LEFT JOIN etudiant e ON e.groupe_id = g.id
-            WHERE e.departement_id = $1
+            WHERE e.site_id = $1
             GROUP BY c.id, c.nom, c.description
             ORDER BY c.nom
         `;
-        
+
         const classesResult = await client.query(classesQuery, [departement_id]);
         
         const anneesQuery = `
-            SELECT id, annee, etat 
-            FROM anneeacademique 
-            WHERE departement_id = $1
-            ORDER BY 
-                CASE WHEN etat = 'en cour' THEN 0 ELSE 1 END,
-                annee DESC
+            SELECT a.id, a.annee, s.etat
+            FROM anneeacademique a
+            JOIN anneeacademique_site s ON s.anneeacademique_id = a.id
+            WHERE s.site_id = $1
+            ORDER BY
+                CASE WHEN s.etat = 'en cour' THEN 0 ELSE 1 END,
+                a.annee DESC
         `;
-        
+
         const anneesResult = await client.query(anneesQuery, [departement_id]);
         
         res.status(200).json({

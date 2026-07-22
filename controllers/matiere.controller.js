@@ -38,14 +38,18 @@ exports.createMatiere = async (req, res) => {
     
     const query = `
       INSERT INTO matiere (
-        nom, coefficient, ue_id, volume_horaire_cm, 
+        nom, coefficient, ue_id, volume_horaire_cm,
         taux_horaire_cm, volume_horaire_td, taux_horaire_td,
-        code_ecue
+        code_ecue, credits
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       RETURNING *
     `;
-    
+
+    // La colonne `credits` (integer, NOT NULL) n'a pas d'équivalent dédié dans le formulaire :
+    // partout ailleurs dans l'application (bulletins, PV, décisions ADMIS/AJOURNÉ/DÉROGÉ),
+    // c'est `coefficient` qui joue le rôle de "crédit" de la matière — on aligne donc credits
+    // dessus plutôt que d'introduire un second concept de crédit déconnecté des calculs réels.
     const values = [
       nom,
       coefficient,
@@ -54,7 +58,8 @@ exports.createMatiere = async (req, res) => {
       taux_horaire_cm,
       volume_horaire_td,
       taux_horaire_td,
-      code_ecue || null
+      code_ecue || null,
+      Math.round(Number(coefficient))
     ];
     
     const result = await db.query(query, values);
@@ -115,8 +120,9 @@ exports.updateMatiere = async (req, res) => {
           volume_horaire_cm = $4,
           taux_horaire_cm   = $5,
           volume_horaire_td = $6,
-          taux_horaire_td   = $7
-      WHERE id = $8
+          taux_horaire_td   = $7,
+          credits           = $8
+      WHERE id = $9
       RETURNING *
     `;
 
@@ -128,6 +134,7 @@ exports.updateMatiere = async (req, res) => {
       taux_horaire_cm,
       volume_horaire_td,
       taux_horaire_td,
+      Math.round(Number(coefficient)),
       id
     ]);
 

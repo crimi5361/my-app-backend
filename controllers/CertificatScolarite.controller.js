@@ -54,7 +54,7 @@ exports.getAllCertificat = async (req, res) => {
         -- Informations de l'année académique
         a.id as annee_academique_id,
         a.annee as annee_academique,
-        a.etat as annee_etat,
+        aas.etat as annee_etat,
         
         -- Informations du groupe
         g.id as groupe_id,
@@ -82,7 +82,8 @@ exports.getAllCertificat = async (req, res) => {
       LEFT JOIN filiere f ON e.id_filiere = f.id
       LEFT JOIN niveau n ON e.niveau_id = n.id
       LEFT JOIN anneeacademique a ON e.annee_academique_id = a.id
-      
+      LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
+
       -- Jointures optionnelles (un étudiant peut ne pas avoir de groupe ou documents)
       LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN classe c ON g.classe_id = c.id

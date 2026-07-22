@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fiche d'Inscription - <%= dossier.nom %> <%= dossier.prenoms %></title>
+    <style>
+        @page {
+            size: A4;
+            margin: 6mm;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Arial', sans-serif;
+            background: white;
+            color: #000;
+            font-size: 11px;
+            line-height: 1.25;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+
+        p { margin: 4px 0; }
+
+        .fiche-container {
+            width: 210mm;
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 6px 14px;
+            box-sizing: border-box;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            background: white;
+            position: relative;
+        }
+
+        .header-ministry { display: flex; justify-content: space-between; margin-bottom: 6px; }
+        .ministry-text { font-size: 8px; color: #003366; display: block; margin: 0; line-height: 1.15; }
+        .separator-bar { border-bottom: 2px solid #003366; margin: 6px 0 8px 0; }
+
+        .school-header { display: flex; justify-content: center; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+        .school-logo { height: 36px; width: auto; margin-right: 10px; }
+        .school-name { font-size: 13px; color: #003366; font-weight: bold; text-align: center; margin: 4px 0; }
+
+        .main-title-container { display: flex; justify-content: center; margin-bottom: 8px; }
+        .main-title { border: 1.5px solid #003366; border-radius: 8px; padding: 4px 24px; text-align: center; width: fit-content; background-color: #f0f8ff; }
+        .main-title-text { color: #003366; text-align: center; font-size: 15px; font-weight: bold; text-transform: uppercase; margin: 0; }
+
+        .statut-banner { text-align: center; margin: 4px 0 5px 0; padding: 3px; border-radius: 5px; font-size: 11px; font-weight: bold; }
+
+        .body-row { display: flex; gap: 16px; margin-bottom: 5px; }
+        .photo-col { flex: 0 0 85px; text-align: center; }
+        .student-photo { width: 80px; height: 100px; object-fit: cover; border: 1px solid #d9d9d9; border-radius: 4px; }
+        .photo-placeholder { width: 80px; height: 100px; border: 1px dashed #ccc; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #999; font-size: 9px; text-align: center; }
+        .info-col { flex: 1; }
+
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; }
+        .info-line { margin-bottom: 3px; font-size: 11px; }
+        .info-label { font-weight: bold; color: #003366; display: inline-block; min-width: 115px; }
+
+        h3.section-title { color: #003366; border-bottom: 1.5px solid #f0f8ff; padding-bottom: 1px; margin: 5px 0 3px 0; font-size: 12px; }
+
+        table.recap-table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+        table.recap-table th, table.recap-table td { border: 1px solid #d9d9d9; padding: 1.5px 7px; font-size: 10.5px; text-align: left; line-height: 1.1; }
+        table.recap-table th { background-color: #f0f8ff; color: #003366; }
+
+        .echeance-en_retard, .echeance-a_venir, .echeance-paye { white-space: nowrap; }
+        .echeance-en_retard { color: #cf1322; font-weight: bold; }
+        .echeance-a_venir { color: #666; }
+        .echeance-paye { color: #389e0d; font-weight: bold; }
+
+        .code-paiement-box { text-align: center; margin: 5px 0; padding: 4px; border: 1.5px dashed #003366; border-radius: 6px; }
+        .code-paiement-value { font-size: 15px; font-weight: bold; letter-spacing: 1.5px; color: #003366; margin: 2px 0; }
+
+        .footer-section { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 5px; flex-wrap: wrap; }
+        .signature-container { text-align: center; flex: 1; min-width: 140px; }
+        .signature-line { border-top: 1px solid #000; width: 170px; margin: 18px auto 0 auto; padding-top: 3px; }
+        .signature-text { font-weight: bold; font-size: 11px; }
+        .date-below-signature { display: block; margin-top: 3px; font-size: 10px; color: #444; }
+
+        .footer { margin-top: 5px; text-align: center; border-top: 1px solid #d9d9d9; padding-top: 3px; }
+        .footer-text { font-size: 7.5px; color: #666; display: block; margin-bottom: 1px; }
+
+        @media print {
+            body { margin: 0 !important; padding: 0 !important; font-size: 11px !important; }
+            .fiche-container { border: none !important; box-shadow: none !important; padding: 4mm !important; width: 100% !important; }
+        }
+    </style>
+</head>
+<body>
+    <div class="fiche-container">
+        <div class="header-ministry">
+            <div>
+                <span class="ministry-text">MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR</span>
+                <span class="ministry-text">ET DE LA RECHERCHE SCIENTIFIQUE</span>
+            </div>
+            <div style="text-align: right;">
+                <span class="ministry-text">RÉPUBLIQUE DE CÔTE D'IVOIRE</span>
+                <span class="ministry-text">Union - Discipline - Travail</span>
+            </div>
+        </div>
+        <div class="separator-bar"></div>
+        <div class="school-header">
+            <img src="/public/IIPEA-Photoroom.png" alt="Logo IIPEA" class="school-logo" onerror="this.style.display='none'">
+            <span class="school-name">Institut International Polytechnique des Elites d'Abidjan - (IIPEA)</span>
+        </div>
+        <div class="main-title-container">
+            <div class="main-title"><h1 class="main-title-text">Fiche d'Inscription</h1></div>
+        </div>
+
+        <% if (dossier.standing === 'Inscrit') { %>
+            <div class="statut-banner" style="background:#f6ffed; color:#389e0d; border:1px solid #b7eb8f;">Inscription finalisée — Paiement validé</div>
+        <% } else { %>
+            <div class="statut-banner" style="background:#e6f4ff; color:#0958d9; border:1px solid #91caff;">En attente de paiement</div>
+        <% } %>
+
+        <div class="body-row">
+            <div class="photo-col">
+                <% if (dossier.photo_url) { %>
+                    <img src="<%= dossier.photo_url %>" alt="Photo" class="student-photo" onerror="this.style.display='none'">
+                <% } else { %>
+                    <div class="photo-placeholder">Pas de photo</div>
+                <% } %>
+            </div>
+            <div class="info-col">
+                <div class="info-grid">
+                    <div class="info-line"><span class="info-label">Numéro étudiant IIPEA :</span><%= dossier.matricule_iipea %></div>
+                    <div class="info-line"><span class="info-label">Nom :</span><%= dossier.nom %></div>
+                    <div class="info-line"><span class="info-label">Prénoms :</span><%= dossier.prenoms %></div>
+                    <div class="info-line"><span class="info-label">Date de naissance :</span><%= dossier.date_naissance ? new Date(dossier.date_naissance).toLocaleDateString('fr-FR') : 'Non spécifié' %></div>
+                    <div class="info-line"><span class="info-label">École :</span><%= dossier.ecole_nom || 'Non spécifié' %></div>
+                    <div class="info-line"><span class="info-label">Filière :</span><%= dossier.filiere_nom || 'Non spécifié' %></div>
+                    <div class="info-line"><span class="info-label">Niveau d'inscription :</span><%= dossier.niveau_libelle %></div>
+                </div>
+            </div>
+        </div>
+
+        <h3 class="section-title">Formation</h3>
+        <table class="recap-table">
+            <tr><th>Filière</th><td><%= dossier.filiere_nom || 'Non spécifié' %></td></tr>
+            <tr><th>Niveau</th><td><%= dossier.niveau_libelle %></td></tr>
+            <tr><th>Année universitaire</th><td><%= dossier.annee || 'Non spécifié' %></td></tr>
+        </table>
+
+        <h3 class="section-title">Pièces justificatives</h3>
+        <table class="recap-table">
+            <thead><tr><th>Pièce</th><th>Statut</th></tr></thead>
+            <tbody>
+                <% piecesJustificatives.forEach(function(p) { %>
+                <tr>
+                    <td><%= p.libelle %><%= p.obligatoire ? ' *' : '' %></td>
+                    <td><%= p.fourni ? '☑ Fournie' : '☐ Non fournie' %></td>
+                </tr>
+                <% }) %>
+            </tbody>
+        </table>
+        <p style="font-size: 9px; color: #666; margin: 0 0 6px 0;">* Pièce obligatoire</p>
+
+        <h3 class="section-title">Modalités de paiement</h3>
+        <table class="recap-table">
+            <tr><th>Montant total de la scolarité</th><td><%= Number(echeancier.montant_total).toLocaleString('fr-FR') %> FCFA</td></tr>
+            <tr><th>Nombre de versements</th><td><%= echeancier.nombre_versements_prevu %></td></tr>
+            <tr><th>Montant payé</th><td><%= Number(echeancier.montant_verse).toLocaleString('fr-FR') %> FCFA</td></tr>
+            <tr><th>Reste à payer</th><td><%= Number(echeancier.reste_a_payer).toLocaleString('fr-FR') %> FCFA</td></tr>
+        </table>
+
+        <table class="recap-table">
+            <thead><tr><th>Versement</th><th>Montant</th><th>Date prévisionnelle</th><th>Statut</th></tr></thead>
+            <tbody>
+                <% echeancier.versements.forEach(function(v) { %>
+                <tr>
+                    <td>Versement <%= v.numero %></td>
+                    <td><%= Number(v.montant).toLocaleString('fr-FR') %> FCFA</td>
+                    <td><%= v.date %></td>
+                    <td class="echeance-<%= v.statut %>"><%= v.statut === 'paye' ? 'Payé' : (v.statut === 'en_retard' ? 'En retard' : 'À venir') %></td>
+                </tr>
+                <% }) %>
+            </tbody>
+        </table>
+
+        <% if (dossier.standing !== 'Inscrit') { %>
+            <div class="code-paiement-box">
+                <span style="font-size: 10px;">Code de paiement à présenter à la caisse</span>
+                <div class="code-paiement-value"><%= dossier.code_paiement %></div>
+                <span style="font-size: 9px; color: #666;">Ce code permet au caissier de retrouver automatiquement votre dossier.</span>
+            </div>
+            <p style="text-align: center; font-size: 10px; margin: 4px 0;">
+                <strong>Important :</strong> votre inscription ne sera définitive qu'après validation du paiement en caisse.
+            </p>
+        <% } else { %>
+            <p style="text-align: center; font-size: 10px; margin: 4px 0;">
+                Le paiement de ce dossier a été validé en caisse. L'inscription est officiellement finalisée.
+            </p>
+        <% } %>
+
+        <h3 class="section-title">Signatures</h3>
+        <div class="footer-section">
+            <div class="signature-container">
+                <div class="signature-line"><span class="signature-text">Signature de l'étudiant</span></div>
+            </div>
+            <div class="signature-container">
+                <div class="signature-line"><span class="signature-text">Service Scolarité</span></div>
+                <span class="date-below-signature">Fait à Abidjan, le <%= new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' }) %></span>
+            </div>
+        </div>
+
+        <div class="footer">
+            <span class="footer-text">Cocody Riviera 2, Route d'Attoban / Riviera Triangle /Abobo/ Yamoussoukro</span>
+            <span class="footer-text">Tel : +225 05 44 02 60 60 / +225 07 08 08 87 87</span>
+            <span class="footer-text">Email : secretariat@iipea.com | Copyright © IIPEA Tous droits réservés</span>
+        </div>
+    </div>
+</body>
+</html>

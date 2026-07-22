@@ -13,7 +13,7 @@ exports.getAllUsers = async (req, res) => {
             u.statut,
             u.code
             FROM public.utilisateur u
-            JOIN public.departement d ON u.departement_id = d.id
+            JOIN public.site d ON u.site_id = d.id
             JOIN public.role r ON u.role_id = r.id
 `);
     res.status(200).json(result.rows);
@@ -54,7 +54,7 @@ exports.createUser = async (req, res) => {
 
     // Insérer l'utilisateur avec le code
     const result = await db.query(
-      `INSERT INTO public.utilisateur (nom, email, mot_de_passe, departement_id, role_id, statut, code)
+      `INSERT INTO public.utilisateur (nom, email, mot_de_passe, site_id, role_id, statut, code)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
       [nom, email, hashedPassword, departement_id, role_id, 'active', code]
     );

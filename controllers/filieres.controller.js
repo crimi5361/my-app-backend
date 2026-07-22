@@ -1,35 +1,37 @@
 const db = require('../config/db.config');
+const { ensureTarifForNiveau } = require('./tarif.controller');
 
-// ─── Helper : Récupérer l'année académique en cours du département ────────────
-const getAnneeAcademiqueEnCours = async (departementId, client = null) => {
+// ─── Helper : Récupérer l'année académique en cours pour un site ──────────────
+const getAnneeAcademiqueEnCoursPourSite = async (siteId, client = null) => {
   const query = `
-    SELECT id FROM public.anneeacademique 
-    WHERE etat = 'en cour' AND departement_id = $1 
+    SELECT a.id FROM public.anneeacademique a
+    JOIN public.anneeacademique_site s ON s.anneeacademique_id = a.id
+    WHERE s.etat = 'en cour' AND s.site_id = $1
     LIMIT 1
   `;
   const result = client
-    ? await client.query(query, [departementId])
-    : await db.query(query, [departementId]);
+    ? await client.query(query, [siteId])
+    : await db.query(query, [siteId]);
 
   if (result.rows.length === 0) {
-    throw new Error('Aucune année académique en cours pour votre département.');
+    throw new Error('Aucune année académique en cours pour votre site.');
   }
   return result.rows[0].id;
 };
 
-// ─── Helper : Récupérer le département de l'utilisateur ──────────────────────
-const getDepartementFromUser = (req) => {
+// ─── Helper : Récupérer le site de l'utilisateur ──────────────────────────────
+const getSiteFromUser = (req) => {
   if (!req.user) throw new Error('Utilisateur non authentifié.');
-  const departementId = req.user.departement_id;
-  if (!departementId) throw new Error('Utilisateur non rattaché à un département.');
-  return departementId;
+  const siteId = req.user.departement_id;
+  if (!siteId) throw new Error('Utilisateur non rattaché à un site.');
+  return siteId;
 };
 
 // ─── GET toutes les filières (pour les selects) ───────────────────────────────
 exports.getAllFilieres = async (req, res) => {
   try {
-    const departementId = getDepartementFromUser(req);
-    const anneeAcademiqueId = await getAnneeAcademiqueEnCours(departementId);
+    const siteId = getSiteFromUser(req);
+    const anneeAcademiqueId = await getAnneeAcademiqueEnCoursPourSite(siteId);
 
     const result = await db.query(`
       SELECT DISTINCT
@@ -37,15 +39,16 @@ exports.getAllFilieres = async (req, res) => {
         f.nom,
         f.sigle,
         f.type_filiere_id,
+        f.departement_id,
         tf.libelle     AS typefiliere_libelle,
         tf.description AS typefiliere_description
       FROM public.filiere f
       JOIN public.typefiliere tf ON f.type_filiere_id = tf.id
       JOIN public.niveau n       ON n.filiere_id = f.id
       WHERE n.anneeacademique_id = $1
-        AND n.departement_id = $2
+        AND n.site_id = $2
       ORDER BY f.nom
-    `, [anneeAcademiqueId, departementId]);
+    `, [anneeAcademiqueId, siteId]);
 
     res.status(200).json(result.rows);
   } catch (error) {
@@ -57,14 +60,15 @@ exports.getAllFilieres = async (req, res) => {
 // ─── GET filières pour le tableau ────────────────────────────────────────────
 exports.getAllFilieresTable = async (req, res) => {
   try {
-    const departementId = getDepartementFromUser(req);
-    const anneeAcademiqueId = await getAnneeAcademiqueEnCours(departementId);
+    const siteId = getSiteFromUser(req);
+    const anneeAcademiqueId = await getAnneeAcademiqueEnCoursPourSite(siteId);
 
     const result = await db.query(`
       SELECT
         f.id,
         f.nom,
         f.sigle,
+        f.departement_id,
         tf.id           AS typefiliere_id,
         tf.libelle      AS typefiliere_libelle,
         tf.description  AS typefiliere_description,
@@ -83,16 +87,16 @@ exports.getAllFilieresTable = async (req, res) => {
       LEFT JOIN public.niveau n
         ON n.filiere_id = f.id
         AND n.anneeacademique_id = $1
-        AND n.departement_id = $2
+        AND n.site_id = $2
       WHERE EXISTS (
         SELECT 1 FROM public.niveau n2
         WHERE n2.filiere_id = f.id
           AND n2.anneeacademique_id = $1
-          AND n2.departement_id = $2
+          AND n2.site_id = $2
       )
-      GROUP BY f.id, f.nom, f.sigle, tf.id, tf.libelle, tf.description
+      GROUP BY f.id, f.nom, f.sigle, f.departement_id, tf.id, tf.libelle, tf.description
       ORDER BY f.nom
-    `, [anneeAcademiqueId, departementId]);
+    `, [anneeAcademiqueId, siteId]);
 
     res.status(200).json(result.rows);
   } catch (error) {
@@ -103,7 +107,7 @@ exports.getAllFilieresTable = async (req, res) => {
 
 // ─── POST créer une filière AVEC ses niveaux ─────────────────────────────────
 exports.createFiliere = async (req, res) => {
-  const { nom, sigle, type_filiere_id, niveaux } = req.body;
+  const { nom, sigle, type_filiere_id, departement_id, niveaux } = req.body;
 
   if (!nom || !sigle || !type_filiere_id) {
     return res.status(400).json({ message: 'Les champs nom, sigle et type_filiere_id sont requis.' });
@@ -116,48 +120,51 @@ exports.createFiliere = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const departementId = getDepartementFromUser(req);
-    const anneeAcademiqueId = await getAnneeAcademiqueEnCours(departementId, client);
+    const siteId = getSiteFromUser(req);
+    const anneeAcademiqueId = await getAnneeAcademiqueEnCoursPourSite(siteId, client);
 
     // Vérifier doublon
     const existing = await client.query(`
       SELECT f.id FROM public.filiere f
       JOIN public.niveau n ON n.filiere_id = f.id
       WHERE f.nom = $1
-        AND n.departement_id = $2
+        AND n.site_id = $2
         AND n.anneeacademique_id = $3
       LIMIT 1
-    `, [nom, departementId, anneeAcademiqueId]);
+    `, [nom, siteId, anneeAcademiqueId]);
 
     if (existing.rows.length > 0) {
       await client.query('ROLLBACK');
-      return res.status(409).json({ message: 'Cette filière existe déjà pour votre département cette année.' });
+      return res.status(409).json({ message: 'Cette filière existe déjà pour votre site cette année.' });
     }
 
-    // Insérer la filière
+    // Insérer la filière (departement_id = département académique, optionnel tant que le mapping métier n'est pas fourni)
     const filiereResult = await client.query(`
-      INSERT INTO public.filiere (nom, sigle, type_filiere_id)
-      VALUES ($1, $2, $3)
-      RETURNING id, nom, sigle, type_filiere_id
-    `, [nom, sigle, type_filiere_id]);
+      INSERT INTO public.filiere (nom, sigle, type_filiere_id, departement_id)
+      VALUES ($1, $2, $3, $4)
+      RETURNING id, nom, sigle, type_filiere_id, departement_id
+    `, [nom, sigle, type_filiere_id, departement_id || null]);
 
     const filiere = filiereResult.rows[0];
 
-    // Insérer les niveaux
+    // Insérer les niveaux + leur tarif (montant Affecté standard + montant Non affecté
+    // paramétré ici via prix_formation, sauf niveaux toujours-non-affectés à montant fixe)
     const niveauxInseres = [];
     for (const niveau of niveaux) {
       const niveauResult = await client.query(`
-        INSERT INTO public.niveau (libelle, prix_formation, filiere_id, departement_id, anneeacademique_id)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO public.niveau (libelle, prix_formation, filiere_id, site_id, anneeacademique_id, type_filiere)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id, libelle, prix_formation, filiere_id
-      `, [niveau.libelle, niveau.prix_formation, filiere.id, departementId, anneeAcademiqueId]);
-      niveauxInseres.push(niveauResult.rows[0]);
+      `, [niveau.libelle, niveau.prix_formation, filiere.id, siteId, anneeAcademiqueId, String(type_filiere_id)]);
+      const niveauCree = niveauResult.rows[0];
+      await ensureTarifForNiveau(niveauCree.id, niveauCree.libelle, niveauCree.prix_formation, client);
+      niveauxInseres.push(niveauCree);
     }
 
     await client.query('COMMIT');
     res.status(201).json({
       message: 'Filière et niveaux créés avec succès.',
-      filiere: { ...filiere, niveaux: niveauxInseres, departement_id: departementId, annee_academique_id: anneeAcademiqueId }
+      filiere: { ...filiere, niveaux: niveauxInseres, departement_id_site: siteId, annee_academique_id: anneeAcademiqueId }
     });
 
   } catch (error) {
@@ -172,7 +179,7 @@ exports.createFiliere = async (req, res) => {
 // ─── PUT modifier une filière ─────────────────────────────────────────────────
 exports.updateFiliere = async (req, res) => {
   const { id } = req.params;
-  const { nom, sigle, type_filiere_id, niveaux } = req.body;
+  const { nom, sigle, type_filiere_id, departement_id, niveaux } = req.body;
 
   if (!nom || !sigle || !type_filiere_id) {
     return res.status(400).json({ message: 'Les champs nom, sigle et type_filiere_id sont requis.' });
@@ -182,18 +189,18 @@ exports.updateFiliere = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const departementId = getDepartementFromUser(req);
-    const anneeAcademiqueId = await getAnneeAcademiqueEnCours(departementId, client);
+    const siteId = getSiteFromUser(req);
+    const anneeAcademiqueId = await getAnneeAcademiqueEnCoursPourSite(siteId, client);
 
-    // Vérifier que la filière existe pour ce département/année
+    // Vérifier que la filière existe pour ce site/année
     const check = await client.query(`
       SELECT f.id FROM public.filiere f
       JOIN public.niveau n ON n.filiere_id = f.id
       WHERE f.id = $1
-        AND n.departement_id = $2
+        AND n.site_id = $2
         AND n.anneeacademique_id = $3
       LIMIT 1
-    `, [id, departementId, anneeAcademiqueId]);
+    `, [id, siteId, anneeAcademiqueId]);
 
     if (check.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -202,23 +209,53 @@ exports.updateFiliere = async (req, res) => {
 
     // Mettre à jour
     await client.query(`
-      UPDATE public.filiere SET nom = $1, sigle = $2, type_filiere_id = $3 WHERE id = $4
-    `, [nom, sigle, type_filiere_id, id]);
+      UPDATE public.filiere SET nom = $1, sigle = $2, type_filiere_id = $3, departement_id = COALESCE($4, departement_id) WHERE id = $5
+    `, [nom, sigle, type_filiere_id, departement_id || null, id]);
 
-    // Remplacer les niveaux
+    // Les niveaux sont entièrement recréés (nouveaux id) à chaque modification de filière.
+    // On mémorise d'abord quelles maquettes pointaient sur quel libellé de niveau, pour
+    // les rebrancher sur le nouveau niveau de même libellé une fois recréé — sinon
+    // maquette.niveau_id se retrouve orphelin (pas de FK dessus, donc pas d'erreur, mais
+    // niveau_libelle devient null partout où la maquette est affichée).
+    const maquettesAReassocier = await client.query(`
+      SELECT m.id AS maquette_id, n.libelle
+      FROM public.maquette m
+      JOIN public.niveau n ON n.id = m.niveau_id
+      WHERE n.filiere_id = $1 AND n.site_id = $2 AND n.anneeacademique_id = $3
+    `, [id, siteId, anneeAcademiqueId]);
+
+    // Remplacer les niveaux — supprimer d'abord leurs tarifs (sinon la contrainte de clé
+    // étrangère tarif_niveau_id_fkey bloque la suppression des niveaux qui en ont un)
+    await client.query(`
+      DELETE FROM public.tarif
+      WHERE niveau_id IN (
+        SELECT id FROM public.niveau WHERE filiere_id = $1 AND site_id = $2 AND anneeacademique_id = $3
+      )
+    `, [id, siteId, anneeAcademiqueId]);
     await client.query(`
       DELETE FROM public.niveau
-      WHERE filiere_id = $1 AND departement_id = $2 AND anneeacademique_id = $3
-    `, [id, departementId, anneeAcademiqueId]);
+      WHERE filiere_id = $1 AND site_id = $2 AND anneeacademique_id = $3
+    `, [id, siteId, anneeAcademiqueId]);
 
     const niveauxInseres = [];
     for (const niveau of niveaux || []) {
       const r = await client.query(`
-        INSERT INTO public.niveau (libelle, prix_formation, filiere_id, departement_id, anneeacademique_id)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO public.niveau (libelle, prix_formation, filiere_id, site_id, anneeacademique_id, type_filiere)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING id, libelle, prix_formation, filiere_id
-      `, [niveau.libelle, niveau.prix_formation, id, departementId, anneeAcademiqueId]);
-      niveauxInseres.push(r.rows[0]);
+      `, [niveau.libelle, niveau.prix_formation, id, siteId, anneeAcademiqueId, String(type_filiere_id)]);
+      const niveauCree = r.rows[0];
+      await ensureTarifForNiveau(niveauCree.id, niveauCree.libelle, niveauCree.prix_formation, client);
+
+      // Rebrancher les maquettes qui pointaient sur l'ancien niveau de même libellé
+      const aReassocier = maquettesAReassocier.rows.filter(m => m.libelle === niveauCree.libelle);
+      if (aReassocier.length > 0) {
+        await client.query(
+          `UPDATE public.maquette SET niveau_id = $1 WHERE id = ANY($2::int[])`,
+          [niveauCree.id, aReassocier.map(m => m.maquette_id)]
+        );
+      }
+      niveauxInseres.push(niveauCree);
     }
 
     await client.query('COMMIT');
@@ -244,14 +281,22 @@ exports.deleteFiliere = async (req, res) => {
   try {
     await client.query('BEGIN');
 
-    const departementId = getDepartementFromUser(req);
-    const anneeAcademiqueId = await getAnneeAcademiqueEnCours(departementId, client);
+    const siteId = getSiteFromUser(req);
+    const anneeAcademiqueId = await getAnneeAcademiqueEnCoursPourSite(siteId, client);
+
+    // Supprimer d'abord les tarifs des niveaux visés (sinon tarif_niveau_id_fkey bloque)
+    await client.query(`
+      DELETE FROM public.tarif
+      WHERE niveau_id IN (
+        SELECT id FROM public.niveau WHERE filiere_id = $1 AND anneeacademique_id = $2 AND site_id = $3
+      )
+    `, [id, anneeAcademiqueId, siteId]);
 
     const deleteResult = await client.query(`
       DELETE FROM public.niveau
-      WHERE filiere_id = $1 AND anneeacademique_id = $2 AND departement_id = $3
+      WHERE filiere_id = $1 AND anneeacademique_id = $2 AND site_id = $3
       RETURNING id
-    `, [id, anneeAcademiqueId, departementId]);
+    `, [id, anneeAcademiqueId, siteId]);
 
     if (deleteResult.rowCount === 0) {
       await client.query('ROLLBACK');

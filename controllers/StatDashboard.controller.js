@@ -12,7 +12,7 @@ exports.getDashboardStats = async (req, res) => {
     const nbEtudiants = await db.query(`
       SELECT COUNT(*) AS total
       FROM etudiant
-      WHERE annee_academique_id = $1 AND departement_id = $2 AND standing = 'Inscrit'
+      WHERE annee_academique_id = $1 AND site_id = $2 AND standing = 'Inscrit'
     `, [anneeAcademiqueId, departementId]);
     results.totalEtudiants = parseInt(nbEtudiants.rows[0].total);
 
@@ -20,7 +20,7 @@ exports.getDashboardStats = async (req, res) => {
     const repartitionStatut = await db.query(`
       SELECT statut_scolaire, COUNT(*) AS total
       FROM etudiant
-      WHERE annee_academique_id = $1 AND departement_id = $2 AND standing = 'Inscrit'
+      WHERE annee_academique_id = $1 AND site_id = $2 AND standing = 'Inscrit'
       GROUP BY statut_scolaire
       ORDER BY statut_scolaire
     `, [anneeAcademiqueId, departementId]);
@@ -32,7 +32,7 @@ exports.getDashboardStats = async (req, res) => {
     const enAttente = await db.query(`
       SELECT COUNT(*) AS total
       FROM etudiant
-      WHERE annee_academique_id = $1 AND departement_id = $2 AND standing = 'en attente'
+      WHERE annee_academique_id = $1 AND site_id = $2 AND standing = 'en attente'
     `, [anneeAcademiqueId, departementId]);
     results.totalEnAttente = parseInt(enAttente.rows[0].total);
 // 3. Montant total scolarité
@@ -41,7 +41,7 @@ const scolariteTotale = await db.query(`
   FROM etudiant e
   JOIN scolarite s ON s.id = e.scolarite_id
   WHERE e.annee_academique_id = $1 
-    AND e.departement_id = $2 
+    AND e.site_id = $2 
     AND e.standing = 'Inscrit'
 `, [anneeAcademiqueId, departementId]);
 
@@ -54,7 +54,7 @@ const scolariteVersee = await db.query(`
   FROM paiement p
   JOIN etudiant e ON e.id = p.etudiant_id
   WHERE e.annee_academique_id = $1 
-    AND e.departement_id = $2 
+    AND e.site_id = $2 
     AND e.standing = 'Inscrit'
 `, [anneeAcademiqueId, departementId]);
 
@@ -67,7 +67,7 @@ const totalReduction = await db.query(`
   FROM prise_en_charge r
   JOIN etudiant e ON r.etudiant_id = e.id
   WHERE e.annee_academique_id = $1 
-    AND e.departement_id = $2 
+    AND e.site_id = $2 
     AND e.standing = 'Inscrit' 
     AND r.statut = 'valide'
 `, [anneeAcademiqueId, departementId]);
@@ -81,7 +81,7 @@ const totalRestant = await db.query(`
   FROM etudiant e
   JOIN scolarite s ON s.id = e.scolarite_id
   WHERE e.annee_academique_id = $1 
-    AND e.departement_id = $2 
+    AND e.site_id = $2 
     AND e.standing = 'Inscrit'
 `, [anneeAcademiqueId, departementId]);
 
@@ -93,7 +93,7 @@ results.totalRestant = parseFloat(totalRestant.rows[0].total);
       FROM etudiant e
       JOIN groupe g ON e.groupe_id = g.id
       JOIN classe c ON g.classe_id = c.id
-      WHERE e.annee_academique_id = $1 AND e.departement_id = $2 AND e.standing = 'Inscrit'
+      WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
     `, [anneeAcademiqueId, departementId]);
     results.totalClasses = parseInt(nbClasses.rows[0].total_classes);
 
@@ -102,7 +102,7 @@ results.totalRestant = parseFloat(totalRestant.rows[0].total);
       SELECT COALESCE(SUM(k.montant), 0) AS total
       FROM kit k
       JOIN etudiant e ON k.etudiant_id = e.id
-      WHERE e.annee_academique_id = $1 AND e.departement_id = $2 AND e.standing = 'Inscrit' AND k.deposer = true
+      WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit' AND k.deposer = true
     `, [anneeAcademiqueId, departementId]);
     results.totalKits = parseFloat(totalKits.rows[0].total);
 
@@ -111,7 +111,7 @@ results.totalRestant = parseFloat(totalRestant.rows[0].total);
       SELECT COUNT(*) AS total
       FROM kit k
       JOIN etudiant e ON k.etudiant_id = e.id
-      WHERE e.annee_academique_id = $1 AND e.departement_id = $2 AND e.standing = 'Inscrit' AND k.deposer = true
+      WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit' AND k.deposer = true
     `, [anneeAcademiqueId, departementId]);
     results.nbKits = parseInt(nbKits.rows[0].total);
 
@@ -121,7 +121,7 @@ results.totalRestant = parseFloat(totalRestant.rows[0].total);
       FROM prise_en_charge r
       JOIN etudiant e ON r.etudiant_id = e.id
       WHERE e.annee_academique_id = $1 
-        AND e.departement_id = $2 
+        AND e.site_id = $2 
         AND e.standing = 'Inscrit' 
         AND r.statut = 'valide'
     `, [anneeAcademiqueId, departementId]);
@@ -132,7 +132,7 @@ results.totalRestant = parseFloat(totalRestant.rows[0].total);
       SELECT f.nom AS filiere, COUNT(e.id) AS total
       FROM etudiant e
       JOIN filiere f ON e.id_filiere = f.id
-      WHERE e.annee_academique_id = $1 AND e.departement_id = $2 AND e.standing = 'Inscrit'
+      WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
       GROUP BY f.nom
       ORDER BY f.nom
     `, [anneeAcademiqueId, departementId]);
@@ -143,7 +143,7 @@ results.totalRestant = parseFloat(totalRestant.rows[0].total);
       SELECT c.type_parcours AS curcus, COUNT(e.id) AS total
       FROM etudiant e
       JOIN curcus c ON e.curcus_id = c.id
-      WHERE e.annee_academique_id = $1 AND e.departement_id = $2 AND e.standing = 'Inscrit'
+      WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
       GROUP BY c.type_parcours
       ORDER BY c.type_parcours
     `, [anneeAcademiqueId, departementId]);
@@ -153,7 +153,7 @@ results.totalRestant = parseFloat(totalRestant.rows[0].total);
     const repartitionStanding = await db.query(`
       SELECT standing, COUNT(*) AS total
       FROM etudiant
-      WHERE annee_academique_id = $1 AND departement_id = $2
+      WHERE annee_academique_id = $1 AND site_id = $2
       GROUP BY standing
       ORDER BY standing
     `, [anneeAcademiqueId, departementId]);

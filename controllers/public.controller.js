@@ -20,26 +20,27 @@ exports.getListeClassesPublic = async (req, res) => {
         c.nom,
         c.description,
         aa.annee as annee_academique,
-        aa.etat as annee_etat,
+        aas.etat as annee_etat,
         COUNT(DISTINCT g.id) as nombre_groupes,
         COUNT(DISTINCT e.id) as effectif_total,
-        (SELECT f2.nom FROM filiere f2 
-         JOIN etudiant e2 ON e2.id_filiere = f2.id 
-         WHERE e2.groupe_id IN (SELECT g2.id FROM groupe g2 WHERE g2.classe_id = c.id) 
+        (SELECT f2.nom FROM filiere f2
+         JOIN etudiant e2 ON e2.id_filiere = f2.id
+         WHERE e2.groupe_id IN (SELECT g2.id FROM groupe g2 WHERE g2.classe_id = c.id)
          LIMIT 1) as filiere,
-        (SELECT n2.libelle FROM niveau n2 
-         JOIN etudiant e2 ON e2.niveau_id = n2.id 
-         WHERE e2.groupe_id IN (SELECT g2.id FROM groupe g2 WHERE g2.classe_id = c.id) 
+        (SELECT n2.libelle FROM niveau n2
+         JOIN etudiant e2 ON e2.niveau_id = n2.id
+         WHERE e2.groupe_id IN (SELECT g2.id FROM groupe g2 WHERE g2.classe_id = c.id)
          LIMIT 1) as niveau,
         d.nom as departement
       FROM classe c
       LEFT JOIN groupe g ON g.classe_id = c.id
       LEFT JOIN etudiant e ON e.groupe_id = g.id
       LEFT JOIN anneeacademique aa ON e.annee_academique_id = aa.id
-      LEFT JOIN departement d ON e.departement_id = d.id
+      LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = aa.id AND aas.site_id = $2
+      LEFT JOIN site d ON e.site_id = d.id
       WHERE ($1::int IS NULL OR aa.id = $1)
-      AND e.departement_id = $2
-      GROUP BY c.id, c.nom, c.description, aa.annee, aa.etat, d.nom
+      AND e.site_id = $2
+      GROUP BY c.id, c.nom, c.description, aa.annee, aas.etat, d.nom
       ORDER BY c.nom
     `;
 
@@ -74,14 +75,14 @@ exports.getDetailClassePublic = async (req, res) => {
         c.nom,
         c.description,
         aa.annee as annee_academique,
-        aa.etat as annee_etat,
-        (SELECT f2.nom FROM filiere f2 
-         JOIN etudiant e2 ON e2.id_filiere = f2.id 
-         JOIN groupe g2 ON e2.groupe_id = g2.id 
+        (SELECT etat FROM anneeacademique_site WHERE anneeacademique_id = aa.id ORDER BY (etat = 'en cour') DESC LIMIT 1) as annee_etat,
+        (SELECT f2.nom FROM filiere f2
+         JOIN etudiant e2 ON e2.id_filiere = f2.id
+         JOIN groupe g2 ON e2.groupe_id = g2.id
          WHERE g2.classe_id = c.id LIMIT 1) as filiere,
-        (SELECT n2.libelle FROM niveau n2 
-         JOIN etudiant e2 ON e2.niveau_id = n2.id 
-         JOIN groupe g2 ON e2.groupe_id = g2.id 
+        (SELECT n2.libelle FROM niveau n2
+         JOIN etudiant e2 ON e2.niveau_id = n2.id
+         JOIN groupe g2 ON e2.groupe_id = g2.id
          WHERE g2.classe_id = c.id LIMIT 1) as niveau,
         COUNT(DISTINCT e.id) as effectif_total,
         g.id as groupe_id,
@@ -94,7 +95,7 @@ exports.getDetailClassePublic = async (req, res) => {
       LEFT JOIN etudiant e_g ON e_g.groupe_id = g.id
       LEFT JOIN anneeacademique aa ON e.annee_academique_id = aa.id
       WHERE c.id = $1
-      GROUP BY c.id, c.nom, c.description, aa.annee, aa.etat, g.id, g.nom, g.capacite_max
+      GROUP BY c.id, c.nom, c.description, aa.id, aa.annee, g.id, g.nom, g.capacite_max
       ORDER BY g.nom
     `;
 
@@ -234,12 +235,15 @@ exports.getDetailGroupePublic = async (req, res) => {
 
 exports.getPublicAnneesAcademiques = async (req, res) => {
   const client = await db.connect();
-  
+
   try {
     const query = `
-      SELECT id, annee, etat
-      FROM anneeacademique
-      ORDER BY annee DESC
+      SELECT
+        a.id,
+        a.annee,
+        (SELECT etat FROM anneeacademique_site WHERE anneeacademique_id = a.id ORDER BY (etat = 'en cour') DESC LIMIT 1) as etat
+      FROM anneeacademique a
+      ORDER BY a.annee DESC
     `;
 
     const result = await client.query(query);

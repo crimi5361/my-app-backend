@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapport de clôture de caisse — <%= rapport.session.caisse_libelle %></title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Arial', sans-serif;
+            background: white;
+            color: #000;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+        .rapport-container {
+            width: 210mm;
+            min-height: 297mm;
+            margin: 0 auto;
+            padding: 30px;
+            box-sizing: border-box;
+            border: 2px solid #d9d9d9;
+        }
+        .header-ministry { display: flex; justify-content: space-between; margin-bottom: 15px; }
+        .ministry-text { font-size: 10px; color: #003366; display: block; margin: 0; line-height: 1.2; }
+        .separator-bar { border-bottom: 3px solid #003366; margin: 15px 0 20px 0; }
+        .school-header { display: flex; justify-content: center; align-items: center; margin-bottom: 20px; }
+        .school-logo { height: 60px; width: auto; margin-right: 15px; }
+        .school-name { font-size: 16px; color: #003366; font-weight: bold; text-align: center; margin: 10px 0; }
+        .main-title-container { display: flex; justify-content: center; margin-bottom: 25px; }
+        .main-title { border: 2px solid #003366; border-radius: 10px; padding: 10px 40px; text-align: center; background-color: #f0f8ff; }
+        .main-title-text { color: #003366; text-align: center; font-size: 20px; font-weight: bold; text-transform: uppercase; margin: 0; }
+        .info-section { margin-bottom: 20px; }
+        .info-line { margin-bottom: 8px; }
+        .info-label { font-weight: bold; display: inline-block; min-width: 220px; }
+        table.recap-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+        table.recap-table th, table.recap-table td { border: 1px solid #d9d9d9; padding: 10px; font-size: 13px; text-align: left; }
+        table.recap-table th { background-color: #f0f8ff; color: #003366; }
+        .total-box { text-align: center; margin: 25px 0; padding: 20px; border: 2px dashed #003366; border-radius: 8px; }
+        .total-value { font-size: 26px; font-weight: bold; color: #003366; margin: 8px 0; }
+        .footer { margin-top: 30px; text-align: center; border-top: 1px solid #d9d9d9; padding-top: 15px; }
+        .footer-text { font-size: 11px; color: #666; display: block; margin-bottom: 3px; }
+        @media print {
+            body { margin: 5px !important; padding: 5px !important; }
+            .rapport-container { border: none !important; padding: 15px !important; width: 90% !important; min-height: auto !important; }
+        }
+    </style>
+</head>
+<body>
+    <div class="rapport-container">
+        <div class="header-ministry">
+            <div>
+                <span class="ministry-text">MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR</span>
+                <span class="ministry-text">ET DE LA RECHERCHE SCIENTIFIQUE</span>
+            </div>
+            <div style="text-align: right;">
+                <span class="ministry-text">RÉPUBLIQUE DE CÔTE D'IVOIRE</span>
+                <span class="ministry-text">Union - Discipline - Travail</span>
+            </div>
+        </div>
+        <div class="separator-bar"></div>
+        <div class="school-header">
+            <img src="/public/IIPEA-Photoroom.png" alt="Logo IIPEA" class="school-logo" onerror="this.style.display='none'">
+            <span class="school-name">Institut International Polytechnique des Elites d'Abidjan - (IIPEA)</span>
+        </div>
+        <div class="main-title-container">
+            <div class="main-title">
+                <h1 class="main-title-text">Rapport de clôture de caisse</h1>
+            </div>
+        </div>
+
+        <div class="info-section">
+            <div class="info-line"><span class="info-label">Caisse :</span><span><%= rapport.session.caisse_libelle %></span></div>
+            <div class="info-line"><span class="info-label">Caissier :</span><span><%= rapport.session.caissier_nom %> (<%= rapport.session.caissier_code %>)</span></div>
+            <div class="info-line"><span class="info-label">Ouverture :</span><span><%= new Date(rapport.session.date_ouverture).toLocaleString('fr-FR') %></span></div>
+            <div class="info-line"><span class="info-label">Fermeture :</span><span><%= rapport.session.date_fermeture ? new Date(rapport.session.date_fermeture).toLocaleString('fr-FR') : 'En cours' %></span></div>
+        </div>
+
+        <table class="recap-table">
+            <tr><th>Solde d'ouverture</th><td><%= Number(rapport.session.montant_ouverture).toLocaleString('fr-FR') %> FCFA</td></tr>
+            <tr><th>Total encaissé</th><td><%= Number(rapport.total_encaisse).toLocaleString('fr-FR') %> FCFA</td></tr>
+            <tr><th>Nombre de paiements</th><td><%= rapport.nb_paiements %></td></tr>
+            <% if (rapport.session.montant_fermeture !== null) { %>
+            <tr><th>Solde de clôture (compté)</th><td><%= Number(rapport.session.montant_fermeture).toLocaleString('fr-FR') %> FCFA</td></tr>
+            <tr><th>Écart</th><td><%= (Number(rapport.session.montant_fermeture) - (Number(rapport.session.montant_ouverture) + Number(rapport.total_encaisse))).toLocaleString('fr-FR') %> FCFA</td></tr>
+            <% } %>
+        </table>
+
+        <h3 style="color:#003366;">Répartition par méthode de paiement</h3>
+        <table class="recap-table">
+            <thead><tr><th>Méthode</th><th>Nombre</th><th>Montant</th></tr></thead>
+            <tbody>
+                <% rapport.repartition_methode.forEach(function(r) { %>
+                <tr><td><%= r.methode %></td><td><%= r.nb %></td><td><%= Number(r.total).toLocaleString('fr-FR') %> FCFA</td></tr>
+                <% }) %>
+                <% if (rapport.repartition_methode.length === 0) { %>
+                <tr><td colspan="3">Aucun paiement enregistré sur cette session.</td></tr>
+                <% } %>
+            </tbody>
+        </table>
+
+        <div class="total-box">
+            <span>Solde de clôture attendu</span>
+            <div class="total-value"><%= (Number(rapport.session.montant_ouverture) + Number(rapport.total_encaisse)).toLocaleString('fr-FR') %> FCFA</div>
+        </div>
+
+        <div class="footer">
+            <span class="footer-text">Cocody Riviera 2, Route d'Attoban / Riviera Triangle /Abobo/ Yamoussoukro</span>
+            <span class="footer-text">Document généré le <%= new Date().toLocaleString('fr-FR') %></span>
+        </div>
+    </div>
+</body>
+</html>

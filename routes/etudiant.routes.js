@@ -1,10 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
+const authorizeRoles = require('../middleware/authorize.middleware');
 const etudiantController = require('../controllers/etudiant.controller');
-const { uploadStudentFiles } = require('../middleware/upload');
+const { uploadAdmissionFiles } = require('../middleware/upload');
 
-const upload = uploadStudentFiles();
+const upload = uploadAdmissionFiles();
 
 /**
  * @swagger
@@ -91,10 +92,7 @@ router.post(
     }
     next();
   },
-  upload.fields([
-    { name: 'photo', maxCount: 1 },
-    { name: 'documents', maxCount: 5 }
-  ]),
+  upload.any(),
   etudiantController.addEtudiant
 );
 
@@ -335,6 +333,14 @@ router.get(
  */
 router.get('/etudiant/:id', authenticateToken, etudiantController.getEtudiantById);
 
+router.post(
+  '/etudiant/:id/documents/:typeDocumentCode',
+  authenticateToken,
+  authorizeRoles('admin', 'scolarite', 'archiviste'),
+  upload.single('fichier'),
+  etudiantController.uploadDocumentJustificatif
+);
+
 /**
  * @swagger
  * /api/etudiants/recu-data/{id}:
@@ -350,6 +356,12 @@ router.get('/etudiant/:id', authenticateToken, etudiantController.getEtudiantByI
  *         schema:
  *           type: integer
  *         description: ID de l'étudiant
+ *       - in: query
+ *         name: anneeAcademiqueId
+ *         required: false
+ *         schema:
+ *           type: integer
+ *         description: Année académique ciblée (défaut = année courante de l'étudiant)
  *     responses:
  *       200:
  *         description: Données du reçu récupérées
@@ -373,5 +385,6 @@ router.get('/etudiant/:id', authenticateToken, etudiantController.getEtudiantByI
  *         description: Erreur serveur
  */
 router.get('/recu-data/:id', authenticateToken, etudiantController.getRecuData);
+router.get('/:id/fiche', authenticateToken, etudiantController.afficherFicheAdmission);
 
 module.exports = router;

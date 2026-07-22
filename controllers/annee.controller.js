@@ -1,250 +1,198 @@
-const db = require ('../config/db.config');
+const db = require('../config/db.config');
 
+// ─── GET toutes les années académiques (globales, IIPEA) ──────────────────
+// Optionnellement filtrées/enrichies par site via ?site_id=
 exports.getAllAnnees = async (req, res) => {
-    try {
-        const departement_id = req.query.departement_id || req.user?.departement_id;
-
-        if (!departement_id) {
-            return res.status(400).json({ message: "departement_id requis" });
-        }
-
-        const result = await db.query(
-            `SELECT id, annee, etat, departement_id 
-             FROM anneeacademique 
-             WHERE departement_id = $1
-             ORDER BY annee DESC`,
-            [departement_id]
-        );
-
-        res.status(200).json(result.rows);
-    } catch (error) {
-        console.error('Erreur lors de la récupération des annees:', error);
-        res.status(500).json({ message: 'Erreur serveur.' });
-    }
-};
-//===================================
-exports.getAllAnneesValide = async (req, res) => {
-    try {
-        const result = await db.query (`SELECT id, annee, etat FROM anneeacademique Where etat = 'en cour'`);
-        res.status(200).json(result.rows);
-    } catch (error) {
-        console.error('Erreur lors de la récupération des annees en cours:', error);
-        res.status(500).json({ message: 'Erreur serveur.' });
-    }
-}
-
-
-// ─── GET toutes les années d'un département ───────────────────────────────
-exports.getAnnees = async (req, res) => {
   try {
-    const departement_id = req.query.departement_id || req.user?.departement_id;
+    const { site_id } = req.query;
 
-    if (!departement_id) {
-      return res.status(400).json({ message: "departement_id requis" });
+    if (site_id) {
+      const result = await db.query(
+        `SELECT a.id, a.annee, s.etat, s.date_ouverture, s.date_fermeture
+         FROM anneeacademique a
+         LEFT JOIN anneeacademique_site s ON s.anneeacademique_id = a.id AND s.site_id = $1
+         ORDER BY a.annee DESC`,
+        [site_id]
+      );
+      return res.status(200).json(result.rows);
     }
 
-    const result = await db.query(
-      `SELECT id, annee, etat, departement_id
-       FROM anneeacademique
-       WHERE departement_id = $1
-       ORDER BY annee DESC`,
-      [departement_id]
-    );
-
+    const result = await db.query(`SELECT id, annee FROM anneeacademique ORDER BY annee DESC`);
     res.status(200).json(result.rows);
   } catch (error) {
-    console.error("Erreur getAnnees:", error);
-    res.status(500).json({ message: "Erreur serveur." });
+    console.error('Erreur lors de la récupération des annees:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
   }
 };
 
-// ─── POST ajouter une année pour un département ───────────────────────────
+// ─── GET années "en cour" (globalement, ou pour un site si ?site_id=) ─────
+exports.getAllAnneesValide = async (req, res) => {
+  try {
+    const { site_id } = req.query;
+    const params = [];
+    let query = `
+      SELECT DISTINCT a.id, a.annee
+      FROM anneeacademique a
+      JOIN anneeacademique_site s ON s.anneeacademique_id = a.id
+      WHERE s.etat = 'en cour'
+    `;
+    if (site_id) {
+      params.push(site_id);
+      query += ` AND s.site_id = $${params.length}`;
+    }
+    query += ' ORDER BY a.annee DESC';
+    const result = await db.query(query, params);
+    res.status(200).json(result.rows);
+  } catch (error) {
+    console.error('Erreur lors de la récupération des annees en cours:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+};
+
+// ─── GET l'année "en cour" pour un site précis ─────────────────────────────
+exports.getAnneeEnCoursForSite = async (req, res) => {
+  try {
+    const { siteId } = req.params;
+    const result = await db.query(
+      `SELECT a.id, a.annee
+       FROM anneeacademique a
+       JOIN anneeacademique_site s ON s.anneeacademique_id = a.id
+       WHERE s.site_id = $1 AND s.etat = 'en cour'
+       LIMIT 1`,
+      [siteId]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: "Aucune année académique en cours pour ce site." });
+    }
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    console.error('Erreur getAnneeEnCoursForSite:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+};
+
+// ─── POST créer une année académique globale (admin) ──────────────────────
 exports.addAnnee = async (req, res) => {
   try {
-    const { annee, etat } = req.body;
-    const departement_id = req.body.departement_id || req.user?.departement_id;
-
-    if (!departement_id) {
-      return res.status(400).json({ message: "departement_id requis" });
+    const { annee } = req.body;
+    if (!annee) {
+      return res.status(400).json({ message: "Le libellé de l'année est requis." });
     }
 
-    // Vérifier s'il existe déjà une année "en cour" pour CE département
-    const check = await db.query(
-      `SELECT * FROM anneeacademique WHERE etat = 'en cour' AND departement_id = $1`,
-      [departement_id]
-    );
-
-    if (etat === "en cour" && check.rows.length > 0) {
-      return res.status(400).json({
-        message:
-          "Impossible d'ouvrir une nouvelle année 'en cour' tant que l'année actuelle de ce département n'est pas fermée.",
-      });
-    }
-
-    // Vérifier que cette année n'existe pas déjà pour ce département
-    const dupCheck = await db.query(
-      `SELECT * FROM anneeacademique WHERE annee = $1 AND departement_id = $2`,
-      [annee, departement_id]
-    );
-
+    const dupCheck = await db.query('SELECT id FROM anneeacademique WHERE annee = $1', [annee]);
     if (dupCheck.rows.length > 0) {
-      return res.status(400).json({
-        message: `L'année ${annee} existe déjà pour ce département.`,
-      });
+      return res.status(400).json({ message: `L'année ${annee} existe déjà.` });
     }
 
     const result = await db.query(
-      `INSERT INTO anneeacademique (annee, etat, departement_id)
-       VALUES ($1, $2, $3) RETURNING *`,
-      [annee, etat, departement_id]
+      'INSERT INTO anneeacademique (annee) VALUES ($1) RETURNING *',
+      [annee]
     );
 
-    res.status(200).json(result.rows[0]);
+    res.status(201).json(result.rows[0]);
   } catch (error) {
-    console.error("Erreur addAnnee:", error);
-    res.status(500).json({ message: "Erreur serveur." });
+    console.error('Erreur addAnnee:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
   }
 };
 
-// ─── POST fermer une année ────────────────────────────────────────────────
-exports.fermerAnnee = async (req, res) => {
+// ─── POST ouvrir une année académique pour un site (admin) ────────────────
+exports.ouvrirAnneePourSite = async (req, res) => {
   try {
-    const { id } = req.params;
-    const departement_id = req.user?.departement_id;
+    const { anneeId, siteId } = req.params;
 
-    // Vérifier que l'année appartient bien au département de l'utilisateur
-    const check = await db.query(
-      `SELECT * FROM anneeacademique WHERE id = $1`,
-      [id]
-    );
-
-    if (check.rows.length === 0) {
-      return res.status(404).json({ message: "Année académique non trouvée." });
+    const anneeCheck = await db.query('SELECT id FROM anneeacademique WHERE id = $1', [anneeId]);
+    if (anneeCheck.rows.length === 0) {
+      return res.status(404).json({ message: 'Année académique introuvable.' });
     }
 
-    // Si l'utilisateur a un département, vérifier la correspondance
-    if (departement_id && check.rows[0].departement_id !== parseInt(departement_id)) {
-      return res.status(403).json({
-        message: "Vous ne pouvez pas modifier une année d'un autre département.",
-      });
-    }
-
-    const result = await db.query(
-      `UPDATE anneeacademique SET etat = 'fermée' WHERE id = $1 RETURNING *`,
-      [id]
+    const enCoursCheck = await db.query(
+      `SELECT id FROM anneeacademique_site WHERE site_id = $1 AND etat = 'en cour'`,
+      [siteId]
     );
-
-    res.status(200).json(result.rows[0]);
-  } catch (error) {
-    console.error("Erreur fermerAnnee:", error);
-    res.status(500).json({ message: "Erreur serveur." });
-  }
-};
-
-// ─── POST réouvrir une année ──────────────────────────────────────────────
-exports.reouvrirAnnee = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const departement_id = req.user?.departement_id;
-
-    const check = await db.query(
-      `SELECT * FROM anneeacademique WHERE id = $1`,
-      [id]
-    );
-
-    if (check.rows.length === 0) {
-      return res.status(404).json({ message: "Année académique non trouvée." });
-    }
-
-    const annee = check.rows[0];
-
-    // Vérifier correspondance département
-    if (departement_id && annee.departement_id !== parseInt(departement_id)) {
-      return res.status(403).json({
-        message: "Vous ne pouvez pas modifier une année d'un autre département.",
-      });
-    }
-
-    // Vérifier qu'il n'y a pas déjà une année "en cour" pour ce département
-    const encourCheck = await db.query(
-      `SELECT * FROM anneeacademique WHERE etat = 'en cour' AND departement_id = $1 AND id != $2`,
-      [annee.departement_id, id]
-    );
-
-    if (encourCheck.rows.length > 0) {
+    if (enCoursCheck.rows.length > 0) {
       return res.status(400).json({
-        message:
-          "Impossible de réouvrir : une autre année est déjà 'en cour' pour ce département. Fermez-la d'abord.",
+        message: "Impossible d'ouvrir cette année : une autre année est déjà 'en cour' pour ce site. Fermez-la d'abord.",
+      });
+    }
+
+    const existing = await db.query(
+      'SELECT id FROM anneeacademique_site WHERE anneeacademique_id = $1 AND site_id = $2',
+      [anneeId, siteId]
+    );
+
+    let result;
+    if (existing.rows.length > 0) {
+      result = await db.query(
+        `UPDATE anneeacademique_site SET etat = 'en cour', date_ouverture = now(), date_fermeture = NULL
+         WHERE id = $1 RETURNING *`,
+        [existing.rows[0].id]
+      );
+    } else {
+      result = await db.query(
+        `INSERT INTO anneeacademique_site (anneeacademique_id, site_id, etat, date_ouverture)
+         VALUES ($1, $2, 'en cour', now()) RETURNING *`,
+        [anneeId, siteId]
+      );
+    }
+
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    console.error('Erreur ouvrirAnneePourSite:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+};
+
+// ─── POST fermer une année académique pour un site ─────────────────────────
+exports.fermerAnneePourSite = async (req, res) => {
+  try {
+    const { anneeId, siteId } = req.params;
+
+    const result = await db.query(
+      `UPDATE anneeacademique_site SET etat = 'terminée', date_fermeture = now()
+       WHERE anneeacademique_id = $1 AND site_id = $2 RETURNING *`,
+      [anneeId, siteId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Cette année n\'est pas ouverte pour ce site.' });
+    }
+
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    console.error('Erreur fermerAnneePourSite:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+};
+
+// ─── POST rouvrir une année académique pour un site ────────────────────────
+exports.reouvrirAnneePourSite = async (req, res) => {
+  try {
+    const { anneeId, siteId } = req.params;
+
+    const enCoursCheck = await db.query(
+      `SELECT id FROM anneeacademique_site WHERE site_id = $1 AND etat = 'en cour' AND anneeacademique_id != $2`,
+      [siteId, anneeId]
+    );
+    if (enCoursCheck.rows.length > 0) {
+      return res.status(400).json({
+        message: "Impossible de réouvrir : une autre année est déjà 'en cour' pour ce site. Fermez-la d'abord.",
       });
     }
 
     const result = await db.query(
-      `UPDATE anneeacademique SET etat = 'en cour' WHERE id = $1 RETURNING *`,
-      [id]
+      `UPDATE anneeacademique_site SET etat = 'en cour', date_ouverture = now(), date_fermeture = NULL
+       WHERE anneeacademique_id = $1 AND site_id = $2 RETURNING *`,
+      [anneeId, siteId]
     );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Cette année n\'a jamais été ouverte pour ce site.' });
+    }
 
     res.status(200).json(result.rows[0]);
   } catch (error) {
-    console.error("Erreur reouvrirAnnee:", error);
-    res.status(500).json({ message: "Erreur serveur." });
+    console.error('Erreur reouvrirAnneePourSite:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
   }
-};
-
-
-exports.closeAnnee = async (req, res) => {
-    try {
-        const { id } = req.params;
-        await db.query(
-            `UPDATE anneeacademique SET etat = 'terminée' WHERE id = $1`,
-            [id]
-        );
-        res.status(200).json({ message: "Année fermée avec succès." });
-    } catch (error) {
-        console.error('Erreur lors de la fermeture:', error);
-        res.status(500).json({ message: 'Erreur serveur.' });
-    }
-};
-
-exports.reopenAnnee = async (req, res) => {
-    try {
-        const { id } = req.params;
-
-        // Récupérer le departement_id de l'année qu'on veut rouvrir
-        const anneeResult = await db.query(
-            `SELECT * FROM anneeacademique WHERE id = $1`,
-            [id]
-        );
-
-        if (anneeResult.rows.length === 0) {
-            return res.status(404).json({ message: "Année académique introuvable." });
-        }
-
-        const annee = anneeResult.rows[0];
-
-        // Vérifier qu'aucune année "en cour" n'existe POUR CE MÊME DÉPARTEMENT
-        const check = await db.query(
-            `SELECT * FROM anneeacademique 
-             WHERE etat = 'en cour' 
-             AND departement_id = $1
-             AND id != $2`,
-            [annee.departement_id, id]
-        );
-
-        if (check.rows.length > 0) {
-            return res.status(400).json({ 
-                message: "Une année 'en cour' existe déjà pour ce département." 
-            });
-        }
-
-        await db.query(
-            `UPDATE anneeacademique SET etat = 'en cour' WHERE id = $1`,
-            [id]
-        );
-
-        res.status(200).json({ message: "Année rouverte avec succès." });
-
-    } catch (error) {
-        console.error('Erreur lors de la réouverture:', error);
-        res.status(500).json({ message: 'Erreur serveur.' });
-    }
 };

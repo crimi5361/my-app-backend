@@ -4,6 +4,7 @@ const moment = require('moment');
 const path = require('path');
 const fs = require('fs');
 const { v4: uuidv4 } = require('uuid');
+const { genererCodeCandidat } = require('../services/codePaiement.service');
 
 const UPLOAD_DIR = path.join(__dirname, '../uploads/photos');
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -108,6 +109,8 @@ function validatePhotoFile(file) {
   return { valid: true };
 }
 
+exports.validatePhotoFile = validatePhotoFile;
+
 exports.addEtudiant = async (req, res) => {
   // Vérification de l'authentification
   if (!req.user?.id) {
@@ -127,6 +130,19 @@ exports.addEtudiant = async (req, res) => {
 
   try {
     await client.query('BEGIN');
+
+    // Code de paiement unique — l'admission est de facto "en attente de paiement" dès sa
+    // création ; la vérification d'existence se fait via SELECT (jamais de violation de
+    // contrainte possible ici), donc aucun risque d'empoisonner la transaction en cours.
+    let codePaiementAdmission = null;
+    for (let tentative = 0; tentative < 8 && !codePaiementAdmission; tentative++) {
+      const candidat = genererCodeCandidat('AD');
+      const existe = await client.query('SELECT 1 FROM etudiant WHERE code_paiement = $1', [candidat]);
+      if (existe.rows.length === 0) codePaiementAdmission = candidat;
+    }
+    if (!codePaiementAdmission) {
+      throw new Error("Impossible de générer un code de paiement unique après plusieurs tentatives.");
+    }
 
     // Transformation et validation des données
     const data = {
@@ -164,11 +180,37 @@ exports.addEtudiant = async (req, res) => {
       });
     }
 
+    if (req.body.engagement_accepte !== 'true') {
+      return res.status(400).json({
+        success: false,
+        error: "L'engagement (certification d'exactitude des informations) doit être accepté.",
+        code: 'ENGAGEMENT_REQUIRED'
+      });
+    }
+
+    // Validation serveur du montant de scolarité : ne jamais faire confiance au montant
+    // envoyé par le client, le recalculer depuis la grille de tarifs (niveau + statut).
+    const { calculerMontantScolarite } = require('./tarif.controller');
+    const tarifApplicable = await calculerMontantScolarite(data.inscription.niveau_id, data.academique.statut_scolaire);
+    if (!tarifApplicable || tarifApplicable.montant === null) {
+      return res.status(409).json({
+        success: false,
+        error: 'Aucun tarif configuré pour ce niveau. Contactez un administrateur.',
+        code: 'TARIF_INTROUVABLE'
+      });
+    }
+    data.inscription.montant_scolarite = tarifApplicable.montant;
+    data.academique.statut_scolaire = tarifApplicable.statut_applique;
+
+    // req.files est un tableau plat depuis upload.any() (photo + doc_<CODE> mêlés)
+    const uploadedFiles = Array.isArray(req.files) ? req.files : [];
+    const photoFile0 = uploadedFiles.find(f => f.fieldname === 'photo');
+
     // Gestion de la photo
     // Gestion de la photo - CORRECTION ICI (utilisation de diskStorage)
     // Gestion de la photo - VERSION CORRIGÉE
-if (req.files?.photo?.[0]) {
-  const photoFile = req.files.photo[0];
+if (photoFile0) {
+  const photoFile = photoFile0;
   console.log('Fichier photo détecté (inscription):', {
     originalname: photoFile.originalname,
     mimetype: photoFile.mimetype,
@@ -233,12 +275,14 @@ if (req.files?.photo?.[0]) {
     const etudiantQuery = `
       INSERT INTO etudiant (
         matricule, nom, prenoms, date_naissance, lieu_naissance, pays_naissance, telephone, email,
-        lieu_residence, contact_parent, nom_parent_1, nom_parent_2, code_unique, annee_bac, serie_bac, 
-        etablissement_origine, inscrit_par, photo_url, departement_id, annee_academique_id, groupe_id,
+        lieu_residence, contact_parent, nom_parent_1, nom_parent_2, code_unique, annee_bac, serie_bac,
+        etablissement_origine, inscrit_par, photo_url, site_id, annee_academique_id, groupe_id,
         niveau_id, statut_scolaire, nationalite, standing, numero_table, sexe, password,
         curcus_id, id_filiere, date_inscription, contact_etudiant, contact_parent_2, matricule_iipea,
-        ip_ministere  -- NOUVEAU CHAMP AJOUTÉ
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, NOW(), $31, $32, $33, $34)
+        ip_ministere,
+        numero_acte_naissance, numero_piece_identite, mention_bac, session_bac,
+        adresse_parent_1, adresse_parent_2, engagement_accepte, code_paiement, nombre_versements_prevu
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, NOW(), $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
       RETURNING id
     `;
 
@@ -276,14 +320,30 @@ if (req.files?.photo?.[0]) {
       data.etudiant.telephone, // contact_etudiant
       data.etudiant.contact_parent_2 || null,
       matricule_iipea,
-      data.academique.ip_ministere || null  // NOUVEAU CHAMP - peut être null
+      data.academique.ip_ministere || null,  // = identifiant permanent
+      data.etudiant.numero_acte_naissance || null,
+      data.etudiant.numero_piece_identite || null,
+      data.academique.mention_bac || null,
+      data.academique.session_bac || null,
+      data.etudiant.adresse_parent_1 || null,
+      data.etudiant.adresse_parent_2 || null,
+      req.body.engagement_accepte === 'true',
+      codePaiementAdmission,
+      data.inscription.nombre_versements ? parseInt(data.inscription.nombre_versements, 10) : null
     ];
 
     const etudiantResult = await client.query(etudiantQuery, etudiantValues);
     const etudiantId = etudiantResult.rows[0].id;
 
     // 2. Insertion des documents
-    const parseDocumentValue = (val) => val === 'true' ? 'oui' : 'non';
+    // data.documents : [{ code: 'EXTRAIT_NAISSANCE', fourni: true }, ...] (codes = type_document.code)
+    // uploadedFiles contient aussi les fichiers réels envoyés sous le nom de champ doc_<CODE>
+    const isFourni = (code) => {
+      const declared = data.documents.find(d => d.code === code)?.fourni;
+      const hasFile = uploadedFiles.some(f => f.fieldname === `doc_${code}`);
+      return declared === true || declared === 'true' || hasFile;
+    };
+    const parseDocumentValue = (fourni) => (fourni ? 'oui' : 'non');
 
     const docResult = await client.query(
       `INSERT INTO document (
@@ -291,18 +351,37 @@ if (req.files?.photo?.[0]) {
       ) VALUES ($1, $2, $3, $4)
       RETURNING id`,
       [
-        parseDocumentValue(data.documents.find(d => d.nom === 'EXTRAIT_DE_NAISSANCE')?.fourni),
-        parseDocumentValue(data.documents.find(d => d.nom === 'JUSTIFICATIF_IDENTITE')?.fourni),
-        parseDocumentValue(data.documents.find(d => d.nom === 'FICHE_ORIENTATION')?.fourni),
-        parseDocumentValue(data.documents.find(d => d.nom === 'COPIES_BAC')?.fourni)
+        parseDocumentValue(isFourni('EXTRAIT_NAISSANCE')),
+        parseDocumentValue(isFourni('PIECE_IDENTITE')),
+        parseDocumentValue(isFourni('FICHE_ORIENTATION')),
+        parseDocumentValue(isFourni('DIPLOME_BAC'))
       ]
     );
-    
+
     // Mise à jour de l'étudiant avec le document_id
     await client.query(
       `UPDATE etudiant SET document_id = $1 WHERE id = $2`,
       [docResult.rows[0].id, etudiantId]
     );
+
+    // 2b. Insertion détaillée par pièce dans document_etudiant (fichier réel si fourni)
+    const typeDocResult = await client.query(`SELECT id, code FROM type_document`);
+    for (const typeDoc of typeDocResult.rows) {
+      const file = uploadedFiles.find(f => f.fieldname === `doc_${typeDoc.code}`);
+      const fourni = isFourni(typeDoc.code);
+      if (!fourni && !file) continue;
+      await client.query(
+        `INSERT INTO document_etudiant (etudiant_id, type_document_id, fourni, fichier_path, date_upload)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          etudiantId,
+          typeDoc.id,
+          fourni,
+          file ? `/uploads/documents/${file.filename}` : null,
+          file ? new Date() : null
+        ]
+      );
+    }
 
     // 3. Insertion de la scolarité
     const scolariteResult = await client.query(
@@ -333,16 +412,17 @@ if (req.files?.photo?.[0]) {
 
     return res.status(201).json({
       success: true,
-      data: { 
-        id: etudiantId, 
-        code_unique, 
-        email, 
+      data: {
+        id: etudiantId,
+        code_unique,
+        email,
         photoUrl,
         matricule: data.academique.matricule,
         matricule_iipea,
         contact_etudiant: data.etudiant.telephone,
         contact_parent_2: data.etudiant.contact_parent_2 || null,
-        ip_ministere: data.academique.ip_ministere || null  // Retourner aussi l'IP ministère
+        ip_ministere: data.academique.ip_ministere || null,  // = identifiant permanent
+        code_paiement: codePaiementAdmission
       }
     });
 
@@ -358,9 +438,10 @@ if (req.files?.photo?.[0]) {
 
     // Gestion des erreurs de contrainte unique
     if (err.code === '23505') {
-      const field = err.detail.includes('matricule_iipea') ? 'matricule IIPEA' : 
-                   err.detail.includes('email') ? 'email' : 
-                   err.detail.includes('code_unique') ? 'code unique' : 'matricule';
+      const field = err.detail.includes('matricule_iipea') ? 'matricule IIPEA' :
+                   err.detail.includes('email') ? 'email' :
+                   err.detail.includes('code_unique') ? 'code unique' :
+                   err.detail.includes('code_paiement') ? 'code de paiement' : 'matricule';
       return res.status(409).json({
         success: false,
         error: `Un étudiant avec ce ${field} existe déjà`,
@@ -383,6 +464,65 @@ if (req.files?.photo?.[0]) {
   }
 };
 
+// ─── GET fiche récapitulative d'inscription (imprimable) ───────────────────
+exports.afficherFicheAdmission = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { calculerEcheancier } = require('../services/echeancier.service');
+
+    const result = await db.query(
+      `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.standing, e.code_paiement,
+              e.photo_url, e.sexe, e.date_naissance, e.telephone, e.email,
+              e.mention_bac, e.session_bac, e.contact_parent, e.contact_parent_2,
+              e.date_inscription, e.nombre_versements_prevu, e.inscrit_par,
+              f.nom AS filiere_nom, n.libelle AS niveau_libelle, a.annee,
+              ec.nom AS ecole_nom,
+              s.montant_scolarite, s.scolarite_verse, s.scolarite_restante,
+              u.nom AS agent_nom
+       FROM etudiant e
+       JOIN filiere f ON f.id = e.id_filiere
+       JOIN niveau n ON n.id = e.niveau_id
+       LEFT JOIN anneeacademique a ON a.id = e.annee_academique_id
+       LEFT JOIN scolarite s ON s.id = e.scolarite_id
+       LEFT JOIN utilisateur u ON u.id::text = e.inscrit_par
+       LEFT JOIN departement dep ON dep.id = f.departement_id
+       LEFT JOIN ecole ec ON ec.id = dep.ecole_id
+       WHERE e.id = $1`,
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).send('Dossier d\'inscription introuvable.');
+    }
+    const dossier = result.rows[0];
+
+    // Suivi du dossier administratif : chaque pièce demandée à l'admission, avec son statut
+    // (fournie ou non) tel que coché lors de l'inscription.
+    const piecesResult = await db.query(
+      `SELECT td.id, td.code, td.libelle, td.obligatoire, COALESCE(de.fourni, false) AS fourni
+       FROM type_document td
+       LEFT JOIN document_etudiant de ON de.type_document_id = td.id AND de.etudiant_id = $1
+       WHERE td.contexte = 'admission'
+       ORDER BY td.id`,
+      [id]
+    );
+    const piecesJustificatives = piecesResult.rows;
+
+    const echeancier = calculerEcheancier({
+      montantTotal: dossier.montant_scolarite,
+      nombreVersementsPrevu: dossier.nombre_versements_prevu,
+      paiementsEffectues: dossier.scolarite_verse > 0
+        ? [{ montant: dossier.scolarite_verse, date: dossier.date_inscription }]
+        : [],
+      dateDepart: dossier.date_inscription,
+    });
+
+
+    res.render('fiche_admission', { dossier, echeancier, piecesJustificatives });
+  } catch (error) {
+    console.error('Erreur afficherFicheAdmission:', error);
+    res.status(500).send('Erreur serveur lors de la génération de la fiche.');
+  }
+};
 
 ///=====================================================================================================================
 exports.getEtudiantsByDepartement = async (req, res) => {
@@ -410,8 +550,11 @@ exports.getEtudiantsByDepartement = async (req, res) => {
 
     // Vérifier que l'année académique existe
     const yearCheck = await db.query(
-      `SELECT id, annee, etat FROM anneeacademique WHERE id = $1`,
-      [anneeAcademiqueId]
+      `SELECT a.id, a.annee, s.etat
+       FROM anneeacademique a
+       LEFT JOIN anneeacademique_site s ON s.anneeacademique_id = a.id AND s.site_id = $2
+       WHERE a.id = $1`,
+      [anneeAcademiqueId, departementId]
     );
 
     if (yearCheck.rows.length === 0) {
@@ -427,7 +570,7 @@ exports.getEtudiantsByDepartement = async (req, res) => {
     const offset = (page - 1) * limit;
 
     // Construction dynamique de la clause WHERE
-    let whereClauses = ['e.departement_id = $1', 'e.annee_academique_id = $2'];
+    let whereClauses = ['e.site_id = $1', 'e.annee_academique_id = $2'];
     let params = [departementId, anneeAcademiqueId];
     let paramCounter = 3;
 
@@ -506,9 +649,9 @@ exports.getEtudiantsByDepartement = async (req, res) => {
         n.libelle as niveau,
 
         a.annee as annee_academique,
-        a.etat as etat_annee,
+        aas.etat as etat_annee,
 
-        d.nom as departement,
+        st.nom as departement,
 
         c.id as curcus_id,
         c.type_parcours,
@@ -517,10 +660,10 @@ exports.getEtudiantsByDepartement = async (req, res) => {
         doc.justificatif_identite,
         doc.dernier_diplome,
         doc.fiche_orientation,
-        
+
         -- Informations de groupe
         g.nom as groupe_nom,
-        
+
         -- Informations de scolarité
         s.montant_scolarite,
         s.scolarite_verse,
@@ -530,7 +673,7 @@ exports.getEtudiantsByDepartement = async (req, res) => {
         COALESCE(s.montant_scolarite, 0) as montant_total_scolarite,
         COALESCE(s.scolarite_verse, 0) as montant_paye,
         COALESCE(s.scolarite_restante, 0) as montant_restant,
-        CASE 
+        CASE
           WHEN s.montant_scolarite IS NULL OR s.montant_scolarite = 0 THEN 0
           ELSE ROUND((COALESCE(s.scolarite_verse, 0) / s.montant_scolarite) * 100, 2)
         END as pourcentage_paye
@@ -538,10 +681,11 @@ exports.getEtudiantsByDepartement = async (req, res) => {
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
-      JOIN departement d ON e.departement_id = d.id
+      LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
+      JOIN site st ON e.site_id = st.id
       LEFT JOIN document doc ON e.document_id = doc.id
       LEFT JOIN scolarite s ON e.scolarite_id = s.id
-      LEFT JOIN groupe g ON e.groupe_id = g.id 
+      LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN curcus c ON e.curcus_id = c.id
       ${whereClause}
       ORDER BY e.nom ASC, e.prenoms ASC
@@ -620,8 +764,11 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
 
     // Vérifier que l'année académique existe
     const yearCheck = await db.query(
-      `SELECT id, annee, etat FROM anneeacademique WHERE id = $1`,
-      [anneeAcademiqueId]
+      `SELECT a.id, a.annee, s.etat
+       FROM anneeacademique a
+       LEFT JOIN anneeacademique_site s ON s.anneeacademique_id = a.id AND s.site_id = $2
+       WHERE a.id = $1`,
+      [anneeAcademiqueId, departementId]
     );
 
     if (yearCheck.rows.length === 0) {
@@ -633,7 +780,7 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
     }
 
     // Construction dynamique de la clause WHERE (mêmes filtres que getEtudiantsByDepartement)
-    let whereClauses = ['e.departement_id = $1', 'e.annee_academique_id = $2'];
+    let whereClauses = ['e.site_id = $1', 'e.annee_academique_id = $2'];
     let params = [departementId, anneeAcademiqueId];
     let paramCounter = 3;
 
@@ -704,8 +851,8 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
         n.libelle AS niveau,
         
         a.annee AS annee_academique,
-        a.etat AS etat_annee,
-        
+        aas.etat AS etat_annee,
+
         c.type_parcours,
         
         g.nom AS groupe_nom,
@@ -725,7 +872,7 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
-      JOIN departement d ON e.departement_id = d.id
+      LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
       LEFT JOIN scolarite s ON e.scolarite_id = s.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN curcus c ON e.curcus_id = c.id
@@ -783,8 +930,11 @@ exports.getEtudiantsByDepartementEnAttente = async (req, res) => {
 
     // Vérifier que l'année académique existe
     const yearCheck = await db.query(
-      `SELECT id, annee, etat FROM anneeacademique WHERE id = $1`,
-      [anneeAcademiqueId]
+      `SELECT a.id, a.annee, s.etat
+       FROM anneeacademique a
+       LEFT JOIN anneeacademique_site s ON s.anneeacademique_id = a.id AND s.site_id = $2
+       WHERE a.id = $1`,
+      [anneeAcademiqueId, departementId]
     );
 
     if (yearCheck.rows.length === 0) {
@@ -800,7 +950,7 @@ exports.getEtudiantsByDepartementEnAttente = async (req, res) => {
     const offset = (page - 1) * limit;
 
     // Construction dynamique de la clause WHERE
-    let whereClauses = ['e.departement_id = $1', 'e.standing = $2', 'e.annee_academique_id = $3'];
+    let whereClauses = ['e.site_id = $1', 'e.standing = $2', 'e.annee_academique_id = $3'];
     const params = [departementId, 'en attente', anneeAcademiqueId];
 
     // Ajouter le paramètre de recherche si fourni
@@ -859,12 +1009,13 @@ exports.getEtudiantsByDepartementEnAttente = async (req, res) => {
         e.contact_parent_2,
         e.matricule_iipea,
         e.photo_url,
+        e.code_paiement,
         f.nom as filiere,
         f.sigle as filiere_sigle,
         n.libelle as niveau,
         a.annee as annee_academique,
-        a.etat as etat_annee,
-        d.nom as departement,
+        aas.etat as etat_annee,
+        s.nom as departement,
         doc.extrait_naissance,
         doc.justificatif_identite,
         doc.dernier_diplome,
@@ -873,7 +1024,8 @@ exports.getEtudiantsByDepartementEnAttente = async (req, res) => {
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
-      JOIN departement d ON e.departement_id = d.id
+      LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
+      JOIN site s ON e.site_id = s.id
       LEFT JOIN document doc ON e.document_id = doc.id
       ${whereClause}
       ORDER BY e.date_inscription DESC, e.nom ASC, e.prenoms ASC
@@ -956,6 +1108,14 @@ exports.getEtudiantById = async (req, res) => {
         e.serie_bac,
         e.statut_scolaire,
         e.etablissement_origine,
+        e.numero_acte_naissance,
+        e.numero_piece_identite,
+        e.mention_bac,
+        e.session_bac,
+        e.adresse_parent_1,
+        e.adresse_parent_2,
+        e.engagement_accepte,
+        e.ip_ministere,
         u.email as inscrit_par_email,
         e.date_inscription,
         e.nationalite,
@@ -970,7 +1130,7 @@ exports.getEtudiantById = async (req, res) => {
         f.sigle as filiere_sigle,
         n.libelle as niveau,
         a.annee as annee_academique,
-        d.nom as departement,
+        s.nom as departement,
         doc.extrait_naissance,
         doc.justificatif_identite,
         doc.dernier_diplome,
@@ -1005,7 +1165,7 @@ exports.getEtudiantById = async (req, res) => {
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
-      JOIN departement d ON e.departement_id = d.id
+      JOIN site s ON e.site_id = s.id
       LEFT JOIN document doc ON e.document_id = doc.id
       LEFT JOIN utilisateur u ON e.inscrit_par::integer = u.id
       LEFT JOIN scolarite sc ON e.scolarite_id = sc.id
@@ -1101,6 +1261,16 @@ exports.getEtudiantById = async (req, res) => {
       etudiant.prise_en_charge = null;
     }
 
+    // Pièces justificatives détaillées (checkbox + fichier éventuel, cf. module archivage)
+    const documentsResult = await db.query(
+      `SELECT td.code, td.libelle, td.obligatoire, de.fourni, de.fichier_path, de.storage_provider, de.date_upload
+       FROM type_document td
+       LEFT JOIN document_etudiant de ON de.type_document_id = td.id AND de.etudiant_id = $1
+       ORDER BY td.id`,
+      [parseInt(id)]
+    );
+    etudiant.documents_justificatifs = documentsResult.rows;
+
     return res.status(200).json({
       success: true,
       data: etudiant
@@ -1118,23 +1288,105 @@ exports.getEtudiantById = async (req, res) => {
 }
 
 ///=================================================================================================
+// Archivage a posteriori d'une pièce justificative (rôle archiviste) : la pièce a déjà été
+// cochée "fourni" à l'inscription, l'archiviste vient seulement y attacher le fichier numérisé.
+exports.uploadDocumentJustificatif = async (req, res) => {
+  try {
+    const { id, typeDocumentCode } = req.params;
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Aucun fichier reçu.' });
+    }
+
+    const typeDocResult = await db.query('SELECT id FROM type_document WHERE code = $1', [typeDocumentCode]);
+    if (typeDocResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Type de document inconnu.' });
+    }
+    const typeDocumentId = typeDocResult.rows[0].id;
+
+    const existing = await db.query(
+      'SELECT fichier_path, storage_provider, drive_file_id FROM document_etudiant WHERE etudiant_id = $1 AND type_document_id = $2',
+      [id, typeDocumentId]
+    );
+
+    const etudiantResult = await db.query(
+      `SELECT e.nom, e.prenoms, e.matricule_iipea,
+              f.nom AS filiere_nom, n.libelle AS niveau_libelle,
+              d.nom AS departement_nom, ec.nom AS ecole_nom
+       FROM etudiant e
+       JOIN filiere f ON f.id = e.id_filiere
+       JOIN niveau n ON n.id = e.niveau_id
+       LEFT JOIN departement d ON d.id = f.departement_id
+       LEFT JOIN ecole ec ON ec.id = d.ecole_id
+       WHERE e.id = $1`,
+      [id]
+    );
+    if (etudiantResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
+    }
+    const etu = etudiantResult.rows[0];
+    const hierarchy = {
+      ecole: etu.ecole_nom,
+      departement: etu.departement_nom,
+      filiere: etu.filiere_nom,
+      niveau: etu.niveau_libelle,
+      nomDossierEtudiant: `${etu.nom} ${etu.prenoms} - ${etu.matricule_iipea}`,
+      typeDocumentCode,
+    };
+
+    const { saveDocument, deleteDocument } = require('../services/documentStorage.service');
+    const saved = await saveDocument({ file: req.file, hierarchy });
+
+    if (existing.rows.length > 0 && (existing.rows[0].fichier_path || existing.rows[0].drive_file_id)) {
+      await deleteDocument({
+        fichierPath: existing.rows[0].fichier_path,
+        provider: existing.rows[0].storage_provider,
+        driveFileId: existing.rows[0].drive_file_id,
+      });
+    }
+
+    let result;
+    if (existing.rows.length > 0) {
+      result = await db.query(
+        `UPDATE document_etudiant SET fourni = true, fichier_path = $1, storage_provider = $2,
+                drive_file_id = $3, drive_folder_id = $4, date_upload = now()
+         WHERE etudiant_id = $5 AND type_document_id = $6 RETURNING *`,
+        [saved.url, saved.provider, saved.driveFileId || null, saved.driveFolderId || null, id, typeDocumentId]
+      );
+    } else {
+      result = await db.query(
+        `INSERT INTO document_etudiant (etudiant_id, type_document_id, fourni, fichier_path, storage_provider, drive_file_id, drive_folder_id, date_upload)
+         VALUES ($1, $2, true, $3, $4, $5, $6, now()) RETURNING *`,
+        [id, typeDocumentId, saved.url, saved.provider, saved.driveFileId || null, saved.driveFolderId || null]
+      );
+    }
+
+    res.status(200).json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    console.error('Erreur uploadDocumentJustificatif:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+///=================================================================================================
 
 exports.getRecuData = async (req, res) => {
   const client = await db.connect();
-  
+
   try {
     const { id } = req.params;
-    
+    const anneeAcademiqueIdParam = req.query.anneeAcademiqueId ? parseInt(req.query.anneeAcademiqueId, 10) : null;
+    const { calculerEcheancier } = require('../services/echeancier.service');
+
     // Requête SQL optimisée avec correction des jointures
     const query = `
-      SELECT 
+      SELECT
         e.id, e.nom, e.prenoms, e.matricule, e.matricule_iipea, e.photo_url,
         e.date_naissance, e.lieu_naissance, e.telephone, e.email, e.lieu_residence,
         e.contact_parent, e.contact_parent_2, e.nationalite, e.sexe, e.code_unique,
-        e.statut_scolaire,
+        e.statut_scolaire, e.nombre_versements_prevu, e.date_inscription, e.annee_academique_id,
         f.nom as filiere, f.sigle as filiere_sigle,
         n.libelle as niveau,
-        d.nom as departement,
+        st.nom as departement,
         aa.annee as annee_academique,
         s.montant_scolarite, s.scolarite_verse, s.scolarite_restante, s.statut_etudiant,
         g.nom as groupe_nom,
@@ -1142,7 +1394,7 @@ exports.getRecuData = async (req, res) => {
         p.id as paiement_id, p.montant as paiement_montant, p.date_paiement, p.methode,
         r.id as recu_id, r.numero_recu, r.date_emission, r.emetteur,
         k.montant as kit_montant, k.deposer as kit_deposer, k.date_enregistrement as kit_date,
-        pec.id as pec_id, pec.type_pec, pec.pourcentage_reduction, pec.montant_reduction, 
+        pec.id as pec_id, pec.type_pec, pec.pourcentage_reduction, pec.montant_reduction,
         pec.statut as pec_statut, pec.reference as pec_reference,
         pec.date_demande as pec_date_demande, pec.date_validation as pec_date_validation,
         pec.valide_par as pec_valide_par, pec.motif_refus as pec_motif_refus
@@ -1150,11 +1402,11 @@ exports.getRecuData = async (req, res) => {
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN scolarite s ON e.scolarite_id = s.id
-      LEFT JOIN departement d ON e.departement_id = d.id
+      LEFT JOIN site st ON e.site_id = st.id
       LEFT JOIN anneeacademique aa ON e.annee_academique_id = aa.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN classe c ON g.classe_id = c.id
-      LEFT JOIN paiement p ON p.etudiant_id = e.id
+      LEFT JOIN paiement p ON p.etudiant_id = e.id AND p.annee_academique_id = COALESCE($2::int, e.annee_academique_id)
       LEFT JOIN recu r ON p.recu_id = r.id
       LEFT JOIN kit k ON k.etudiant_id = e.id
       LEFT JOIN prise_en_charge pec ON pec.etudiant_id = e.id
@@ -1163,7 +1415,7 @@ exports.getRecuData = async (req, res) => {
       ORDER BY p.date_paiement DESC, pec.date_demande DESC
     `;
 
-    const result = await client.query(query, [id]);
+    const result = await client.query(query, [id, anneeAcademiqueIdParam]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Étudiant non trouvé' });
@@ -1171,7 +1423,65 @@ exports.getRecuData = async (req, res) => {
 
     // Structurer les données
     const etudiantData = result.rows[0];
-    
+
+    // Année demandée différente de l'année courante de l'étudiant : les infos académiques/
+    // financières ne viennent plus de scolarite/etudiant (valeurs live de l'année en cours),
+    // mais de l'instantané figé dans historique_inscription pour cette année précise.
+    const isAnneeCourante = !anneeAcademiqueIdParam || Number(anneeAcademiqueIdParam) === Number(etudiantData.annee_academique_id);
+    if (!isAnneeCourante) {
+      const historiqueResult = await client.query(
+        `SELECT hi.montant_scolarite, hi.scolarite_verse, hi.scolarite_restante, hi.statut_paiement,
+                n.libelle AS niveau, f.nom AS filiere, f.sigle AS filiere_sigle, aa.annee AS annee_academique
+         FROM historique_inscription hi
+         LEFT JOIN niveau n ON n.id = hi.niveau_id
+         LEFT JOIN filiere f ON f.id = hi.id_filiere
+         LEFT JOIN anneeacademique aa ON aa.id = hi.annee_academique_id
+         WHERE hi.etudiant_id = $1 AND hi.annee_academique_id = $2
+         ORDER BY hi.created_at DESC LIMIT 1`,
+        [id, anneeAcademiqueIdParam]
+      );
+      if (historiqueResult.rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Aucun historique trouvé pour cette année académique.' });
+      }
+      const historique = historiqueResult.rows[0];
+      etudiantData.niveau = historique.niveau;
+      etudiantData.filiere = historique.filiere;
+      etudiantData.filiere_sigle = historique.filiere_sigle;
+      etudiantData.annee_academique = historique.annee_academique;
+      etudiantData.montant_scolarite = historique.montant_scolarite;
+      etudiantData.scolarite_verse = historique.scolarite_verse;
+      etudiantData.scolarite_restante = historique.scolarite_restante;
+      etudiantData.statut_etudiant = historique.statut_paiement;
+    }
+
+    // Modalités de paiement du cycle en cours : priorité à la réinscription si elle correspond
+    // à l'année actuelle de l'étudiant (sinon celles renseignées à l'admission). Ne concerne que
+    // le cycle en cours — une année passée n'a plus d'échéancier projeté.
+    const reinscriptionActuelle = isAnneeCourante ? await client.query(
+      `SELECT nombre_versements_prevu, modalite_paiement, created_at
+       FROM reinscription WHERE etudiant_id = $1 AND anneeacademique_id = $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [id, etudiantData.annee_academique_id || null]
+    ) : { rows: [] };
+    const modalites = reinscriptionActuelle.rows[0];
+    const nombreVersementsPrevu = modalites?.nombre_versements_prevu ?? etudiantData.nombre_versements_prevu;
+    const dateDepart = modalites?.created_at || etudiantData.date_inscription || new Date();
+
+    // Paiements dédupliqués (la jointure paiement × prise_en_charge peut produire des doublons
+    // par ligne PEC) — nécessaire pour un calcul d'échéancier exact.
+    const paiementsUniques = Array.from(
+      new Map(
+        result.rows.filter(row => row.paiement_id !== null).map(row => [row.paiement_id, row])
+      ).values()
+    ).sort((a, b) => new Date(a.date_paiement) - new Date(b.date_paiement));
+
+    const echeancier = isAnneeCourante ? calculerEcheancier({
+      montantTotal: etudiantData.montant_scolarite,
+      nombreVersementsPrevu,
+      paiementsEffectues: paiementsUniques.map(p => ({ montant: p.paiement_montant, date: p.date_paiement })),
+      dateDepart,
+    }) : null;
+
     // Récupérer toutes les PEC (il peut y en avoir plusieurs)
     const toutesLesPEC = result.rows
       .filter(row => row.pec_id !== null)
@@ -1247,22 +1557,23 @@ exports.getRecuData = async (req, res) => {
         prise_en_charge: pecActive || pecEnAttente || pecRefusee || null,
         
         // Toutes les PEC pour historique
-        toutes_prises_en_charge: toutesLesPEC
+        toutes_prises_en_charge: toutesLesPEC,
+
+        // Modalités de paiement / échéancier
+        echeancier
       },
-      paiements: result.rows
-        .filter(row => row.paiement_id !== null)
-        .map(row => ({
-          id: row.paiement_id,
-          montant: row.paiement_montant,
-          date_paiement: row.date_paiement,
-          methode: row.methode,
-          recu: {
-            id: row.recu_id,
-            numero_recu: row.numero_recu,
-            date_emission: row.date_emission,
-            emetteur: row.emetteur
-          }
-        }))
+      paiements: paiementsUniques.map(row => ({
+        id: row.paiement_id,
+        montant: row.paiement_montant,
+        date_paiement: row.date_paiement,
+        methode: row.methode,
+        recu: {
+          id: row.recu_id,
+          numero_recu: row.numero_recu,
+          date_emission: row.date_emission,
+          emetteur: row.emetteur
+        }
+      }))
     };
 
     res.status(200).json({ success: true, data: response });

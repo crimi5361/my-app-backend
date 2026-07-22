@@ -24,9 +24,9 @@ const staffOnlyFromBody = [bodyTokenToQuery, authenticateToken, authorizeRoles('
 async function getAllStudentsByDepartement(departementId) {
     try {
         const query = `
-        SELECT id, nom, prenoms, matricule 
-        FROM etudiant 
-        WHERE departement_id = $1 
+        SELECT id, nom, prenoms, matricule
+        FROM etudiant
+        WHERE site_id = $1
         AND standing = 'Inscrit'
         ORDER BY nom ASC, prenoms ASC, matricule ASC
         `;
@@ -158,19 +158,20 @@ async function getCertificatFrequentationData(studentId) {
                 
                 a.id as annee_academique_id,
                 a.annee as annee_academique,
-                a.etat as annee_etat,
-                
+                aas.etat as annee_etat,
+
                 g.id as groupe_id,
                 g.nom as groupe_nom,
                 g.capacite_max as groupe_capacite,
-                
+
                 c.id as classe_id,
                 c.nom as classe_nom
-                
+
             FROM etudiant e
             LEFT JOIN filiere f ON e.id_filiere = f.id
             LEFT JOIN niveau n ON e.niveau_id = n.id
             LEFT JOIN anneeacademique a ON e.annee_academique_id = a.id
+            LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
             LEFT JOIN groupe g ON e.groupe_id = g.id
             LEFT JOIN classe c ON g.classe_id = c.id
             WHERE e.id = $1
