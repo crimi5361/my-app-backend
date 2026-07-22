@@ -5,7 +5,13 @@
 const path    = require('path');
 const express = require('express');
 const cors    = require('cors');
-require('dotenv').config();
+
+// Bascule PostgreSQL local / Neon (production) : NODE_ENV=production charge .env.production
+// (DATABASE_URL Neon), sinon .env.local (DB_HOST/DB_USER/... PostgreSQL local) — voir
+// config/db.config.js pour la logique de connexion correspondante.
+const envFile = `.env.${process.env.NODE_ENV === 'production' ? 'production' : 'local'}`;
+require('dotenv').config({ path: path.resolve(__dirname, envFile) });
+console.log(`🔧 Environnement chargé : ${envFile}`);
 
 // Swagger
 const swaggerJsdoc = require('swagger-jsdoc');
