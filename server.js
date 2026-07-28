@@ -20,6 +20,11 @@ const swaggerUi    = require('swagger-ui-express');
 // Middleware personnalisés
 const apiLimiter = require('./middleware/limiter.middleware');
 
+// ✅ PERF : le log HTTP par requête (ci-dessous) écrit de façon synchrone dès que stdout n'est
+// pas un terminal interactif (cas de la production) — coût minime par requête mais systématique
+// sur 100% du trafic. Silencieux par défaut ; activable via DEBUG_HTTP_LOG=true.
+const DEBUG_HTTP_LOG = process.env.DEBUG_HTTP_LOG === 'true';
+
 const app = express();
 
 // ─────────────────────────────────────────────────────────────
@@ -35,6 +40,7 @@ app.set('views', path.join(__dirname, 'Views'));
 const corsOptions = {
   origin: [
     'http://localhost:5173',
+    'http://localhost:8080',
     'https://myiipea.ci',
     'https://www.myiipea.ci',
   ],
@@ -63,12 +69,12 @@ app.use('/public',  express.static(path.join(__dirname, 'public')));
 //  • JSON / URL-encoded  → parsé normalement
 // ─────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
-  console.log(`\n${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
+  if (DEBUG_HTTP_LOG) console.log(`\n${new Date().toISOString()} - ${req.method} ${req.originalUrl}`);
 
   const contentType = req.headers['content-type'] || '';
 
   if (contentType.includes('multipart/form-data')) {
-    console.log('📂 FormData détecté – parsing délégué à Multer');
+    if (DEBUG_HTTP_LOG) console.log('📂 FormData détecté – parsing délégué à Multer');
     return next();
   }
 
@@ -97,6 +103,7 @@ const apiRoutes = [
   { path: '/api/ecoles',            route: require('./routes/ecole.routes') },
   { path: '/api/sites',             route: require('./routes/site.routes') },
   { path: '/api/departements',      route: require('./routes/departement.routes') },
+  { path: '/api/etablissements-origine', route: require('./routes/etablissementOrigine.routes') },
   { path: '/api/typesfiliere',      route: require('./routes/typesFiliere.routes') },
   { path: '/api/filieres',          route: require('./routes/filieres.routes') },
   { path: '/api/annees',            route: require('./routes/anne.routes') },
@@ -114,6 +121,7 @@ const apiRoutes = [
   // Étudiants & inscriptions
   { path: '/api/etudiants',         route: require('./routes/etudiant.routes') },
   { path: '/api/reinscription',     route: require('./routes/reinscription.routes') },
+  { path: '/api/verification',      route: require('./routes/verification.routes') },
   { path: '/api/caisse',            route: require('./routes/caisse.routes') },
   { path: '/api/effectifs',         route: require('./routes/effectifs.routes') },
   { path: '/api/StatsInscriptions', route: require('./routes/StatsInscriptions.routes') },

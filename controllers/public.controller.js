@@ -1,4 +1,7 @@
 const db = require('../config/db.config');
+const moment = require('moment');
+const bcrypt = require('bcrypt');
+const { genererCodeCandidat } = require('../services/codePaiement.service');
 
 // Route publique pour la liste des classes
 exports.getListeClassesPublic = async (req, res) => {
@@ -228,6 +231,301 @@ exports.getDetailGroupePublic = async (req, res) => {
       success: false,
       message: 'Erreur lors de la récupération des détails du groupe'
     });
+  } finally {
+    client.release();
+  }
+};
+
+// ─── Préinscription en ligne (site public) ──────────────────────────────────
+// Toutes les routes ci-dessous sont montées sans authentification. Elles ne créent que
+// des dossiers "web" (voir demanderAdmissionPublic) : standing='en attente', valide_scolarite
+// = false, sans aucune pièce justificative ni photo — ces deux points restent exclusivement
+// traités par le Service de la Scolarité lors du passage physique de l'étudiant (tour suivant).
+
+// Données de référence groupées pour l'assistant d'inscription (étapes 1-2).
+exports.getReferenceDataAdmission = async (req, res) => {
+  try {
+    const [ecoles, sites, pays, villes, seriesBac, anneesBac, etablissements, parcours] = await Promise.all([
+      db.query(`SELECT id, nom, code FROM ecole WHERE statut = 'actif' ORDER BY nom`),
+      db.query(`SELECT id, nom FROM site ORDER BY nom`),
+      db.query(`SELECT id, code_iso, nom, nationalite FROM pays ORDER BY nom`),
+      db.query(`SELECT id, nom FROM ville ORDER BY nom`),
+      db.query(`SELECT id, nom FROM serie_bac ORDER BY nom`),
+      db.query(`SELECT id, annee AS nom FROM annee_bac ORDER BY annee DESC`),
+      db.query(`SELECT id, nom_etablissement, situation_geographique FROM etablissement_origine ORDER BY nom_etablissement`),
+      // ✅ Parcours JOUR/SOIR (curcus) : exposée ici (route déjà publique) car GET /api/curcus exige
+      // authenticateToken, inutilisable par le portail Web qui n'a pas de session. "Universitaire"
+      // exclu : jamais un choix manuel, résolu automatiquement côté client (StepFormation.tsx).
+      db.query(`SELECT id, type_parcours FROM curcus WHERE type_parcours != 'Universitaire' ORDER BY type_parcours`),
+    ]);
+    res.status(200).json({
+      success: true,
+      data: {
+        ecoles: ecoles.rows,
+        sites: sites.rows,
+        pays: pays.rows,
+        villes: villes.rows,
+        seriesBac: seriesBac.rows,
+        anneesBac: anneesBac.rows,
+        etablissementsOrigine: etablissements.rows,
+        parcours: parcours.rows,
+      },
+    });
+  } catch (error) {
+    console.error('Erreur getReferenceDataAdmission:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// Cascade École → Département (formulaire public, pas de site/année implicite via req.user).
+exports.getDepartementsPublic = async (req, res) => {
+  try {
+    const { ecole_id } = req.query;
+    if (!ecole_id) {
+      return res.status(400).json({ success: false, message: 'Le paramètre ecole_id est requis.' });
+    }
+    const result = await db.query(
+      `SELECT id, nom, sigle, ecole_id FROM departement WHERE ecole_id = $1 ORDER BY nom`,
+      [ecole_id]
+    );
+    res.status(200).json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error('Erreur getDepartementsPublic:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// Aperçu du tarif avant validation (même calcul que calculerMontantScolarite côté agent).
+exports.getTarifPreviewPublic = async (req, res) => {
+  try {
+    const { niveau_id, statut_scolaire } = req.query;
+    if (!niveau_id) {
+      return res.status(400).json({ success: false, message: 'Le paramètre niveau_id est requis.' });
+    }
+    const { calculerMontantScolarite } = require('./tarif.controller');
+    const tarif = await calculerMontantScolarite(niveau_id, statut_scolaire || 'Non affecté');
+    if (!tarif || tarif.montant === null) {
+      return res.status(404).json({ success: false, message: 'Aucun tarif configuré pour ce niveau.' });
+    }
+    res.status(200).json({ success: true, data: tarif });
+  } catch (error) {
+    console.error('Erreur getTarifPreviewPublic:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// Cascade Département + Site → Filières (avec leurs niveaux imbriqués, pour l'année en cours
+// de ce site) — même forme que getAllFilieresTable côté métier, mais site/année ne viennent
+// pas de req.user (public) : le site est explicitement choisi par le candidat.
+exports.getFilieresAvecNiveauxPublic = async (req, res) => {
+  try {
+    const { departement_id, site_id } = req.query;
+    if (!departement_id || !site_id) {
+      return res.status(400).json({ success: false, message: 'Les paramètres departement_id et site_id sont requis.' });
+    }
+
+    const anneeResult = await db.query(
+      `SELECT a.id FROM anneeacademique a
+       JOIN anneeacademique_site s ON s.anneeacademique_id = a.id
+       WHERE s.etat = 'en cour' AND s.site_id = $1
+       LIMIT 1`,
+      [site_id]
+    );
+    const anneeAcademiqueId = anneeResult.rows[0]?.id;
+    if (!anneeAcademiqueId) {
+      return res.status(404).json({ success: false, message: "Aucune année académique en cours pour ce site." });
+    }
+
+    const result = await db.query(
+      `SELECT
+         f.id, f.nom, f.sigle, f.departement_id,
+         tf.id AS typefiliere_id, tf.libelle AS typefiliere_libelle,
+         COALESCE(
+           json_agg(
+             json_build_object('id', n.id, 'libelle', n.libelle, 'prix_formation', n.prix_formation)
+           ) FILTER (WHERE n.id IS NOT NULL),
+           '[]'
+         ) AS niveaux
+       FROM filiere f
+       JOIN typefiliere tf ON tf.id = f.type_filiere_id
+       LEFT JOIN niveau n ON n.filiere_id = f.id AND n.anneeacademique_id = $1 AND n.site_id = $2
+       WHERE f.departement_id = $3
+         AND EXISTS (
+           SELECT 1 FROM niveau n2
+           WHERE n2.filiere_id = f.id AND n2.anneeacademique_id = $1 AND n2.site_id = $2
+         )
+       GROUP BY f.id, f.nom, f.sigle, f.departement_id, tf.id, tf.libelle
+       ORDER BY f.nom`,
+      [anneeAcademiqueId, site_id, departement_id]
+    );
+    res.status(200).json({ success: true, data: { anneeAcademiqueId, filieres: result.rows } });
+  } catch (error) {
+    console.error('Erreur getFilieresAvecNiveauxPublic:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// Soumission d'une préinscription en ligne — crée le dossier avec un code de paiement généré
+// mais désactivé (valide_scolarite = false), sans aucune pièce jointe ni photo.
+exports.demanderAdmissionPublic = async (req, res) => {
+  const client = await db.connect();
+  try {
+    const { etudiant, academique, inscription } = req.body;
+    if (!etudiant || !academique || !inscription) {
+      return res.status(400).json({ success: false, message: 'Données incomplètes.' });
+    }
+
+    const requiredEtudiant = ['nom', 'prenoms', 'date_naissance', 'sexe', 'nationalite', 'telephone', 'email_personnel', 'contact_parent'];
+    const requiredAcademique = ['matricule', 'annee_academique_id'];
+    const requiredInscription = ['niveau_id', 'id_filiere', 'site_id'];
+    const missing = [
+      ...requiredEtudiant.filter(f => !etudiant[f]),
+      ...requiredAcademique.filter(f => !academique[f]),
+      ...requiredInscription.filter(f => !inscription[f]),
+    ];
+    if (missing.length > 0) {
+      return res.status(400).json({ success: false, message: 'Champs obligatoires manquants.', missing });
+    }
+    if (req.body.engagement_accepte !== true) {
+      return res.status(400).json({ success: false, message: "L'engagement doit être accepté." });
+    }
+
+    await client.query('BEGIN');
+
+    // ✅ Résolution atomique formation+tarif+parcours (services/parcoursProfessionnel.service.js) :
+    // même source de vérité que l'admission agent (addEtudiant) — une LICENCE 3 PRO/MASTER PRO
+    // exige désormais un curcus_id, exactement comme côté agent et comme en réinscription.
+    const { resoudreFormationEtParcours } = require('../services/parcoursProfessionnel.service');
+    const resolution = await resoudreFormationEtParcours(client, {
+      niveauId: inscription.niveau_id,
+      filiereId: inscription.id_filiere,
+      curcusId: inscription.curcus_id,
+      statutScolaire: academique.statut_scolaire || 'Non affecté',
+    });
+    if (resolution.erreur) {
+      await client.query('ROLLBACK');
+      return res.status(resolution.erreur.status).json({
+        success: false,
+        message: resolution.erreur.status === 409
+          ? 'Aucun tarif configuré pour ce niveau. Contactez le Service de la Scolarité.'
+          : resolution.erreur.message,
+        code: resolution.erreur.code
+      });
+    }
+    const tarif = resolution.tarif;
+
+    let codePaiement = null;
+    for (let tentative = 0; tentative < 8 && !codePaiement; tentative++) {
+      const candidat = genererCodeCandidat('AD');
+      const existe = await client.query('SELECT 1 FROM etudiant WHERE code_paiement = $1', [candidat]);
+      if (existe.rows.length === 0) codePaiement = candidat;
+    }
+    if (!codePaiement) {
+      throw new Error("Impossible de générer un code de paiement unique après plusieurs tentatives.");
+    }
+
+    const { generateMatriculeIIPEA, generateCodeUnique } = require('./etudiant.controller');
+    const cleanName = (str) => str.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '.').toLowerCase();
+    const email = `${cleanName(etudiant.prenoms.split(' ')[0])}.${cleanName(etudiant.nom)}@iipea.com`;
+    const hashedPassword = await bcrypt.hash('@elites@', 10);
+    const codeUnique = await generateCodeUnique(etudiant.nom, etudiant.prenoms, etudiant.date_naissance);
+    const matriculeIipea = await generateMatriculeIIPEA(academique.annee_academique_id, inscription.id_filiere);
+
+    const etudiantResult = await client.query(
+      `INSERT INTO etudiant (
+         matricule, nom, prenoms, date_naissance, lieu_naissance, pays_naissance, telephone, email,
+         email_personnel,
+         lieu_residence, contact_parent, nom_parent_1, nom_parent_2, code_unique, annee_bac, serie_bac,
+         etablissement_origine, inscrit_par, photo_url, site_id, annee_academique_id, groupe_id,
+         niveau_id, statut_scolaire, nationalite, standing, numero_table, sexe, password,
+         curcus_id, id_filiere, date_inscription, contact_etudiant, contact_parent_2, matricule_iipea,
+         numero_acte_naissance, numero_piece_identite, mention_bac,
+         adresse_parent_1, adresse_parent_2, engagement_accepte, code_paiement, nombre_versements_prevu,
+         ip_ministere, source_inscription, valide_scolarite
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,NOW(),$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,'web',false)
+       RETURNING id`,
+      [
+        academique.matricule,
+        etudiant.nom.toUpperCase(),
+        etudiant.prenoms.toUpperCase(),
+        moment(etudiant.date_naissance).format('YYYY-MM-DD'),
+        etudiant.lieu_naissance,
+        etudiant.pays_naissance || null,
+        etudiant.telephone,
+        email,
+        etudiant.email_personnel,
+        etudiant.lieu_residence,
+        etudiant.contact_parent,
+        etudiant.nom_parent_1 || null,
+        etudiant.nom_parent_2 || null,
+        codeUnique,
+        academique.annee_bac || null,
+        academique.serie_bac || null,
+        academique.etablissement_origine || null,
+        null, // inscrit_par : personne — dossier soumis par le candidat lui-même
+        null, // photo_url : prise par l'agent lors du passage physique
+        inscription.site_id,
+        academique.annee_academique_id,
+        null, // groupe_id : affecté au moment du paiement en caisse
+        inscription.niveau_id,
+        tarif.statut_applique,
+        etudiant.nationalite,
+        'en attente',
+        academique.numero_table || null,
+        etudiant.sexe,
+        hashedPassword,
+        inscription.curcus_id || null,
+        inscription.id_filiere,
+        etudiant.telephone, // contact_etudiant
+        etudiant.contact_parent_2 || null,
+        matriculeIipea,
+        etudiant.numero_acte_naissance || null,
+        etudiant.numero_piece_identite || null,
+        academique.mention_bac || null,
+        etudiant.adresse_parent_1 || null,
+        etudiant.adresse_parent_2 || null,
+        true, // engagement_accepte
+        codePaiement,
+        inscription.nombre_versements ? parseInt(inscription.nombre_versements, 10) : null,
+        academique.ip_ministere || null,
+      ]
+    );
+    const etudiantId = etudiantResult.rows[0].id;
+
+    // Pièces justificatives : l'étudiant DÉCLARE seulement ce qu'il possède (aucun fichier).
+    // `declare_par_etudiant` reste strictement distinct de `fourni` (jamais mis à true ici) —
+    // `fourni` ne sera positionné que par l'agent lors de la vérification physique à l'école.
+    const pieces = req.body.pieces || {};
+    const typesDocResult = await client.query(
+      `SELECT id, code FROM type_document WHERE contexte = 'admission' AND code != 'PHOTO'`
+    );
+    for (const typeDoc of typesDocResult.rows) {
+      const declare = pieces[typeDoc.code] === true || pieces[typeDoc.code] === 'true';
+      await client.query(
+        `INSERT INTO document_etudiant (etudiant_id, type_document_id, fourni, declare_par_etudiant)
+         VALUES ($1, $2, false, $3)`,
+        [etudiantId, typeDoc.id, declare]
+      );
+    }
+
+    const scolariteResult = await client.query(
+      `INSERT INTO scolarite (montant_scolarite, scolarite_verse, statut_etudiant)
+       VALUES ($1, 0, 'en attente') RETURNING id`,
+      [tarif.montant]
+    );
+    await client.query(`UPDATE etudiant SET scolarite_id = $1 WHERE id = $2`, [scolariteResult.rows[0].id, etudiantId]);
+
+    await client.query('COMMIT');
+
+    res.status(201).json({
+      success: true,
+      message: 'Votre demande de préinscription a été enregistrée.',
+      data: { id: etudiantId, matricule_iipea: matriculeIipea, code_paiement: codePaiement, nom: etudiant.nom.toUpperCase(), prenoms: etudiant.prenoms.toUpperCase() },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Erreur demanderAdmissionPublic:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.', details: error.message });
   } finally {
     client.release();
   }

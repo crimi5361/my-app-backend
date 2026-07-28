@@ -813,12 +813,21 @@
                         </td>
                         
                         <!-- Notes par matière -->
-                        <% etudiant.ues.forEach((ue) => { 
+                        <% etudiant.ues.forEach((ue) => {
                             // ✅ Utiliser moyenne_affichage si disponible (après repêchage)
                             const ueValidee = ue.valide || false;
                             const ueMoyenne = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : ue.moyenne;
-                            
-                            ue.matieres.forEach((matiere) => { 
+
+                            // ✅ ECUE à choix (Espagnol/Allemand, etc.) : si les DEUX membres de la paire
+                            // sont à 0 (aucune réellement suivie), un seul doit afficher "NON CLASSÉ" —
+                            // l'autre reste affiché comme un simple 0, jamais les deux à la fois. Choix
+                            // déterministe (ordre alphabétique), pas aléatoire.
+                            const nonClasseUE = ue.matieres.filter(m => m.non_classe);
+                            const zeroAAfficher = nonClasseUE.length > 1
+                                ? [...nonClasseUE].sort((a, b) => (a.nom || '').localeCompare(b.nom || ''))[0]
+                                : null;
+
+                            ue.matieres.forEach((matiere) => {
                                 let moyenneECUE = null;
                                 let moyenneOriginale = null;
                                 
@@ -833,7 +842,14 @@
                                     moyenneOriginale = matiere.moyenne;
                                 }
                             %>
-                                
+                                <% if (matiere.non_classe && matiere !== zeroAAfficher) { %>
+                                    <!-- ✅ ECUE à choix non suivie (ex: Espagnol/Allemand) : 0 informatif, non comptabilisé -->
+                                    <% if (data.type_traitement === 'universitaire') { %>
+                                        <td class="note-cell" colspan="2" style="color: #888; font-style: italic; text-align: center;">NON CLASSÉ</td>
+                                    <% } else { %>
+                                        <td class="note-cell" style="color: #888; font-style: italic; text-align: center;">NON CLASSÉ</td>
+                                    <% } %>
+                                <% } else { %>
                                 <!-- Utilisation du type_traitement pour l'affichage des notes -->
                                 <% if (data.type_traitement === 'universitaire') { %>
                                     <!-- Colonne CC -->
@@ -938,6 +954,7 @@
                                         <% } %>
                                     </td>
                                 <% } %>
+                                <% } %>
                         <%  }); %>
                         
                             <!-- Résultat UE -->
@@ -955,8 +972,11 @@
                         <% }); %>
                         
                         <!-- Pour les filières professionnelles : RANG avant MOY. GÉN. -->
+                        <!-- ✅ Classement académique réel (calculé sur la moyenne, avant le tri
+                             alphabétique d'affichage) — ne pas confondre avec le N° de ligne
+                             ci-dessus, qui suit l'ordre alphabétique. -->
                         <% if (data.type_traitement === 'professionnel') { %>
-                            <td class="rang-cell"><%= etudiantIndex + 1 %></td>
+                            <td class="rang-cell"><%= etudiant.rang %></td>
                         <% } %>
                         
                         <!-- Moyenne générale -->

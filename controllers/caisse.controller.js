@@ -172,7 +172,7 @@ exports.rechercherDossierParCode = async (req, res) => {
 
     const result = await db.query(
       `SELECT r.id AS reinscription_id, r.statut, r.montant_annuel_nouveau, r.code_paiement,
-              r.nombre_versements_prevu, r.modalite_paiement,
+              r.nombre_versements_prevu, r.modalite_paiement, r.valide_scolarite,
               e.id AS etudiant_id, e.nom, e.prenoms, e.matricule_iipea, e.photo_url,
               f.nom AS filiere_nom, n.libelle AS niveau_libelle, a.annee
        FROM reinscription r
@@ -193,6 +193,12 @@ exports.rechercherDossierParCode = async (req, res) => {
     }
     if (dossier.statut !== 'en_attente_paiement') {
       return res.status(409).json({ success: false, message: "Ce dossier n'est pas en attente de paiement." });
+    }
+    // ✅ Condition cumulative (jamais un remplacement du check statut ci-dessus) : un dossier de
+    // réinscription venu du portail Web doit être vérifié par la scolarité avant tout paiement —
+    // même garde-fou que l'admission Web (etudiant.valide_scolarite / caisse admission).
+    if (dossier.valide_scolarite === false) {
+      return res.status(409).json({ success: false, code: 'NON_VALIDE_SCOLARITE', message: "Ce dossier doit d'abord être validé par le Service de la Scolarité." });
     }
 
     res.status(200).json({ success: true, data: dossier });
@@ -244,6 +250,12 @@ exports.validerPaiementReinscription = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ success: false, message: "Ce dossier n'est pas en attente de paiement." });
     }
+    // ✅ Condition cumulative (jamais un remplacement du check statut ci-dessus) : un dossier de
+    // réinscription venu du portail Web doit être vérifié par la scolarité avant tout paiement.
+    if (dossier.valide_scolarite === false) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, code: 'NON_VALIDE_SCOLARITE', message: "Ce dossier doit d'abord être validé par le Service de la Scolarité." });
+    }
 
     const etudiantResult = await client.query('SELECT * FROM etudiant WHERE id = $1', [dossier.etudiant_id]);
     const etudiant = etudiantResult.rows[0];
@@ -275,15 +287,21 @@ exports.validerPaiementReinscription = async (req, res) => {
       }
     }
 
+    // ✅ Parcours JOUR/SOIR : le choix fait à la réinscription (dossier.curcus_id) prévaut sur
+    // l'ancien parcours de l'étudiant (etudiant.curcus_id) — cOld reste le filet de sécurité pour
+    // les niveaux qui ne requièrent aucun choix (dossier.curcus_id NULL, comportement inchangé).
     const infosResult = await client.query(
       `SELECT f.nom AS filiere_nom, f.sigle AS filiere_sigle, n.libelle AS niveau_libelle,
-              tf.libelle AS type_filiere, c.type_parcours AS cursus
+              tf.libelle AS type_filiere,
+              COALESCE(cNew.id, cOld.id) AS curcus_id_resolu,
+              COALESCE(cNew.type_parcours, cOld.type_parcours) AS cursus
        FROM filiere f
        JOIN typefiliere tf ON tf.id = f.type_filiere_id
        JOIN niveau n ON n.id = $1
-       LEFT JOIN curcus c ON c.id = $2
-       WHERE f.id = $3`,
-      [dossier.niveau_retenu_id, etudiant.curcus_id, dossier.id_filiere_retenu]
+       LEFT JOIN curcus cOld ON cOld.id = $2
+       LEFT JOIN curcus cNew ON cNew.id = $3
+       WHERE f.id = $4`,
+      [dossier.niveau_retenu_id, etudiant.curcus_id, dossier.curcus_id, dossier.id_filiere_retenu]
     );
     if (infosResult.rows.length === 0) {
       throw new Error('Filière/niveau introuvable pour ce dossier.');
@@ -309,11 +327,22 @@ exports.validerPaiementReinscription = async (req, res) => {
     await client.query(
       `UPDATE etudiant SET
          niveau_id = $1, annee_academique_id = $2, scolarite_id = $3,
-         id_filiere = $4, statut_scolaire = $5, standing = 'Inscrit'
-       WHERE id = $6`,
+         id_filiere = $4, statut_scolaire = $5, standing = 'Inscrit',
+         curcus_id = COALESCE($6, curcus_id)
+       WHERE id = $7`,
       [dossier.niveau_retenu_id, dossier.anneeacademique_id, scolariteResult.rows[0].id,
-       dossier.id_filiere_retenu, dossier.statut_scolaire_retenu, dossier.etudiant_id]
+       dossier.id_filiere_retenu, dossier.statut_scolaire_retenu, dossier.curcus_id, dossier.etudiant_id]
     );
+
+    // Filet de sécurité pour l'avenir : aucun code n'écrit encore dans inscription_annuelle
+    // aujourd'hui, mais si une ligne existait déjà pour cette année, son parcours doit rester
+    // cohérent avec le choix fait ici plutôt que de rester orpheline.
+    if (dossier.curcus_id) {
+      await client.query(
+        `UPDATE inscription_annuelle SET curcus_id = $1 WHERE etudiant_id = $2 AND annee_academique_id = $3`,
+        [dossier.curcus_id, dossier.etudiant_id, dossier.anneeacademique_id]
+      );
+    }
 
     // Affectation classe/groupe : toujours celle de la NOUVELLE classe (nouveau niveau/année),
     // jamais l'ancien groupe de l'étudiant.
@@ -323,6 +352,7 @@ exports.validerPaiementReinscription = async (req, res) => {
       filiereSigle: infos.filiere_sigle,
       niveauLibelle: infos.niveau_libelle,
       cursus: infos.cursus,
+      curcusId: infos.curcus_id_resolu,
       typeFiliere: infos.type_filiere,
       anneeAcademiqueId: dossier.anneeacademique_id,
       filiereId: dossier.id_filiere_retenu,
@@ -877,6 +907,7 @@ exports.rechercherDossierAdmissionParCode = async (req, res) => {
 
     const result = await db.query(
       `SELECT e.id AS etudiant_id, e.standing, e.code_paiement, e.nom, e.prenoms, e.matricule_iipea, e.photo_url,
+              e.valide_scolarite,
               f.nom AS filiere_nom, n.libelle AS niveau_libelle, a.annee,
               s.montant_scolarite
        FROM etudiant e
@@ -894,6 +925,9 @@ exports.rechercherDossierAdmissionParCode = async (req, res) => {
     const dossier = result.rows[0];
     if (dossier.standing === 'Inscrit') {
       return res.status(409).json({ success: false, code: 'DEJA_PAYE', message: 'Ce dossier a déjà été payé et finalisé.' });
+    }
+    if (dossier.valide_scolarite === false) {
+      return res.status(409).json({ success: false, code: 'NON_VALIDE_SCOLARITE', message: 'Ce dossier doit d\'abord être validé par le Service de la Scolarité.' });
     }
 
     res.status(200).json({ success: true, data: { ...dossier, montant_annuel_nouveau: dossier.montant_scolarite } });
@@ -949,6 +983,10 @@ exports.validerPaiementAdmission = async (req, res) => {
       await client.query('ROLLBACK');
       return res.status(409).json({ success: false, code: 'DEJA_PAYE', message: 'Ce dossier a déjà été payé et finalisé.' });
     }
+    if (etudiant.valide_scolarite === false) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, code: 'NON_VALIDE_SCOLARITE', message: 'Ce dossier doit d\'abord être validé par le Service de la Scolarité.' });
+    }
 
     const montantScolarite = parseFloat(etudiant.montant_scolarite || 0);
     const montantPaye = parseFloat(montant);
@@ -969,6 +1007,7 @@ exports.validerPaiementAdmission = async (req, res) => {
       filiereSigle: etudiant.filiere_sigle,
       niveauLibelle: etudiant.niveau_libelle,
       cursus: etudiant.cursus,
+      curcusId: etudiant.curcus_id,
       typeFiliere: etudiant.type_filiere,
       anneeAcademiqueId: etudiant.annee_academique_id,
       filiereId: etudiant.id_filiere,

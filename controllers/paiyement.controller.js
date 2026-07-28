@@ -227,6 +227,7 @@ exports.createPaiement = async (req, res) => {
         filiereSigle: etudiant.filiere_sigle,
         niveauLibelle: etudiant.niveau,
         cursus: etudiant.cursus,
+        curcusId: etudiant.curcus_id,
         typeFiliere: etudiant.type_filiere,
         anneeAcademiqueId,
         filiereId: etudiant.id_filiere,

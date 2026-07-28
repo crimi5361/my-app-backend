@@ -15,6 +15,26 @@ const SEUIL_ELIMINATOIRE = 4;
 const SEUIL_VALIDATION = 6;
 const CIBLE = 10;
 
+// ============ ECUE À CHOIX MUTUELLEMENT EXCLUSIFS ============
+// L'étudiant ne suit qu'une matière de la paire ; l'autre reste à 0 en base par absence
+// d'évaluation, pas par échec (ex: Espagnol/Allemand). Comparaison insensible à la casse sur
+// matiere.nom. Pour ajouter une nouvelle paire, l'ajouter ci-dessous.
+const PAIRES_ECUE_CHOIX = [
+    ['ESPAGNOL', 'ALLEMAND'],
+];
+
+const trouverPaireChoix = (nomMatiere) => {
+    const nom = (nomMatiere || '').trim().toUpperCase();
+    return PAIRES_ECUE_CHOIX.find(paire => paire.includes(nom)) || null;
+};
+
+// ✅ PERF : ces logs de diagnostic s'exécutent potentiellement plusieurs milliers de fois par
+// requête (jusqu'à 2 fois par étudiant × 728 étudiants sur la page Statistiques). console.log
+// est une écriture synchrone dès que stdout n'est pas un terminal interactif (cas de la
+// production), ce qui contribue au blocage de l'Event Loop. Silencieux par défaut ; activable
+// via DEBUG_PV_VERBOSE=true pour le diagnostic du repêchage crédits en développement.
+const DEBUG_VERBOSE = process.env.DEBUG_PV_VERBOSE === 'true';
+
 // ============ FONCTION UTILITAIRE POUR DÉTECTER LE TYPE DE TRAITEMENT ============
 
 const determinerTypeTraitement = (typeFiliere, groupeNom) => {
@@ -23,7 +43,7 @@ const determinerTypeTraitement = (typeFiliere, groupeNom) => {
     }
     if (typeFiliere === 'Professionnelles' || typeFiliere === 'professionnelles') {
         if (groupeNom && groupeNom.toUpperCase().includes('LICENCE')) {
-            console.log(`🎓 Cas spécial: groupe professionnel "${groupeNom}" contient "Licence" → traitement universitaire`);
+            if (DEBUG_VERBOSE) console.log(`🎓 Cas spécial: groupe professionnel "${groupeNom}" contient "Licence" → traitement universitaire`);
             return 'universitaire';
         }
         return 'professionnel';
@@ -67,7 +87,7 @@ const estNiveauEligibleRepechage = (niveauLibelle, groupeNom, semestreId) => {
         : REPECHAGE_CREDITS_CONFIG.NIVEAUX_ELIGIBLES_REGEX_S1;
 
     const resultat = regex.test(texte);
-    console.log(`🔍 estNiveauEligibleRepechage: texte="${texte}", semestre=${semestreId}, regex=${regex}, resultat=${resultat}`);
+    if (DEBUG_VERBOSE) console.log(`🔍 estNiveauEligibleRepechage: texte="${texte}", semestre=${semestreId}, regex=${regex}, resultat=${resultat}`);
     return resultat;
 };
 
@@ -75,20 +95,24 @@ const estNiveauEligibleRepechage = (niveauLibelle, groupeNom, semestreId) => {
  * ✅ HARMONISATION FORCÉE : Peu importe la note (0, 2, 5, etc.), on remonte à 10
  */
 const harmoniserVersMoyenneCibleForce = (matieres, cible = 10) => {
-    const matieresAvecNotes = matieres.filter(m => m.a_note);
+    const passthrough = (m) => ({
+        ...m,
+        moyenne_originale: m.moyenne,
+        moyenne_affichage: m.moyenne,
+        cc_original: m.moyenne_cc,
+        examen_original: m.partiel,
+        cc_affichage: m.moyenne_cc,
+        examen_affichage: m.partiel,
+        harmonisee: false,
+        repechage_credits: false
+    });
+
+    // ✅ ECUE à choix exclues (non_classe) : ne participent jamais au repêchage forcé, ni comme
+    // poids ni comme cible à recalculer.
+    const matieresAvecNotes = matieres.filter(m => m.a_note && !m.non_classe);
 
     if (matieresAvecNotes.length === 0) {
-        return matieres.map(m => ({
-            ...m,
-            moyenne_originale: m.moyenne,
-            moyenne_affichage: m.moyenne,
-            cc_original: m.moyenne_cc,
-            examen_original: m.partiel,
-            cc_affichage: m.moyenne_cc,
-            examen_affichage: m.partiel,
-            harmonisee: false,
-            repechage_credits: false
-        }));
+        return matieres.map(passthrough);
     }
 
     const totalCoeff = matieresAvecNotes.reduce((sum, m) => sum + m.coefficient, 0);
@@ -96,66 +120,26 @@ const harmoniserVersMoyenneCibleForce = (matieres, cible = 10) => {
     const moyenneActuelle = totalCoeff > 0 ? sommeActuelle / totalCoeff : 0;
 
     if (moyenneActuelle >= cible) {
-        return matieres.map(m => ({
-            ...m,
-            moyenne_originale: m.moyenne,
-            moyenne_affichage: m.moyenne,
-            cc_original: m.moyenne_cc,
-            examen_original: m.partiel,
-            cc_affichage: m.moyenne_cc,
-            examen_affichage: m.partiel,
-            harmonisee: false,
-            repechage_credits: false
-        }));
+        return matieres.map(passthrough);
     }
 
     const notesFaibles = matieresAvecNotes.filter(m => m.moyenne < cible);
     const coeffFaible = notesFaibles.reduce((sum, m) => sum + m.coefficient, 0);
 
     if (coeffFaible === 0) {
-        return matieres.map(m => ({
-            ...m,
-            moyenne_originale: m.moyenne,
-            moyenne_affichage: m.moyenne,
-            cc_original: m.moyenne_cc,
-            examen_original: m.partiel,
-            cc_affichage: m.moyenne_cc,
-            examen_affichage: m.partiel,
-            harmonisee: false,
-            repechage_credits: false
-        }));
+        return matieres.map(passthrough);
     }
 
     const sommeNecessaire = cible * totalCoeff;
     const sommeRestante = sommeNecessaire - sommeActuelle;
 
     return matieres.map(m => {
-        if (!m.a_note) {
-            return {
-                ...m,
-                moyenne_originale: m.moyenne,
-                moyenne_affichage: m.moyenne,
-                cc_original: m.moyenne_cc,
-                examen_original: m.partiel,
-                cc_affichage: m.moyenne_cc,
-                examen_affichage: m.partiel,
-                harmonisee: false,
-                repechage_credits: false
-            };
+        if (!m.a_note || m.non_classe) {
+            return passthrough(m);
         }
 
         if (m.moyenne >= cible) {
-            return {
-                ...m,
-                moyenne_originale: m.moyenne,
-                moyenne_affichage: m.moyenne,
-                cc_original: m.moyenne_cc,
-                examen_original: m.partiel,
-                cc_affichage: m.moyenne_cc,
-                examen_affichage: m.partiel,
-                harmonisee: false,
-                repechage_credits: false
-            };
+            return passthrough(m);
         }
 
         const augmentation = sommeRestante * (m.coefficient / coeffFaible);
@@ -213,7 +197,7 @@ const forcerValidationUERepechage = (ue) => {
         return ue;
     }
 
-    console.log(`🔄 Repêchage forcé pour UE: ${ue.libelle} (${ue.moyenne})`);
+    if (DEBUG_VERBOSE) console.log(`🔄 Repêchage forcé pour UE: ${ue.libelle} (${ue.moyenne})`);
 
     const matieresRepechees = harmoniserVersMoyenneCibleForce(ue.matieres, 10);
 
@@ -233,20 +217,20 @@ const forcerValidationUERepechage = (ue) => {
 const appliquerRepechageCredits = (uesAvecResultats, totalCreditsMaquette, semestreId, niveauLibelle, groupeNom) => {
     const cfg = REPECHAGE_CREDITS_CONFIG;
 
-    console.log(`🔍 appliquerRepechageCredits - semestre: ${semestreId}, totalCreditsMaquette: ${totalCreditsMaquette}, niveau: "${niveauLibelle}", groupe: "${groupeNom}"`);
+    if (DEBUG_VERBOSE) console.log(`🔍 appliquerRepechageCredits - semestre: ${semestreId}, totalCreditsMaquette: ${totalCreditsMaquette}, niveau: "${niveauLibelle}", groupe: "${groupeNom}"`);
 
     if (!cfg.SEMESTRES_CONCERNES.includes(parseInt(semestreId, 10))) {
-        console.log(`❌ Repêchage non appliqué: semestre ${semestreId} non concerné`);
+        if (DEBUG_VERBOSE) console.log(`❌ Repêchage non appliqué: semestre ${semestreId} non concerné`);
         return { ues: uesAvecResultats, repechageApplique: false };
     }
 
     if (totalCreditsMaquette !== cfg.CREDITS_TOTAL_ATTENDU) {
-        console.log(`❌ Repêchage non appliqué: total crédits maquette ${totalCreditsMaquette} !== ${cfg.CREDITS_TOTAL_ATTENDU}`);
+        if (DEBUG_VERBOSE) console.log(`❌ Repêchage non appliqué: total crédits maquette ${totalCreditsMaquette} !== ${cfg.CREDITS_TOTAL_ATTENDU}`);
         return { ues: uesAvecResultats, repechageApplique: false };
     }
 
     if (!estNiveauEligibleRepechage(niveauLibelle, groupeNom, semestreId)) {
-        console.log(`❌ Repêchage non appliqué: niveau non éligible`);
+        if (DEBUG_VERBOSE) console.log(`❌ Repêchage non appliqué: niveau non éligible`);
         return { ues: uesAvecResultats, repechageApplique: false };
     }
 
@@ -257,15 +241,15 @@ const appliquerRepechageCredits = (uesAvecResultats, totalCreditsMaquette, semes
         (sum, ue) => sum + (ue.credits_valides || 0), 0
     );
 
-    console.log(`📊 Crédits validés actuels (règle hybride): ${creditsValidesActuels}/${totalCreditsMaquette}`);
+    if (DEBUG_VERBOSE) console.log(`📊 Crédits validés actuels (règle hybride): ${creditsValidesActuels}/${totalCreditsMaquette}`);
 
     const eligible = creditsValidesActuels >= cfg.CREDITS_MIN && creditsValidesActuels <= cfg.CREDITS_MAX;
     if (!eligible) {
-        console.log(`❌ Repêchage non appliqué: crédits ${creditsValidesActuels} hors plage [${cfg.CREDITS_MIN}-${cfg.CREDITS_MAX}]`);
+        if (DEBUG_VERBOSE) console.log(`❌ Repêchage non appliqué: crédits ${creditsValidesActuels} hors plage [${cfg.CREDITS_MIN}-${cfg.CREDITS_MAX}]`);
         return { ues: uesAvecResultats, repechageApplique: false };
     }
 
-    console.log(`🎯 ✅ Repêchage crédits APPLIQUÉ (${creditsValidesActuels}/${totalCreditsMaquette}) pour semestre ${semestreId}`);
+    if (DEBUG_VERBOSE) console.log(`🎯 ✅ Repêchage crédits APPLIQUÉ (${creditsValidesActuels}/${totalCreditsMaquette}) pour semestre ${semestreId}`);
 
     const uesRepechees = uesAvecResultats.map(ue => {
         if (ue.valide) {
@@ -275,7 +259,7 @@ const appliquerRepechageCredits = (uesAvecResultats, totalCreditsMaquette, semes
     });
 
     const nouveauxCredits = uesRepechees.reduce((sum, ue) => sum + (ue.valide ? ue.credits : 0), 0);
-    console.log(`📊 Crédits après repêchage: ${nouveauxCredits}/${totalCreditsMaquette}`);
+    if (DEBUG_VERBOSE) console.log(`📊 Crédits après repêchage: ${nouveauxCredits}/${totalCreditsMaquette}`);
 
     return { ues: uesRepechees, repechageApplique: true };
 };
@@ -311,7 +295,27 @@ exports.genererPVByGroupe = async (req, res) => {
         );
 
         if (typeTraitement === 'professionnel') {
-            resultatsEtudiants.sort((a, b) => b.moyenne_generale - a.moyenne_generale);
+            // ✅ Rang académique réel (classement par moyenne générale), calculé AVANT le tri
+            // d'affichage ci-dessous — le rang ne doit jamais dépendre de l'ordre d'affichage.
+            // Identique au calcul d'avant (position après tri par moyenne décroissante).
+            [...resultatsEtudiants]
+                .sort((a, b) => b.moyenne_generale - a.moyenne_generale)
+                .forEach((etudiant, index) => { etudiant.rang = index + 1; });
+
+            // ✅ PV filières professionnelles : ordre d'AFFICHAGE alphabétique (Nom puis Prénoms),
+            // plus pratique pour la consultation. Le N° de ligne suit cet ordre ; le RANG ci-dessus
+            // reste le classement académique réel, affiché séparément.
+            resultatsEtudiants.sort((a, b) => {
+                const nomA = (a.nom || '').toLowerCase();
+                const nomB = (b.nom || '').toLowerCase();
+                if (nomA < nomB) return -1;
+                if (nomA > nomB) return 1;
+                const prenomsA = (a.prenoms || '').toLowerCase();
+                const prenomsB = (b.prenoms || '').toLowerCase();
+                if (prenomsA < prenomsB) return -1;
+                if (prenomsA > prenomsB) return 1;
+                return 0;
+            });
         }
 
         // ✅ Inclure DÉROGÉ dans les admis
@@ -362,7 +366,27 @@ exports.genererPVBySemestre = async (req, res) => {
         );
 
         if (typeTraitement === 'professionnel') {
-            resultatsEtudiants.sort((a, b) => b.moyenne_generale - a.moyenne_generale);
+            // ✅ Rang académique réel (classement par moyenne générale), calculé AVANT le tri
+            // d'affichage ci-dessous — le rang ne doit jamais dépendre de l'ordre d'affichage.
+            // Identique au calcul d'avant (position après tri par moyenne décroissante).
+            [...resultatsEtudiants]
+                .sort((a, b) => b.moyenne_generale - a.moyenne_generale)
+                .forEach((etudiant, index) => { etudiant.rang = index + 1; });
+
+            // ✅ PV filières professionnelles : ordre d'AFFICHAGE alphabétique (Nom puis Prénoms),
+            // plus pratique pour la consultation. Le N° de ligne suit cet ordre ; le RANG ci-dessus
+            // reste le classement académique réel, affiché séparément.
+            resultatsEtudiants.sort((a, b) => {
+                const nomA = (a.nom || '').toLowerCase();
+                const nomB = (b.nom || '').toLowerCase();
+                if (nomA < nomB) return -1;
+                if (nomA > nomB) return 1;
+                const prenomsA = (a.prenoms || '').toLowerCase();
+                const prenomsB = (b.prenoms || '').toLowerCase();
+                if (prenomsA < prenomsB) return -1;
+                if (prenomsA > prenomsB) return 1;
+                return 0;
+            });
         }
 
         // ✅ Inclure DÉROGÉ dans les admis
@@ -390,42 +414,102 @@ exports.genererPVBySemestre = async (req, res) => {
 
 // ✅ Extrait de genererPVByEtudiant : calcul pur (sans req/res), réutilisable par
 // d'autres modules (ex: Réinscription) pour le contrôle académique d'un étudiant.
-// Le handler HTTP ci-dessous ne fait plus qu'appeler cette fonction et sérialiser le résultat —
-// aucun changement de comportement ni de logique de calcul.
-exports.calculerResultatsAnnuelsEtudiant = async (etudiantId) => {
-    const etudiantQuery = `
-        SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
-               e.niveau_id, e.annee_academique_id, e.id_filiere,
-               s.statut_etudiant
-        FROM etudiant e
-        LEFT JOIN scolarite s ON s.id = e.scolarite_id
-        WHERE e.id = $1
-    `;
-    const etudiantResult = await db.query(etudiantQuery, [etudiantId]);
-    if (etudiantResult.rows.length === 0) {
-        const notFound = new Error(`Étudiant ${etudiantId} non trouvé`);
-        notFound.statusCode = 404;
-        throw notFound;
+// Le handler HTTP ci-dessous ne fait plus qu'appeler cette fonction et sérialiser le résultat.
+//
+// ✅ FIX COHÉRENCE : cette fonction n'appliquait JAMAIS le repêchage crédits (contrairement au
+// PV par groupe/semestre et au Bulletin, qui l'appliquent tous les deux), et ne passait pas par
+// calculerRecapitulatifComplet — deux étudiants strictement identiques pouvaient donc afficher
+// une moyenne/décision différente en Réinscription et au Bulletin. Elle reproduit désormais
+// exactement la même séquence que afficherBulletinByMatricule (repêchage par semestre puis
+// calculerRecapitulatifComplet), pour que Réinscription affiche toujours les mêmes chiffres que
+// le Bulletin annuel du même étudiant.
+// ✅ PHASE 2 (inscription_annuelle) : quand anneeAcademiqueId est fourni, résout l'étudiant via
+// le snapshot annuel immuable de CETTE année (un étudiant peut avoir plusieurs lignes
+// inscription_annuelle, une par année) plutôt que via sa position live actuelle. Par défaut
+// (paramètre omis), comportement strictement identique à avant : position actuelle de l'étudiant.
+// Filet de sécurité : si l'année demandée correspond à l'année courante de l'étudiant mais qu'il
+// n'a pas encore de ligne inscription_annuelle (cas non couvert par le backfill Phase 0/1, avant
+// l'automatisation Phase 4), on retombe sur sa position live — même garantie de non-régression
+// que _getEtudiantsGroupe.
+exports.calculerResultatsAnnuelsEtudiant = async (etudiantId, anneeAcademiqueId = null) => {
+    let etudiant;
+    if (anneeAcademiqueId) {
+        const iaQuery = `
+            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, ia.groupe_id,
+                   ia.niveau_id, ia.annee_academique_id, ia.id_filiere,
+                   niv.libelle AS niveau_libelle,
+                   ia.statut_scolaire AS statut_etudiant,
+                   COALESCE(ia.curcus_id, e.curcus_id) AS curcus_id
+            FROM inscription_annuelle ia
+            JOIN etudiant e ON e.id = ia.etudiant_id
+            LEFT JOIN niveau niv ON niv.id = ia.niveau_id
+            WHERE ia.etudiant_id = $1 AND ia.annee_academique_id = $2
+        `;
+        const iaResult = await db.query(iaQuery, [etudiantId, anneeAcademiqueId]);
+        if (iaResult.rows.length > 0) {
+            etudiant = iaResult.rows[0];
+        } else {
+            const liveQuery = `
+                SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
+                       e.niveau_id, e.annee_academique_id, e.id_filiere,
+                       n.libelle AS niveau_libelle,
+                       s.statut_etudiant, e.curcus_id
+                FROM etudiant e
+                LEFT JOIN scolarite s ON s.id = e.scolarite_id
+                LEFT JOIN niveau n ON n.id = e.niveau_id
+                WHERE e.id = $1 AND e.annee_academique_id = $2
+            `;
+            const liveResult = await db.query(liveQuery, [etudiantId, anneeAcademiqueId]);
+            if (liveResult.rows.length === 0) {
+                const notFound = new Error(`Étudiant ${etudiantId} non trouvé pour l'année académique ${anneeAcademiqueId}`);
+                notFound.statusCode = 404;
+                throw notFound;
+            }
+            etudiant = liveResult.rows[0];
+        }
+    } else {
+        const etudiantQuery = `
+            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
+                   e.niveau_id, e.annee_academique_id, e.id_filiere,
+                   n.libelle AS niveau_libelle,
+                   s.statut_etudiant, e.curcus_id
+            FROM etudiant e
+            LEFT JOIN scolarite s ON s.id = e.scolarite_id
+            LEFT JOIN niveau n ON n.id = e.niveau_id
+            WHERE e.id = $1
+        `;
+        const etudiantResult = await db.query(etudiantQuery, [etudiantId]);
+        if (etudiantResult.rows.length === 0) {
+            const notFound = new Error(`Étudiant ${etudiantId} non trouvé`);
+            notFound.statusCode = 404;
+            throw notFound;
+        }
+        etudiant = etudiantResult.rows[0];
     }
-    const etudiant = etudiantResult.rows[0];
 
     const groupeQuery = `
         SELECT g.id, g.nom, f.nom as filiere, f.sigle, tf.libelle as type_filiere
         FROM groupe g
-        LEFT JOIN etudiant et ON et.groupe_id = g.id AND et.id = $1
-        LEFT JOIN filiere f ON f.id = et.id_filiere
+        LEFT JOIN filiere f ON f.id = $2
         LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-        WHERE g.id = $2
-        LIMIT 1
+        WHERE g.id = $1
     `;
-    const groupeResult = await db.query(groupeQuery, [etudiantId, etudiant.groupe_id]);
+    const groupeResult = await db.query(groupeQuery, [etudiant.groupe_id, etudiant.id_filiere]);
     const groupeInfo = groupeResult.rows[0];
 
     const typeTraitement = determinerTypeTraitement(groupeInfo.type_filiere, groupeInfo.nom);
 
+    // ✅ Parcours JOUR/SOIR : résout le libellé exact (curcus.type_parcours) pour désambiguïser
+    // la maquette quand plusieurs existent pour cette filière+niveau — null pour tout étudiant
+    // sans curcus_id, comportement alors strictement identique à avant.
+    let parcourLibelle = null;
+    if (etudiant.curcus_id) {
+        const curcusResult = await db.query('SELECT type_parcours FROM curcus WHERE id = $1', [etudiant.curcus_id]);
+        parcourLibelle = curcusResult.rows[0]?.type_parcours || null;
+    }
+
     // ✅ Résolution DIRECTE via la filière/niveau propre de l'étudiant (plus via son groupe)
-    const structureAcademique = await getStructureAcademiqueParFiliereNiveau(etudiant.id_filiere, etudiant.niveau_id, null);
-    const totalCreditsMaquette = calculerTotalCreditsMaquette(structureAcademique.ues);
+    const structureAcademique = await getStructureAcademiqueParFiliereNiveau(etudiant.id_filiere, etudiant.niveau_id, null, parcourLibelle);
 
     const notes = await getNotesEtudiantAvecDetailsFonction(etudiantId, structureAcademique.maquette_id);
 
@@ -435,25 +519,54 @@ exports.calculerResultatsAnnuelsEtudiant = async (etudiantId) => {
         uesAvecResultats.push(resultatsUE);
     }
 
-    const totaux = calculerTotauxFonction(uesAvecResultats, typeTraitement, totalCreditsMaquette);
+    // ✅ Repêchage appliqué séparément par semestre, exactement comme le PV et le Bulletin
+    const uesS1Brutes = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+    const uesS2Brutes = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+    const totalCreditsS1Brut = uesS1Brutes.reduce((sum, ue) => sum + ue.credits, 0);
+    const totalCreditsS2Brut = uesS2Brutes.reduce((sum, ue) => sum + ue.credits, 0);
 
-    const decision = determinerDecisionFonction(
-        totaux.creditsValides, totaux.creditsTotal, typeTraitement,
-        totaux.moyenneGenerale, totaux.uesAvecNotes
+    const { ues: uesS1Repechees } = appliquerRepechageCredits(
+        uesS1Brutes, totalCreditsS1Brut, 1, etudiant.niveau_libelle, groupeInfo.nom
+    );
+    const { ues: uesS2Repechees } = appliquerRepechageCredits(
+        uesS2Brutes, totalCreditsS2Brut, 2, etudiant.niveau_libelle, groupeInfo.nom
     );
 
+    const uesS1Map = new Map(uesS1Repechees.map(ue => [ue.ue_id, ue]));
+    const uesS2Map = new Map(uesS2Repechees.map(ue => [ue.ue_id, ue]));
+
+    uesAvecResultats = uesAvecResultats.map(ue =>
+        parseInt(ue.semestre_id, 10) === 1
+            ? (uesS1Map.get(ue.ue_id) || ue)
+            : (uesS2Map.get(ue.ue_id) || ue)
+    );
+
+    // ✅ SOURCE UNIQUE DE VÉRITÉ pour crédits/moyennes/décisions S1, S2, annuel — identique au Bulletin
+    const recap = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement);
+
     const aSoldeScolarite = (etudiant.statut_etudiant || '').toUpperCase() === 'SOLDE';
-    const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats);
+    // ✅ typeTraitement transmis ici (contrairement aux autres appels de cette fonction, laissés
+    // inchangés hors périmètre de cette correction) : ce résultat alimente exclusivement la fiche
+    // de réinscription, où l'affichage de rattrapages BTS/Pro n'a aucun sens (cf. determinerDecisionFonction).
+    const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats, typeTraitement);
 
     return {
         etudiant: { id: etudiant.id, matricule_iipea: etudiant.matricule_iipea, nom: etudiant.nom, prenoms: etudiant.prenoms, niveau_id: etudiant.niveau_id },
         groupe: { id: groupeInfo.id, nom: groupeInfo.nom },
         type_filiere: groupeInfo.type_filiere,
         type_traitement: typeTraitement,
-        moyenne_generale: totaux.moyenneGenerale,
-        credits_valides: totaux.creditsValides,
-        credits_total: totaux.creditsTotal,
-        decision,
+        moyenne_generale: recap.annuel.moyenne,
+        credits_valides: recap.annuel.creditsValides,
+        credits_total: recap.annuel.creditsTotal,
+        decision: recap.annuel.decision,
+        moyenne_s1: recap.s1.moyenne,
+        credits_s1: recap.s1.creditsValides,
+        credits_s1_total: recap.s1.creditsTotal,
+        decision_s1: recap.s1.decision,
+        moyenne_s2: recap.s2.moyenne,
+        credits_s2: recap.s2.creditsValides,
+        credits_s2_total: recap.s2.creditsTotal,
+        decision_s2: recap.s2.decision,
         ues: uesAvecResultats,
         ecue_a_reprendre: ecueAReprendre,
         scolarite_soldee: aSoldeScolarite,
@@ -465,8 +578,9 @@ exports.calculerResultatsAnnuelsEtudiant = async (etudiantId) => {
 exports.genererPVByEtudiant = async (req, res) => {
     try {
         const { etudiantId } = req.params;
-        console.log(`🎓 Génération PV pour étudiant: ${etudiantId}`);
-        const resultats = await exports.calculerResultatsAnnuelsEtudiant(etudiantId);
+        const { anneeAcademiqueId } = req.query;
+        console.log(`🎓 Génération PV pour étudiant: ${etudiantId}${anneeAcademiqueId ? `, année: ${anneeAcademiqueId}` : ''}`);
+        const resultats = await exports.calculerResultatsAnnuelsEtudiant(etudiantId, anneeAcademiqueId || null);
         console.log('✅ PV étudiant généré avec succès');
         res.json({ success: true, ...resultats });
     } catch (error) {
@@ -480,17 +594,37 @@ exports.genererPVByEtudiant = async (req, res) => {
 
 // ============ FONCTIONS INTERNES ============
 
+// ✅ PHASE 2 (inscription_annuelle) : représentant du groupe résolu en priorité via le snapshot
+// annuel immuable (retrouve un groupe même si tous ses membres d'origine ont depuis été
+// réinscrits/promus ailleurs), avec repli sur l'étudiant "live" tant qu'aucune ligne
+// inscription_annuelle n'existe pour ce groupe (étudiants postérieurs au backfill Phase 0/1,
+// avant que la Phase 4 n'automatise l'écriture) — même filet de sécurité que _getEtudiantsGroupe.
 const _getGroupeInfo = async (groupeId) => {
     const query = `
         SELECT g.id, g.nom, g.classe_id,
-               f.nom as filiere, f.sigle,
-               tf.libelle as type_filiere,
-               aa.annee as annee_academique
+               COALESCE(rep.filiere, live.filiere) as filiere,
+               COALESCE(rep.sigle, live.sigle) as sigle,
+               COALESCE(rep.type_filiere, live.type_filiere) as type_filiere,
+               COALESCE(rep.annee_academique, live.annee_academique) as annee_academique
         FROM groupe g
-        LEFT JOIN etudiant et ON et.groupe_id = g.id AND et.standing = 'Inscrit'
-        LEFT JOIN filiere f ON f.id = et.id_filiere
-        LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-        LEFT JOIN anneeacademique aa ON aa.id = et.annee_academique_id
+        LEFT JOIN LATERAL (
+            SELECT f.nom as filiere, f.sigle, tf.libelle as type_filiere, aa.annee as annee_academique
+            FROM inscription_annuelle ia
+            LEFT JOIN filiere f ON f.id = ia.id_filiere
+            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+            LEFT JOIN anneeacademique aa ON aa.id = ia.annee_academique_id
+            WHERE ia.groupe_id = g.id
+            LIMIT 1
+        ) rep ON true
+        LEFT JOIN LATERAL (
+            SELECT f.nom as filiere, f.sigle, tf.libelle as type_filiere, aa.annee as annee_academique
+            FROM etudiant et
+            LEFT JOIN filiere f ON f.id = et.id_filiere
+            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+            LEFT JOIN anneeacademique aa ON aa.id = et.annee_academique_id
+            WHERE et.groupe_id = g.id AND et.standing = 'Inscrit'
+            LIMIT 1
+        ) live ON true
         WHERE g.id = $1
         LIMIT 1
     `;
@@ -498,18 +632,43 @@ const _getGroupeInfo = async (groupeId) => {
     return result.rows[0] || null;
 };
 
+// ✅ PHASE 2 (inscription_annuelle) : ramène TOUS les étudiants ayant un jour appartenu à ce
+// groupe (snapshot annuel immuable), au lieu des seuls étudiants dont le groupe_id LIVE
+// correspond encore aujourd'hui — corrige le cas où un groupe entier a depuis été réinscrit/promu
+// ailleurs. Le second bloc UNION ALL est un filet de sécurité : il ne ramène que les étudiants
+// jamais capturés dans inscription_annuelle pour CE groupe (NOT EXISTS), donc aucun doublon
+// possible ; il couvre les inscriptions/réinscriptions postérieures au backfill Phase 0/1, tant
+// que la Phase 4 (écriture automatique) n'est pas en place.
 const _getEtudiantsGroupe = async (groupeId) => {
     const query = `
+        SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, ia.groupe_id,
+               ia.niveau_id, ia.annee_academique_id, ia.id_filiere,
+               COALESCE(niv.libelle, '') as niveau_libelle,
+               ia.statut_scolaire as statut_etudiant,
+               COALESCE(ia.curcus_id, e.curcus_id) as curcus_id
+        FROM inscription_annuelle ia
+        JOIN etudiant e ON e.id = ia.etudiant_id
+        LEFT JOIN niveau niv ON niv.id = ia.niveau_id
+        WHERE ia.groupe_id = $1
+
+        UNION ALL
+
         SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
                e.niveau_id, e.annee_academique_id, e.id_filiere,
                COALESCE(niv.libelle, '') as niveau_libelle,
-               s.statut_etudiant
+               s.statut_etudiant,
+               e.curcus_id
         FROM etudiant e
         LEFT JOIN scolarite s ON s.id = e.scolarite_id
         LEFT JOIN niveau niv ON niv.id = e.niveau_id
         WHERE e.groupe_id = $1
         AND e.standing = 'Inscrit'
-        ORDER BY e.nom, e.prenoms
+        AND NOT EXISTS (
+            SELECT 1 FROM inscription_annuelle ia2
+            WHERE ia2.etudiant_id = e.id AND ia2.groupe_id = $1
+        )
+
+        ORDER BY nom, prenoms
     `;
     const result = await db.query(query, [groupeId]);
     return result.rows;
@@ -535,7 +694,7 @@ const getNotesPlusieursEtudiantsFonction = async (etudiantIds, maquetteId) => {
         JOIN maquette mq ON mq.id = ue.maquette_id
         WHERE n.etudiant_id = ANY($1::int[])
         AND mq.id = $2
-        ORDER BY n.etudiant_id, mat.ue_id, mat.id
+        ORDER BY n.etudiant_id, mat.ue_id, mat.id, n.id
     `;
     const result = await db.query(query, [etudiantIds, maquetteId]);
 
@@ -562,20 +721,43 @@ const _calculerResultatsTousEtudiants = async (etudiants, typeTraitement, semest
     const resultatsEtudiants = [];
     const etudiantsAReprendre = [];
 
-    // Cache des structures académiques par combo (filiere_id, niveau_id)
+    // Cache des structures académiques par combo (filiere_id, niveau_id, curcus_id) — le curcus
+    // fait partie de la clé : deux étudiants de même filière+niveau mais de parcours JOUR/SOIR
+    // différents ne doivent jamais partager la même maquette résolue.
     const structureParCombo = new Map();
+    const curcusLibelleCache = new Map();
+    const resoudreParcourLibelle = async (curcusId) => {
+        if (!curcusId) return null;
+        if (!curcusLibelleCache.has(curcusId)) {
+            const r = await db.query('SELECT type_parcours FROM curcus WHERE id = $1', [curcusId]);
+            curcusLibelleCache.set(curcusId, r.rows[0]?.type_parcours || null);
+        }
+        return curcusLibelleCache.get(curcusId);
+    };
     const getStructurePourEtudiant = async (etudiant) => {
-        const cle = `${etudiant.id_filiere}_${etudiant.niveau_id}`;
+        const cle = `${etudiant.id_filiere}_${etudiant.niveau_id}_${etudiant.curcus_id || ''}`;
         if (!structureParCombo.has(cle)) {
-            const structure = await getStructureAcademiqueParFiliereNiveau(etudiant.id_filiere, etudiant.niveau_id, null);
+            const parcourLibelle = await resoudreParcourLibelle(etudiant.curcus_id);
+            const structure = await getStructureAcademiqueParFiliereNiveau(etudiant.id_filiere, etudiant.niveau_id, null, parcourLibelle);
             structureParCombo.set(cle, structure);
         }
         return structureParCombo.get(cle);
     };
 
+    // ✅ PERF : contrairement à traiterUnGroupe, cette boucle fait déjà un vrai await db.query()
+    // par étudiant (getNotesEtudiantAvecDetailsFonction ci-dessous) et cède donc déjà la main à
+    // l'Event Loop à chaque itération. Point de pause supplémentaire ajouté par cohérence/filet de
+    // sécurité (groupes volumineux, requêtes très rapides depuis le pool) — aucun changement de
+    // logique métier.
+    let _yieldCounterPV = 0;
     for (const etudiant of etudiants) {
-        console.log(`📊 Traitement: ${etudiant.nom} ${etudiant.prenoms}`);
-        console.log(`📊 niveau_libelle: "${etudiant.niveau_libelle}", groupeNom: "${groupeNom}"`);
+        if (++_yieldCounterPV % 25 === 0) {
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        if (DEBUG_VERBOSE) {
+            console.log(`📊 Traitement: ${etudiant.nom} ${etudiant.prenoms}`);
+            console.log(`📊 niveau_libelle: "${etudiant.niveau_libelle}", groupeNom: "${groupeNom}"`);
+        }
 
         // ✅ Structure académique COMPLÈTE (annuelle) propre à l'étudiant
         const structureAcademique = await getStructurePourEtudiant(etudiant);
@@ -644,6 +826,36 @@ const _calculerResultatsTousEtudiants = async (etudiants, typeTraitement, semest
             totaux.moyenneGenerale, totaux.uesAvecNotes
         );
 
+        // ✅ DÉCISION DU JURY (ANNUELLE) — exposée même en vue "un seul semestre", pour que le PV
+        // n'affiche jamais une décision différente de celle du Bulletin pour le même étudiant.
+        // Recalcule les résultats sur la maquette complète (S1+S2) via la même séquence
+        // repêchage + calculerRecapitulatifComplet que le Bulletin (SOURCE UNIQUE DE VÉRITÉ),
+        // sans toucher aux variables ci-dessus qui pilotent l'affichage "vue semestre" existant.
+        let decisionJury = decision;
+        let moyenneAnnuelle = totaux.moyenneGenerale;
+        let creditsAnnuelsValides = totaux.creditsValides;
+        let creditsAnnuelsTotal = totaux.creditsTotal;
+        if (semestreNumDemande) {
+            let uesAnnuelles = [];
+            for (const ue of structureAcademique.ues) {
+                uesAnnuelles.push(await calculerResultatsUEAvecDetailsFonction(ue, notes, typeTraitement));
+            }
+            const uesS1Ann = uesAnnuelles.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+            const uesS2Ann = uesAnnuelles.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+            const { ues: uesS1AnnRep } = appliquerRepechageCredits(uesS1Ann, totalCreditsS1 || 30, 1, etudiant.niveau_libelle, groupeNom);
+            const { ues: uesS2AnnRep } = appliquerRepechageCredits(uesS2Ann, totalCreditsS2 || 30, 2, etudiant.niveau_libelle, groupeNom);
+            const uesS1AnnMap = new Map(uesS1AnnRep.map(ue => [ue.ue_id, ue]));
+            const uesS2AnnMap = new Map(uesS2AnnRep.map(ue => [ue.ue_id, ue]));
+            uesAnnuelles = uesAnnuelles.map(ue =>
+                parseInt(ue.semestre_id, 10) === 1 ? (uesS1AnnMap.get(ue.ue_id) || ue) : (uesS2AnnMap.get(ue.ue_id) || ue)
+            );
+            const recapAnnuel = calculerRecapitulatifComplet(uesAnnuelles, typeTraitement);
+            decisionJury = recapAnnuel.annuel.decision;
+            moyenneAnnuelle = recapAnnuel.annuel.moyenne;
+            creditsAnnuelsValides = recapAnnuel.annuel.creditsValides;
+            creditsAnnuelsTotal = recapAnnuel.annuel.creditsTotal;
+        }
+
         const aSoldeScolarite = (etudiant.statut_etudiant || '').toUpperCase() === 'SOLDE';
         const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats);
 
@@ -668,6 +880,10 @@ const _calculerResultatsTousEtudiants = async (etudiants, typeTraitement, semest
             credits_valides: totaux.creditsValides,
             credits_total: totaux.creditsTotal,
             decision,
+            decision_jury: decisionJury,
+            moyenne_annuelle: moyenneAnnuelle,
+            credits_annuels: creditsAnnuelsValides,
+            credits_annuels_total: creditsAnnuelsTotal,
             ues: uesAvecResultats,
             scolarite_soldee: aSoldeScolarite,
             statut_etudiant: etudiant.statut_etudiant || 'NON_DEFINI',
@@ -678,13 +894,19 @@ const _calculerResultatsTousEtudiants = async (etudiants, typeTraitement, semest
     return { resultatsEtudiants, etudiantsAReprendre };
 };
 
-const _collecterEcueAReprendre = (uesAvecResultats) => {
+// ✅ En BTS/filière professionnelle (hors Licence Pro, déjà basculée en 'universitaire' par
+// determinerTypeTraitement), la décision ne se joue que sur la moyenne générale ≥ 10 — il
+// n'existe aucune notion de rattrapage par UE/ECUE dans ce cas, contrairement au traitement
+// universitaire. Filtré ici, à la source unique, pour que tous les consommateurs (fiche de
+// réinscription notamment) héritent automatiquement de la bonne règle sans la dupliquer.
+const _collecterEcueAReprendre = (uesAvecResultats, typeTraitement) => {
+    if (typeTraitement === 'professionnel') return [];
     const ecueAReprendre = [];
     uesAvecResultats.forEach(ue => {
         if (!ue.valide) {
             ue.matieres.forEach(matiere => {
                 const moyenneOriginale = matiere.harmonisee ? matiere.moyenne_originale : matiere.moyenne;
-                if (matiere.a_note && moyenneOriginale < 10) {
+                if (matiere.a_note && !matiere.non_classe && moyenneOriginale < 10) {
                     ecueAReprendre.push({
                         ue_libelle: ue.libelle,
                         ue_id: ue.ue_id,
@@ -733,11 +955,17 @@ const _buildStatistiques = (totalEtudiants, admisCount, resultatsEtudiants, etud
 const getStructureAcademiqueFonction = async (groupeId, semestreId = null) => {
     const query = `
         WITH etudiants_groupe AS (
-            SELECT DISTINCT id_filiere, niveau_id
-            FROM etudiant
-            WHERE groupe_id = $1
-            AND standing = 'Inscrit'
-            ORDER BY id_filiere, niveau_id
+            SELECT id_filiere, niveau_id FROM (
+                SELECT id_filiere, niveau_id, 0 AS priorite
+                FROM inscription_annuelle
+                WHERE groupe_id = $1
+                UNION ALL
+                SELECT id_filiere, niveau_id, 1 AS priorite
+                FROM etudiant
+                WHERE groupe_id = $1
+                AND standing = 'Inscrit'
+            ) rep
+            ORDER BY priorite, id_filiere, niveau_id
             LIMIT 1
         ),
         maquette_groupe AS (
@@ -818,12 +1046,29 @@ const getStructureAcademiqueFonction = async (groupeId, semestreId = null) => {
  * arbitraire d'un groupe. C'est la fonction à utiliser pour tout calcul de
  * résultats (PV, bulletin, stats, récap).
  */
-const getStructureAcademiqueParFiliereNiveau = async (filiereId, niveauId, semestreId = null) => {
+// ✅ Parcours JOUR/SOIR : quand un même filiere_id+niveau_id a plusieurs maquettes (une par
+// curcus, ex. "Professionnel jour" / "Professionnel soir"), parcourLibelle (texte identique à
+// maquette.parcour/curcus.type_parcours) permet de résoudre la BONNE maquette au lieu d'un
+// LIMIT 1 arbitraire. Omis (null) : comportement strictement identique à avant — non-régression
+// totale pour tous les niveaux qui n'ont qu'une seule maquette.
+const getStructureAcademiqueParFiliereNiveau = async (filiereId, niveauId, semestreId = null, parcourLibelle = null) => {
+    const params = [filiereId, niveauId];
+    let whereParcour = '';
+    if (parcourLibelle) {
+        params.push(parcourLibelle);
+        whereParcour = `AND mq.parcour = $${params.length}`;
+    }
+    let whereSemestre = '';
+    if (semestreId) {
+        params.push(semestreId);
+        whereSemestre = `AND ue.semestre_id = $${params.length}`;
+    }
+
     const query = `
         WITH maquette_cible AS (
             SELECT mq.*
             FROM maquette mq
-            WHERE mq.filiere_id = $1 AND mq.niveau_id = $2
+            WHERE mq.filiere_id = $1 AND mq.niveau_id = $2 ${whereParcour}
             ORDER BY mq.id
             LIMIT 1
         )
@@ -846,12 +1091,9 @@ const getStructureAcademiqueParFiliereNiveau = async (filiereId, niveauId, semes
         JOIN ue ON ue.maquette_id = mc.id
         JOIN matiere mat ON mat.ue_id = ue.id
         WHERE 1=1
-        ${semestreId ? 'AND ue.semestre_id = $3' : ''}
+        ${whereSemestre}
         ORDER BY ue.semestre_id, ue.id, mat.id
     `;
-
-    const params = [filiereId, niveauId];
-    if (semestreId) params.push(semestreId);
 
     const result = await db.query(query, params);
 
@@ -892,11 +1134,11 @@ const getStructureAcademiqueParFiliereNiveau = async (filiereId, niveauId, semes
  * ✅ FONCTION POUR CHARGER S1 ET S2 SÉPARÉMENT PUIS LES FUSIONNER
  * Utilisée par le bulletin pour garantir que S1 et S2 utilisent leurs maquettes respectives.
  */
-const getStructureAcademiqueComplete = async (filiereId, niveauId) => {
+const getStructureAcademiqueComplete = async (filiereId, niveauId, parcourLibelle = null) => {
     // Charger S1
-    const structureS1 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 1);
+    const structureS1 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 1, parcourLibelle);
     // Charger S2
-    const structureS2 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 2);
+    const structureS2 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 2, parcourLibelle);
 
     // Fusionner les UE
     const ues = [...(structureS1.ues || []), ...(structureS2.ues || [])];
@@ -916,6 +1158,14 @@ const calculerTotalCreditsMaquette = (ues) => {
     return total;
 };
 
+// ✅ FIX COHÉRENCE : un même étudiant peut avoir plusieurs lignes `note` pour la même matière
+// (ré-import de notes via chargementNote.js, créant un nouvel `enseignement_id` à chaque fois).
+// La déduplication en aval (calculerResultatsUEAvecDetailsFonction, Map indexée par matiere_id)
+// conserve la DERNIÈRE ligne rencontrée dans l'ordre de ce SELECT : le tri se termine donc
+// volontairement par `n.id` (ordre d'insertion) pour que ce soit toujours la note la plus
+// récemment importée/corrigée qui l'emporte, de façon déterministe à chaque appel — avant ce
+// correctif, l'absence de ce tiebreaker rendait le résultat non déterministe en cas de doublon,
+// ce qui produisait des moyennes/crédits différents selon l'exécution pour un même étudiant.
 const getNotesEtudiantAvecDetailsFonction = async (etudiantId, maquetteId) => {
     const query = `
         SELECT
@@ -930,7 +1180,7 @@ const getNotesEtudiantAvecDetailsFonction = async (etudiantId, maquetteId) => {
         JOIN maquette mq ON mq.id = ue.maquette_id
         WHERE n.etudiant_id = $1
         AND mq.id = $2
-        ORDER BY mat.ue_id, mat.id
+        ORDER BY mat.ue_id, mat.id, n.id
     `;
     const result = await db.query(query, [etudiantId, maquetteId]);
     return result.rows;
@@ -959,56 +1209,42 @@ const harmoniserNotesUE = (matieres, moyenneUE) => {
     const SEUIL_VALIDATION = 6;
     const CIBLE = 10;
 
+    const passthrough = (m) => ({
+        ...m,
+        moyenne_originale: m.moyenne,
+        moyenne_affichage: m.moyenne,
+        cc_original: m.moyenne_cc,
+        examen_original: m.partiel,
+        cc_affichage: m.moyenne_cc,
+        examen_affichage: m.partiel,
+        harmonisee: false,
+        repechage_credits: false
+    });
+
     if (moyenneUE < SEUIL_VALIDATION || moyenneUE >= CIBLE) {
-        return matieres.map(m => ({
-            ...m,
-            moyenne_originale: m.moyenne,
-            moyenne_affichage: m.moyenne,
-            cc_original: m.moyenne_cc,
-            examen_original: m.partiel,
-            cc_affichage: m.moyenne_cc,
-            examen_affichage: m.partiel,
-            harmonisee: false,
-            repechage_credits: false
-        }));
+        return matieres.map(passthrough);
     }
 
-    const notesFortes = matieres.filter(m => m.moyenne >= CIBLE);
-    const notesFaibles = matieres.filter(m => m.moyenne < CIBLE);
+    // ✅ ECUE à choix exclues (non_classe) : ne participent jamais à l'harmonisation, ni comme
+    // poids (coefficient), ni comme cible à recalculer — passthrough systématique pour elles.
+    const matieresClassees = matieres.filter(m => !m.non_classe);
+
+    const notesFortes = matieresClassees.filter(m => m.moyenne >= CIBLE);
+    const notesFaibles = matieresClassees.filter(m => m.moyenne < CIBLE);
 
     const sommeForte = notesFortes.reduce((sum, m) => sum + (m.moyenne * m.coefficient), 0);
-    const totalCoeff = matieres.reduce((sum, m) => sum + m.coefficient, 0);
+    const totalCoeff = matieresClassees.reduce((sum, m) => sum + m.coefficient, 0);
     const sommeNecessaire = CIBLE * totalCoeff;
     const sommeRestante = sommeNecessaire - sommeForte;
     const coeffFaible = notesFaibles.reduce((sum, m) => sum + m.coefficient, 0);
 
     if (coeffFaible === 0 || sommeRestante <= 0) {
-        return matieres.map(m => ({
-            ...m,
-            moyenne_originale: m.moyenne,
-            moyenne_affichage: m.moyenne,
-            cc_original: m.moyenne_cc,
-            examen_original: m.partiel,
-            cc_affichage: m.moyenne_cc,
-            examen_affichage: m.partiel,
-            harmonisee: false,
-            repechage_credits: false
-        }));
+        return matieres.map(passthrough);
     }
 
     return matieres.map(m => {
-        if (m.moyenne >= CIBLE) {
-            return {
-                ...m,
-                moyenne_originale: m.moyenne,
-                moyenne_affichage: m.moyenne,
-                cc_original: m.moyenne_cc,
-                examen_original: m.partiel,
-                cc_affichage: m.moyenne_cc,
-                examen_affichage: m.partiel,
-                harmonisee: false,
-                repechage_credits: false
-            };
+        if (m.non_classe || m.moyenne >= CIBLE) {
+            return passthrough(m);
         }
 
         const contributionNecessaire = sommeRestante * (m.coefficient / coeffFaible);
@@ -1109,6 +1345,31 @@ const calculerResultatsUEAvecDetailsFonction = async (ue, notes, typeTraitement)
         };
     });
 
+    // ✅ ECUE à choix (Espagnol/Allemand, etc.) : si un membre de la paire a une vraie note et
+    // l'autre est à 0 (jamais évaluée, pas un échec), on exclut le 0 de tous les calculs. Si les
+    // deux sont à 0 (aucune des deux réellement suivie), on exclut les deux. a_note et moyenne
+    // restent inchangés (nécessaires pour l'affichage du bulletin/PV).
+    const pairesDejaTraitees = new Set();
+    matieresOriginales.forEach(matiere => {
+        const paire = trouverPaireChoix(matiere.nom);
+        if (!paire || pairesDejaTraitees.has(paire)) return;
+
+        const membres = matieresOriginales.filter(m => paire.includes((m.nom || '').trim().toUpperCase()));
+        if (membres.length < 2) return; // une seule des deux ECUE proposée dans cette UE : rien à faire
+
+        pairesDejaTraitees.add(paire);
+
+        const avecNoteReelle = membres.filter(m => m.a_note && m.moyenne > 0);
+        const zeros = membres.filter(m => m.a_note && m.moyenne === 0);
+
+        if (zeros.length === membres.length || (avecNoteReelle.length >= 1 && zeros.length >= 1)) {
+            zeros.forEach(m => {
+                m.non_classe = true;
+                m.est_eliminatoire = false;
+            });
+        }
+    });
+
     let sommeNotesPonderees = 0;
     let sommeCoefficients = 0;
     let auMoinsUneMatiereAvecNote = false;
@@ -1117,6 +1378,8 @@ const calculerResultatsUEAvecDetailsFonction = async (ue, notes, typeTraitement)
     let creditsTotal = 0;
 
     matieresOriginales.forEach(matiere => {
+        if (matiere.non_classe) return; // ECUE à choix non suivie : exclue de tous les calculs
+
         creditsTotal += matiere.coefficient;
 
         if (matiere.a_note) {
@@ -1136,10 +1399,12 @@ const calculerResultatsUEAvecDetailsFonction = async (ue, notes, typeTraitement)
     });
 
     const moyenneUE = sommeCoefficients > 0 ? sommeNotesPonderees / sommeCoefficients : 0;
-    const creditsUE = ue.matieres.reduce((sum, mat) => sum + mat.coefficient, 0);
+    const creditsUE = matieresOriginales
+        .filter(m => !m.non_classe)
+        .reduce((sum, mat) => sum + mat.coefficient, 0);
 
     const toutesNotesNonEliminatoires = matieresOriginales.every(m =>
-        !m.a_note || m.moyenne >= SEUIL_ELIMINATOIRE
+        m.non_classe || !m.a_note || m.moyenne >= SEUIL_ELIMINATOIRE
     );
 
     let ueValide = false;
@@ -1157,7 +1422,7 @@ const calculerResultatsUEAvecDetailsFonction = async (ue, notes, typeTraitement)
     }
 
     const ecueARepasser = matieresOriginales
-        .filter(m => m.a_note && m.moyenne < CIBLE)
+        .filter(m => m.a_note && !m.non_classe && m.moyenne < CIBLE)
         .map(m => ({ nom: m.nom, moyenne: m.moyenne, coefficient: m.coefficient }));
 
     return {
@@ -1186,7 +1451,7 @@ const calculerTotauxFonction = (ues, typeTraitement, totalCreditsMaquette) => {
     let uesAvecNotes = 0;
 
     ues.forEach(ue => {
-        const ueAvecNotes = ue.matieres.some(m => m.a_note);
+        const ueAvecNotes = ue.matieres.some(m => m.a_note && !m.non_classe);
         if (ueAvecNotes) {
             uesAvecNotes++;
             totalCreditsValides += ue.credits_valides || 0;
@@ -1267,13 +1532,73 @@ const getEtudiantComplet = async (etudiantId) => {
     return result.rows[0];
 };
 
-const getEtudiantCompletByMatricule = async (matricule) => {
+// ✅ PHASE 2 (inscription_annuelle) : quand anneeAcademiqueId est fourni, résout niveau/filière/
+// groupe/statut via le snapshot annuel immuable de CETTE année plutôt que la position live de
+// l'étudiant (identité — nom, contact, date de naissance — reste lue sur `etudiant`, invariante
+// d'une année à l'autre). Par défaut (paramètre omis), comportement strictement identique à avant.
+// Filet de sécurité : si aucune ligne inscription_annuelle ne correspond, repli sur la position
+// live de l'étudiant pour cette même année (cas non encore couvert par le backfill/Phase 4).
+const getEtudiantCompletByMatricule = async (matricule, anneeAcademiqueId = null) => {
+    if (anneeAcademiqueId) {
+        const iaQuery = `
+            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
+                   e.date_naissance, e.lieu_naissance, e.sexe as genre,
+                   e.nationalite, e.pays_naissance, e.telephone, e.email,
+                   e.code_unique, e.numero_table, ia.statut_scolaire, ia.standing,
+                   ia.groupe_id, ia.niveau_id, ia.annee_academique_id, ia.id_filiere,
+                   COALESCE(ia.curcus_id, e.curcus_id) as curcus_id,
+                   s.statut_etudiant as statut_scolarite,
+                   f.nom as filiere_nom, f.sigle as filiere_sigle,
+                   tf.libelle as type_filiere,
+                   n.libelle as niveau_libelle,
+                   aa.annee as annee_academique,
+                   g.nom as groupe_nom, g.classe_id
+            FROM inscription_annuelle ia
+            JOIN etudiant e ON e.id = ia.etudiant_id
+            LEFT JOIN scolarite s ON s.id = e.scolarite_id
+            LEFT JOIN filiere f ON f.id = ia.id_filiere
+            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+            LEFT JOIN niveau n ON n.id = ia.niveau_id
+            LEFT JOIN anneeacademique aa ON aa.id = ia.annee_academique_id
+            LEFT JOIN groupe g ON g.id = ia.groupe_id
+            WHERE e.matricule_iipea = $1 AND ia.annee_academique_id = $2
+        `;
+        const iaResult = await db.query(iaQuery, [matricule, anneeAcademiqueId]);
+        if (iaResult.rows.length > 0) {
+            return iaResult.rows[0];
+        }
+
+        const liveQuery = `
+            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
+                   e.date_naissance, e.lieu_naissance, e.sexe as genre,
+                   e.nationalite, e.pays_naissance, e.telephone, e.email,
+                   e.code_unique, e.numero_table, e.statut_scolaire, e.standing,
+                   e.groupe_id, e.niveau_id, e.annee_academique_id, e.id_filiere, e.curcus_id,
+                   s.statut_etudiant as statut_scolarite,
+                   f.nom as filiere_nom, f.sigle as filiere_sigle,
+                   tf.libelle as type_filiere,
+                   n.libelle as niveau_libelle,
+                   aa.annee as annee_academique,
+                   g.nom as groupe_nom, g.classe_id
+            FROM etudiant e
+            LEFT JOIN scolarite s ON s.id = e.scolarite_id
+            LEFT JOIN filiere f ON f.id = e.id_filiere
+            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+            LEFT JOIN niveau n ON n.id = e.niveau_id
+            LEFT JOIN anneeacademique aa ON aa.id = e.annee_academique_id
+            LEFT JOIN groupe g ON g.id = e.groupe_id
+            WHERE e.matricule_iipea = $1 AND e.annee_academique_id = $2
+        `;
+        const liveResult = await db.query(liveQuery, [matricule, anneeAcademiqueId]);
+        return liveResult.rows[0];
+    }
+
     const query = `
         SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
                e.date_naissance, e.lieu_naissance, e.sexe as genre,
                e.nationalite, e.pays_naissance, e.telephone, e.email,
                e.code_unique, e.numero_table, e.statut_scolaire, e.standing,
-               e.groupe_id, e.niveau_id, e.annee_academique_id, e.id_filiere,
+               e.groupe_id, e.niveau_id, e.annee_academique_id, e.id_filiere, e.curcus_id,
                s.statut_etudiant as statut_scolarite,
                f.nom as filiere_nom, f.sigle as filiere_sigle,
                tf.libelle as type_filiere,
@@ -1322,7 +1647,27 @@ exports.afficherPVPage = async (req, res) => {
         );
 
         if (typeTraitement === 'professionnel') {
-            resultatsEtudiants.sort((a, b) => b.moyenne_generale - a.moyenne_generale);
+            // ✅ Rang académique réel (classement par moyenne générale), calculé AVANT le tri
+            // d'affichage ci-dessous — le rang ne doit jamais dépendre de l'ordre d'affichage.
+            // Identique au calcul d'avant (position après tri par moyenne décroissante).
+            [...resultatsEtudiants]
+                .sort((a, b) => b.moyenne_generale - a.moyenne_generale)
+                .forEach((etudiant, index) => { etudiant.rang = index + 1; });
+
+            // ✅ PV filières professionnelles : ordre d'AFFICHAGE alphabétique (Nom puis Prénoms),
+            // plus pratique pour la consultation. Le N° de ligne suit cet ordre ; le RANG ci-dessus
+            // reste le classement académique réel, affiché séparément.
+            resultatsEtudiants.sort((a, b) => {
+                const nomA = (a.nom || '').toLowerCase();
+                const nomB = (b.nom || '').toLowerCase();
+                if (nomA < nomB) return -1;
+                if (nomA > nomB) return 1;
+                const prenomsA = (a.prenoms || '').toLowerCase();
+                const prenomsB = (b.prenoms || '').toLowerCase();
+                if (prenomsA < prenomsB) return -1;
+                if (prenomsA > prenomsB) return 1;
+                return 0;
+            });
         }
 
         // ✅ Inclure DÉROGÉ dans les admis
@@ -1363,35 +1708,43 @@ exports.afficherPVPage = async (req, res) => {
 exports.afficherBulletinByMatricule = async (req, res) => {
     try {
         const { matricule, semestreId } = req.params;
-        console.log(`📄 Bulletin - Matricule: ${matricule}, semestre: ${semestreId || 'annuel'}`);
+        const { anneeAcademiqueId } = req.query;
+        console.log(`📄 Bulletin - Matricule: ${matricule}, semestre: ${semestreId || 'annuel'}${anneeAcademiqueId ? `, année: ${anneeAcademiqueId}` : ''}`);
 
-        const etudiantComplet = await getEtudiantCompletByMatricule(matricule);
+        const etudiantComplet = await getEtudiantCompletByMatricule(matricule, anneeAcademiqueId || null);
         if (!etudiantComplet) {
             return res.status(404).render('error', { title: 'Erreur', message: `Étudiant ${matricule} non trouvé` });
         }
 
-        const groupeQuery = `
-            SELECT g.id, g.nom, f.nom as filiere, f.sigle,
-                   tf.libelle as type_filiere, aa.annee as annee_academique
-            FROM groupe g
-            LEFT JOIN etudiant et ON et.groupe_id = g.id AND et.matricule_iipea = $1
-            LEFT JOIN filiere f ON f.id = et.id_filiere
-            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-            LEFT JOIN anneeacademique aa ON aa.id = et.annee_academique_id
-            WHERE g.id = $2
-            LIMIT 1
-        `;
-        const groupeResult = await db.query(groupeQuery, [matricule, etudiantComplet.groupe_id]);
-        const groupeInfo = groupeResult.rows[0];
+        // ✅ PHASE 2 (inscription_annuelle) : etudiantComplet porte déjà filiere/sigle/type_filiere/
+        // annee_academique/groupe_nom de l'année résolue (courante ou historique demandée) —
+        // la requête séparée précédente (jointure live sur et.matricule_iipea) était redondante
+        // et pouvait diverger de l'année demandée.
+        const groupeInfo = {
+            id: etudiantComplet.groupe_id,
+            nom: etudiantComplet.groupe_nom,
+            filiere: etudiantComplet.filiere_nom,
+            sigle: etudiantComplet.filiere_sigle,
+            type_filiere: etudiantComplet.type_filiere,
+            annee_academique: etudiantComplet.annee_academique
+        };
 
         const typeTraitement = determinerTypeTraitement(groupeInfo.type_filiere, groupeInfo.nom);
 
+        // ✅ Parcours JOUR/SOIR : désambiguïse la maquette si plusieurs existent pour cette
+        // filière+niveau — null (comportement inchangé) pour tout étudiant sans curcus_id.
+        let parcourLibelleBulletin = null;
+        if (etudiantComplet.curcus_id) {
+            const curcusResult = await db.query('SELECT type_parcours FROM curcus WHERE id = $1', [etudiantComplet.curcus_id]);
+            parcourLibelleBulletin = curcusResult.rows[0]?.type_parcours || null;
+        }
+
         // ✅ FIX : Charger S1 et S2 SÉPARÉMENT pour garantir que les maquettes sont correctes
         const structureS1 = await getStructureAcademiqueParFiliereNiveau(
-            etudiantComplet.id_filiere, etudiantComplet.niveau_id, 1
+            etudiantComplet.id_filiere, etudiantComplet.niveau_id, 1, parcourLibelleBulletin
         );
         const structureS2 = await getStructureAcademiqueParFiliereNiveau(
-            etudiantComplet.id_filiere, etudiantComplet.niveau_id, 2
+            etudiantComplet.id_filiere, etudiantComplet.niveau_id, 2, parcourLibelleBulletin
         );
 
         // ✅ Fusionner les UE S1 et S2
@@ -1567,19 +1920,43 @@ exports.afficherBulletinsMultiples = async (req, res) => {
 
         // ✅ AJOUT : e.id_filiere était absent de cette requête — indispensable pour
         // résoudre la maquette propre à chaque étudiant (combo filiere/niveau).
+        // ✅ PHASE 2 (inscription_annuelle) : même pattern que _getEtudiantsGroupe — ramène tous
+        // les étudiants ayant un jour appartenu à ce groupe (snapshot annuel), avec filet de
+        // sécurité (UNION ALL + NOT EXISTS) vers l'étudiant live tant qu'il n'a pas encore de
+        // ligne inscription_annuelle pour ce groupe.
         const etudiantsQuery = `
+            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
+                   e.date_naissance, e.lieu_naissance, e.sexe as genre,
+                   e.nationalite, e.code_unique,
+                   ia.groupe_id, ia.niveau_id, ia.id_filiere,
+                   COALESCE(n.libelle, '') as niveau_libelle,
+                   ia.statut_scolaire as statut_etudiant,
+                   COALESCE(ia.curcus_id, e.curcus_id) as curcus_id
+            FROM inscription_annuelle ia
+            JOIN etudiant e ON e.id = ia.etudiant_id
+            LEFT JOIN niveau n ON n.id = ia.niveau_id
+            WHERE ia.groupe_id = $1
+
+            UNION ALL
+
             SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
                    e.date_naissance, e.lieu_naissance, e.sexe as genre,
                    e.nationalite, e.code_unique,
                    e.groupe_id, e.niveau_id, e.id_filiere,
                    COALESCE(n.libelle, '') as niveau_libelle,
-                   s.statut_etudiant
+                   s.statut_etudiant,
+                   e.curcus_id
             FROM etudiant e
             LEFT JOIN scolarite s ON s.id = e.scolarite_id
             LEFT JOIN niveau n ON n.id = e.niveau_id
             WHERE e.groupe_id = $1
             AND e.standing = 'Inscrit'
-            ORDER BY e.nom, e.prenoms
+            AND NOT EXISTS (
+                SELECT 1 FROM inscription_annuelle ia2
+                WHERE ia2.etudiant_id = e.id AND ia2.groupe_id = $1
+            )
+
+            ORDER BY nom, prenoms
         `;
         const etudiantsResult = await db.query(etudiantsQuery, [groupeId]);
         const etudiants = etudiantsResult.rows;
@@ -1592,14 +1969,16 @@ exports.afficherBulletinsMultiples = async (req, res) => {
         const resultatsEtudiants = [];
         const etudiantsAReprendre = [];
 
-        // ✅ Grouper les étudiants par combo (filiere_id, niveau_id) RÉEL
+        // ✅ Grouper les étudiants par combo (filiere_id, niveau_id, curcus_id) RÉEL — le curcus
+        // fait partie de la clé pour ne jamais mélanger un combo JOUR et un combo SOIR.
         const etudiantsParCombo = new Map();
         for (const etudiant of etudiants) {
-            const cle = `${etudiant.id_filiere}_${etudiant.niveau_id}`;
+            const cle = `${etudiant.id_filiere}_${etudiant.niveau_id}_${etudiant.curcus_id || ''}`;
             if (!etudiantsParCombo.has(cle)) {
                 etudiantsParCombo.set(cle, {
                     filiereId: etudiant.id_filiere,
                     niveauId: etudiant.niveau_id,
+                    curcusId: etudiant.curcus_id || null,
                     etudiants: []
                 });
             }
@@ -1607,10 +1986,15 @@ exports.afficherBulletinsMultiples = async (req, res) => {
         }
 
         // ✅ Traiter chaque combo avec SA propre maquette
-        for (const { filiereId, niveauId, etudiants: etudiantsCombo } of etudiantsParCombo.values()) {
+        for (const { filiereId, niveauId, curcusId, etudiants: etudiantsCombo } of etudiantsParCombo.values()) {
+            let parcourLibelleCombo = null;
+            if (curcusId) {
+                const curcusResult = await db.query('SELECT type_parcours FROM curcus WHERE id = $1', [curcusId]);
+                parcourLibelleCombo = curcusResult.rows[0]?.type_parcours || null;
+            }
             // ✅ FIX : Charger S1 et S2 séparément pour chaque combo
-            const structureS1 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 1);
-            const structureS2 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 2);
+            const structureS1 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 1, parcourLibelleCombo);
+            const structureS2 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 2, parcourLibelleCombo);
 
             const uesFusionnees = [...(structureS1.ues || []), ...(structureS2.ues || [])];
             const structureAcademique = {
@@ -1624,9 +2008,19 @@ exports.afficherBulletinsMultiples = async (req, res) => {
             const totalCreditsS1 = uesS1.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
             const totalCreditsS2 = uesS2.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
 
+            // ✅ PERF : cette boucle fait déjà un vrai await db.query() par étudiant
+            // (getNotesEtudiantAvecDetailsFonction ci-dessous) et cède donc déjà la main à
+            // l'Event Loop à chaque itération. Point de pause supplémentaire ajouté par cohérence/
+            // filet de sécurité — aucun changement de logique métier.
+            let _yieldCounterBulletins = 0;
             for (const etudiant of etudiantsCombo) {
-                console.log(`📊 Traitement: ${etudiant.nom} ${etudiant.prenoms} (${etudiant.matricule_iipea})`);
-                console.log(`📊 niveau_libelle: "${etudiant.niveau_libelle}"`);
+                if (++_yieldCounterBulletins % 25 === 0) {
+                    await new Promise(resolve => setImmediate(resolve));
+                }
+                if (DEBUG_VERBOSE) {
+                    console.log(`📊 Traitement: ${etudiant.nom} ${etudiant.prenoms} (${etudiant.matricule_iipea})`);
+                    console.log(`📊 niveau_libelle: "${etudiant.niveau_libelle}"`);
+                }
 
                 const notes = await getNotesEtudiantAvecDetailsFonction(etudiant.id, structureAcademique.maquette_id);
 
@@ -1776,14 +2170,15 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
                            : (semestreId === '2' || semestreId === 2) ? 2
                            : null;
 
-        // ✅ Grouper les étudiants du groupe par combo (filiere_id, niveau_id) RÉEL
+        // ✅ Grouper les étudiants du groupe par combo (filiere_id, niveau_id, curcus_id) RÉEL
         const etudiantsParCombo = new Map();
         for (const etudiant of groupeData.etudiants) {
-            const cle = `${etudiant.id_filiere}_${etudiant.niveau_id}`;
+            const cle = `${etudiant.id_filiere}_${etudiant.niveau_id}_${etudiant.curcus_id || ''}`;
             if (!etudiantsParCombo.has(cle)) {
                 etudiantsParCombo.set(cle, {
                     filiereId: etudiant.id_filiere,
                     niveauId: etudiant.niveau_id,
+                    curcusId: etudiant.curcus_id || null,
                     etudiants: []
                 });
             }
@@ -1798,11 +2193,16 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
         let totalECUEAReprendre = 0;
         let totalEtudiantsAReprendre = 0;
 
-        // ✅ Traiter chaque combo (filiere/niveau) séparément avec SA propre maquette
-        for (const { filiereId, niveauId, etudiants: etudiantsCombo } of etudiantsParCombo.values()) {
+        // ✅ Traiter chaque combo (filiere/niveau/curcus) séparément avec SA propre maquette
+        for (const { filiereId, niveauId, curcusId, etudiants: etudiantsCombo } of etudiantsParCombo.values()) {
+            let parcourLibelleCombo = null;
+            if (curcusId) {
+                const curcusResult = await db.query('SELECT type_parcours FROM curcus WHERE id = $1', [curcusId]);
+                parcourLibelleCombo = curcusResult.rows[0]?.type_parcours || null;
+            }
             // ✅ FIX : Charger S1 et S2 séparément
-            const structureS1 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 1);
-            const structureS2 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 2);
+            const structureS1 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 1, parcourLibelleCombo);
+            const structureS2 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 2, parcourLibelleCombo);
 
             const uesFusionnees = [...(structureS1.ues || []), ...(structureS2.ues || [])];
             const structureAcademique = {
@@ -1822,7 +2222,17 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
             const etudiantIdsCombo = etudiantsCombo.map(e => e.id);
             const notesParEtudiant = await getNotesPlusieursEtudiantsFonction(etudiantIdsCombo, structureAcademique.maquette_id);
 
+            // ✅ PERF : cette boucle traite les notes déjà chargées en mémoire (aucun I/O par
+            // étudiant), elle s'exécute donc comme un seul bloc synchrone continu sur toute la
+            // durée du combo (jusqu'à ~728 étudiants) — c'est la cause racine confirmée du blocage
+            // de l'Event Loop signalé sur la page Statistiques. Point de pause coopératif toutes
+            // les 25 étudiants pour laisser passer les requêtes concurrentes d'autres utilisateurs ;
+            // aucun changement de logique métier, seulement de l'ordonnancement.
+            let _yieldCounterCombo = 0;
             for (const etudiant of etudiantsCombo) {
+                if (++_yieldCounterCombo % 25 === 0) {
+                    await new Promise(resolve => setImmediate(resolve));
+                }
                 const notes = notesParEtudiant.get(etudiant.id) || [];
 
                 let uesAvecResultats = [];
@@ -1941,48 +2351,105 @@ exports.getStatsResultats = async (req, res) => {
         const { filiereId, niveauId, anneeAcademiqueId, semestreId } = req.query;
         console.log(`📊 Statistiques résultats - filiereId: ${filiereId}, niveauId: ${niveauId}, annee: ${anneeAcademiqueId}, semestre: ${semestreId || 'annuel'}`);
 
-        let query = `
-            SELECT 
-                e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id, e.niveau_id, e.id_filiere,
-                e.photo_url,
-                f.nom as filiere_nom, f.sigle as filiere_sigle,
-                tf.libelle as type_filiere,
-                n.libelle as niveau_libelle,
-                g.nom as groupe_nom,
-                COALESCE(niv2.libelle, '') as niveau_libelle_etudiant,
-                s.statut_etudiant
-            FROM etudiant e
-            LEFT JOIN filiere f ON f.id = e.id_filiere
-            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-            LEFT JOIN niveau n ON n.id = e.niveau_id
-            LEFT JOIN groupe g ON g.id = e.groupe_id
-            LEFT JOIN niveau niv2 ON niv2.id = e.niveau_id
-            LEFT JOIN scolarite s ON s.id = e.scolarite_id
-            WHERE e.standing = 'Inscrit'
-        `;
-
         const params = [];
-        let paramIndex = 1;
+        let query;
+        let paramIndex;
+
+        if (anneeAcademiqueId) {
+            // ✅ PHASE 2 (inscription_annuelle) : ce filtre existait déjà côté frontend/query mais
+            // interrogeait la position LIVE de l'étudiant (annee_academique_id ne reflète que sa
+            // dernière année) — une année passée ne remontait donc quasiment aucun résultat. On
+            // source désormais depuis le snapshot annuel immuable, avec filet de sécurité
+            // (UNION ALL + NOT EXISTS) vers l'étudiant live pour les inscriptions/réinscriptions
+            // postérieures au backfill Phase 0/1, tant que la Phase 4 (écriture auto) n'existe pas.
+            query = `
+                SELECT id, matricule_iipea, nom, prenoms, groupe_id, niveau_id, id_filiere, photo_url,
+                       filiere_nom, filiere_sigle, type_filiere, niveau_libelle, groupe_nom,
+                       niveau_libelle_etudiant, statut_etudiant, curcus_id
+                FROM (
+                    SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, ia.groupe_id, ia.niveau_id, ia.id_filiere,
+                           e.photo_url,
+                           f.nom as filiere_nom, f.sigle as filiere_sigle,
+                           tf.libelle as type_filiere,
+                           n.libelle as niveau_libelle,
+                           g.nom as groupe_nom,
+                           COALESCE(n.libelle, '') as niveau_libelle_etudiant,
+                           ia.statut_scolaire as statut_etudiant,
+                           COALESCE(ia.curcus_id, e.curcus_id) as curcus_id
+                    FROM inscription_annuelle ia
+                    JOIN etudiant e ON e.id = ia.etudiant_id
+                    LEFT JOIN filiere f ON f.id = ia.id_filiere
+                    LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+                    LEFT JOIN niveau n ON n.id = ia.niveau_id
+                    LEFT JOIN groupe g ON g.id = ia.groupe_id
+                    WHERE ia.annee_academique_id = $1
+
+                    UNION ALL
+
+                    SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id, e.niveau_id, e.id_filiere,
+                           e.photo_url,
+                           f.nom as filiere_nom, f.sigle as filiere_sigle,
+                           tf.libelle as type_filiere,
+                           n.libelle as niveau_libelle,
+                           g.nom as groupe_nom,
+                           COALESCE(n.libelle, '') as niveau_libelle_etudiant,
+                           s.statut_etudiant,
+                           e.curcus_id
+                    FROM etudiant e
+                    LEFT JOIN filiere f ON f.id = e.id_filiere
+                    LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+                    LEFT JOIN niveau n ON n.id = e.niveau_id
+                    LEFT JOIN groupe g ON g.id = e.groupe_id
+                    LEFT JOIN scolarite s ON s.id = e.scolarite_id
+                    WHERE e.annee_academique_id = $1
+                    AND e.standing = 'Inscrit'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM inscription_annuelle ia2
+                        WHERE ia2.etudiant_id = e.id AND ia2.annee_academique_id = $1
+                    )
+                ) src
+                WHERE 1=1
+            `;
+            params.push(anneeAcademiqueId);
+            paramIndex = 2;
+        } else {
+            query = `
+                SELECT
+                    e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id, e.niveau_id, e.id_filiere,
+                    e.photo_url, e.curcus_id,
+                    f.nom as filiere_nom, f.sigle as filiere_sigle,
+                    tf.libelle as type_filiere,
+                    n.libelle as niveau_libelle,
+                    g.nom as groupe_nom,
+                    COALESCE(niv2.libelle, '') as niveau_libelle_etudiant,
+                    s.statut_etudiant
+                FROM etudiant e
+                LEFT JOIN filiere f ON f.id = e.id_filiere
+                LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+                LEFT JOIN niveau n ON n.id = e.niveau_id
+                LEFT JOIN groupe g ON g.id = e.groupe_id
+                LEFT JOIN niveau niv2 ON niv2.id = e.niveau_id
+                LEFT JOIN scolarite s ON s.id = e.scolarite_id
+                WHERE e.standing = 'Inscrit'
+            `;
+            paramIndex = 1;
+        }
+
+        const colPrefix = anneeAcademiqueId ? '' : 'e.';
 
         if (filiereId) {
-            query += ` AND e.id_filiere = $${paramIndex}`;
+            query += ` AND ${colPrefix}id_filiere = $${paramIndex}`;
             params.push(filiereId);
             paramIndex++;
         }
 
         if (niveauId) {
-            query += ` AND e.niveau_id = $${paramIndex}`;
+            query += ` AND ${colPrefix}niveau_id = $${paramIndex}`;
             params.push(niveauId);
             paramIndex++;
         }
 
-        if (anneeAcademiqueId) {
-            query += ` AND e.annee_academique_id = $${paramIndex}`;
-            params.push(anneeAcademiqueId);
-            paramIndex++;
-        }
-
-        query += ` ORDER BY e.nom, e.prenoms`;
+        query += ` ORDER BY ${colPrefix}nom, ${colPrefix}prenoms`;
 
         const result = await db.query(query, params);
         const etudiants = result.rows;
@@ -2109,7 +2576,10 @@ exports.getStatsResultats = async (req, res) => {
                 niveau: e.niveau_libelle || 'N/A',
                 photo_url: e.photo_url || null,
                 decision: e.decision,
-                eligible_classe_superieure: e.eligible_classe_superieure
+                eligible_classe_superieure: e.eligible_classe_superieure,
+                type_filiere: e.type_filiere || null,
+                credits_valides: e.credits_valides,
+                credits_total: e.credits_total
             })),
             filieres: filieresResult.rows,
             niveaux: niveauxResult.rows,
@@ -2138,39 +2608,88 @@ exports.getRecapFiliereNiveau = async (req, res) => {
         const { filiereId, niveauId, anneeAcademiqueId, semestreId } = req.query;
         console.log(`📋 Récap Filière/Niveau - filiereId: ${filiereId}, niveauId: ${niveauId}, annee: ${anneeAcademiqueId}, semestre: ${semestreId || 'annuel'}`);
 
-        let query = `
-            SELECT 
-                e.id, e.groupe_id, e.niveau_id, e.id_filiere,
-                f.nom as filiere_nom, f.sigle as filiere_sigle,
-                n.libelle as niveau_libelle,
-                g.nom as groupe_nom,
-                COALESCE(niv2.libelle, '') as niveau_libelle_etudiant,
-                tf.libelle as type_filiere
-            FROM etudiant e
-            LEFT JOIN filiere f ON f.id = e.id_filiere
-            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-            LEFT JOIN niveau n ON n.id = e.niveau_id
-            LEFT JOIN groupe g ON g.id = e.groupe_id
-            LEFT JOIN niveau niv2 ON niv2.id = e.niveau_id
-            WHERE e.standing = 'Inscrit'
-        `;
-
         const params = [];
-        let paramIndex = 1;
+        let query;
+        let paramIndex;
+
+        if (anneeAcademiqueId) {
+            // ✅ PHASE 2 (inscription_annuelle) : même bascule que getStatsResultats — source
+            // depuis le snapshot annuel immuable pour retrouver les étudiants réellement inscrits
+            // cette année-là, avec filet de sécurité (UNION ALL + NOT EXISTS) vers l'étudiant live.
+            query = `
+                SELECT id, groupe_id, niveau_id, id_filiere, filiere_nom, filiere_sigle,
+                       niveau_libelle, groupe_nom, niveau_libelle_etudiant, type_filiere, curcus_id
+                FROM (
+                    SELECT e.id, ia.groupe_id, ia.niveau_id, ia.id_filiere,
+                           f.nom as filiere_nom, f.sigle as filiere_sigle,
+                           n.libelle as niveau_libelle,
+                           g.nom as groupe_nom,
+                           COALESCE(n.libelle, '') as niveau_libelle_etudiant,
+                           tf.libelle as type_filiere,
+                           COALESCE(ia.curcus_id, e.curcus_id) as curcus_id
+                    FROM inscription_annuelle ia
+                    JOIN etudiant e ON e.id = ia.etudiant_id
+                    LEFT JOIN filiere f ON f.id = ia.id_filiere
+                    LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+                    LEFT JOIN niveau n ON n.id = ia.niveau_id
+                    LEFT JOIN groupe g ON g.id = ia.groupe_id
+                    WHERE ia.annee_academique_id = $1
+
+                    UNION ALL
+
+                    SELECT e.id, e.groupe_id, e.niveau_id, e.id_filiere,
+                           f.nom as filiere_nom, f.sigle as filiere_sigle,
+                           n.libelle as niveau_libelle,
+                           g.nom as groupe_nom,
+                           COALESCE(n.libelle, '') as niveau_libelle_etudiant,
+                           tf.libelle as type_filiere,
+                           e.curcus_id
+                    FROM etudiant e
+                    LEFT JOIN filiere f ON f.id = e.id_filiere
+                    LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+                    LEFT JOIN niveau n ON n.id = e.niveau_id
+                    LEFT JOIN groupe g ON g.id = e.groupe_id
+                    WHERE e.annee_academique_id = $1
+                    AND e.standing = 'Inscrit'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM inscription_annuelle ia2
+                        WHERE ia2.etudiant_id = e.id AND ia2.annee_academique_id = $1
+                    )
+                ) src
+                WHERE 1=1
+            `;
+            params.push(anneeAcademiqueId);
+            paramIndex = 2;
+        } else {
+            query = `
+                SELECT
+                    e.id, e.groupe_id, e.niveau_id, e.id_filiere, e.curcus_id,
+                    f.nom as filiere_nom, f.sigle as filiere_sigle,
+                    n.libelle as niveau_libelle,
+                    g.nom as groupe_nom,
+                    COALESCE(niv2.libelle, '') as niveau_libelle_etudiant,
+                    tf.libelle as type_filiere
+                FROM etudiant e
+                LEFT JOIN filiere f ON f.id = e.id_filiere
+                LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
+                LEFT JOIN niveau n ON n.id = e.niveau_id
+                LEFT JOIN groupe g ON g.id = e.groupe_id
+                LEFT JOIN niveau niv2 ON niv2.id = e.niveau_id
+                WHERE e.standing = 'Inscrit'
+            `;
+            paramIndex = 1;
+        }
+
+        const colPrefix = anneeAcademiqueId ? '' : 'e.';
 
         if (filiereId) {
-            query += ` AND e.id_filiere = $${paramIndex}`;
+            query += ` AND ${colPrefix}id_filiere = $${paramIndex}`;
             params.push(filiereId);
             paramIndex++;
         }
         if (niveauId) {
-            query += ` AND e.niveau_id = $${paramIndex}`;
+            query += ` AND ${colPrefix}niveau_id = $${paramIndex}`;
             params.push(niveauId);
-            paramIndex++;
-        }
-        if (anneeAcademiqueId) {
-            query += ` AND e.annee_academique_id = $${paramIndex}`;
-            params.push(anneeAcademiqueId);
             paramIndex++;
         }
 

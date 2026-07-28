@@ -414,6 +414,15 @@
                 <%= type_filiere %> — <%= maquette.parcour %>
             </div>
 
+            <%
+                // ✅ Filières professionnelles (BTS, Master Pro) : l'évaluation se fait au niveau
+                // ECUE, la colonne Moy. UE n'a pas de sens pédagogique et n'est pas affichée.
+                // ⚠️ Basé sur type_traitement (résultat de determinerTypeTraitement côté contrôleur),
+                // pas sur type_filiere directement : une "Licence Pro" a type_filiere="Professionnelles"
+                // mais est bien traitée comme universitaire (crédits, Moy. UE, etc.) — utiliser
+                // type_filiere ici afficherait à tort le layout ECUE-only pour ces groupes.
+                const isProfessionnel = type_traitement === 'professionnel';
+            %>
             <table>
                 <thead>
                     <tr>
@@ -421,7 +430,9 @@
                         <th>ECUE</th>
                         <th>Crédits</th>
                         <th>Moy. ECUE</th>
-                        <th>Moy. UE</th>
+                        <% if (!isProfessionnel) { %>
+                            <th>Moy. UE</th>
+                        <% } %>
                         <th>Mention</th>
                         <th>Décision</th>
                     </tr>
@@ -442,7 +453,9 @@
                             <td></td>
                             <td></td>
                             <td></td>
-                            <td><%= moyUE.toFixed(2) %></td>
+                            <% if (!isProfessionnel) { %>
+                                <td><%= moyUE.toFixed(2) %></td>
+                            <% } %>
                             <td>
                                 <% 
                                     let mention = '';
@@ -460,13 +473,33 @@
                                 %>
                                 <span class="mention <%= mentionClass %>"><%= mention %></span>
                             </td>
-                            <td class="<%= ue.valide ? 'admis' : 'refuse' %>">
-                                <%= ue.valide ? 'ADMIS' : 'REFUSÉ' %>
-                            </td>
+                            <% if (!isProfessionnel) { %>
+                                <td class="<%= ue.valide ? 'admis' : 'refuse' %>">
+                                    <%= ue.valide ? 'ADMIS' : 'REFUSÉ' %>
+                                </td>
+                            <% } else { %>
+                                <!-- ✅ Filière professionnelle : pas de décision au niveau UE, la
+                                     décision est propre à chaque ECUE (ci-dessous) -->
+                                <td></td>
+                            <% } %>
                         </tr>
-                        
+
                         <!-- ECUE -->
-                        <% ue.matieres.forEach(function(matiere) { 
+                        <%
+                            // ✅ ECUE à choix (Espagnol/Allemand, etc.) non suivie : on ne l'affiche
+                            // jamais quand l'autre membre de la paire a une vraie note (cas normal) —
+                            // seule la matière réellement suivie apparaît sur le bulletin. Si les DEUX
+                            // sont à 0 (cas exceptionnel), on affiche quand même une seule ligne, de
+                            // façon déterministe (ordre alphabétique), pour éviter un doublon inutile.
+                            const nonClasseUE = ue.matieres.filter(m => m.non_classe);
+                            const nonClasseAGarder = nonClasseUE.length > 1
+                                ? [...nonClasseUE].sort((a, b) => (a.nom || '').localeCompare(b.nom || ''))[0]
+                                : null;
+                            const matieresAffichees = ue.matieres.filter(m =>
+                                !m.non_classe || (nonClasseUE.length > 1 && m === nonClasseAGarder)
+                            );
+                        %>
+                        <% matieresAffichees.forEach(function(matiere) {
                             if (matiere.a_note) {
                                 const moyECUE = matiere.moyenne_affichage || matiere.moyenne || 0;
                         %>
@@ -480,14 +513,23 @@
                                 </td>
                                 <td><%= matiere.coefficient %></td>
                                 <td><%= moyECUE.toFixed(2) %></td>
+                                <% if (!isProfessionnel) { %>
+                                    <td></td>
+                                <% } %>
                                 <td></td>
-                                <td></td>
-                                <td></td>
+                                <% if (isProfessionnel) { %>
+                                    <!-- ✅ Filière professionnelle : décision propre à l'ECUE, selon sa moyenne -->
+                                    <td class="<%= moyECUE >= 10 ? 'admis' : 'refuse' %>">
+                                        <%= moyECUE >= 10 ? 'ADMIS' : 'AJOURNÉ' %>
+                                    </td>
+                                <% } else { %>
+                                    <td></td>
+                                <% } %>
                             </tr>
-                        <% } 
+                        <% }
                         }); %>
-                        
-                        <tr><td colspan="7" style="height: 2px; background: #eee;"></td></tr>
+
+                        <tr><td colspan="<%= isProfessionnel ? 6 : 7 %>" style="height: 2px; background: #eee;"></td></tr>
                     <% }); %>
                 </tbody>
             </table>

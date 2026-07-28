@@ -386,5 +386,6 @@ router.post(
  */
 router.get('/recu-data/:id', authenticateToken, etudiantController.getRecuData);
 router.get('/:id/fiche', authenticateToken, etudiantController.afficherFicheAdmission);
+router.get('/:id/fiche-engagement', authenticateToken, etudiantController.afficherFicheEngagementSeule);
 
 module.exports = router;

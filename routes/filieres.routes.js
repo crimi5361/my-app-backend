@@ -7,6 +7,7 @@ router.get('/', authenticateToken,              filieresController.getAllFiliere
 router.get('/table/Filiere', authenticateToken, filieresController.getAllFilieresTable);
 router.post('/', authenticateToken,            filieresController.createFiliere);
 router.put('/:id', authenticateToken,          filieresController.updateFiliere);
-// router.delete('/:id',        filieresController.deleteFiliere);
+router.delete('/:id', authenticateToken,       filieresController.deleteFiliere);
+router.post('/:id/dupliquer', authenticateToken, filieresController.dupliquerFiliere);
 
 module.exports = router;

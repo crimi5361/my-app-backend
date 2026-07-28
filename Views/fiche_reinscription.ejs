@@ -149,6 +149,12 @@
         <p style="font-size: 10.5px; color: #666;">Aucune donnée académique disponible pour l'année précédente.</p>
         <% } %>
 
+        <% if (dossier.decision_academique === 'AJOURNÉ' && dossier.niveau_retenu_id === dossier.niveau_precedent_id) { %>
+        <p style="font-size: 10.5px; color: #666; margin: 4px 0;">
+            Décision académique : AJOURNÉ — Réinscription autorisée en redoublement dans le même niveau.
+        </p>
+        <% } %>
+
         <% if (ecueEnRattrapage.length > 0 || uesEnRattrapage.length > 0) { %>
         <h3 class="section-title">Rattrapages</h3>
         <div class="rattrapage-box">
@@ -167,7 +173,7 @@
             <tr><th>Filière</th><td><%= dossier.filiere_nom || 'Non spécifié' %></td></tr>
             <tr><th>Niveau</th><td><%= dossier.niveau_libelle %></td></tr>
             <tr><th>Classe</th><td><%= dossier.filiere_nom ? (dossier.filiere_nom + ' ' + dossier.filiere_sigle + ' ' + dossier.niveau_libelle) : 'Non spécifié' %></td></tr>
-            <tr><th>Groupe</th><td><% if (dossier.statut === 'inscrit') { %>Affecté lors du paiement<% } else { %><span class="non-assigne">Non assigné — affecté après validation du paiement</span><% } %></td></tr>
+            <tr><th>Statut scolaire</th><td><%= dossier.statut_scolaire_retenu || 'Non déterminé' %></td></tr>
         </table>
 
         <% if (dossier.statut !== 'non_eligible') { %>

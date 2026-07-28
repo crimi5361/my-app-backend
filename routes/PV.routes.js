@@ -241,6 +241,16 @@ router.get('/api/groupe/:groupeId/semestre/:semestreId', pvController.genererPVB
  *         schema:
  *           type: integer
  *         description: ID de l'étudiant
+ *       - in: query
+ *         name: anneeAcademiqueId
+ *         required: false
+ *         schema:
+ *           type: integer
+ *         description: >
+ *           Année académique ciblée (optionnel). Par défaut, résout la position actuelle de
+ *           l'étudiant. Si renseigné, résout niveau/filière/groupe via le snapshot annuel
+ *           immuable inscription_annuelle de cette année (ex. bulletin d'une année antérieure
+ *           après réinscription).
  *     responses:
  *       200:
  *         description: PV étudiant généré
@@ -322,6 +332,15 @@ router.get('/vue/groupe/:groupeId/semestre/:semestreId', authenticateToken, pvCo
  *         schema:
  *           type: integer
  *         description: ID du semestre (optionnel, bulletin annuel par défaut)
+ *       - in: query
+ *         name: anneeAcademiqueId
+ *         required: false
+ *         schema:
+ *           type: integer
+ *         description: >
+ *           Année académique ciblée (optionnel). Par défaut, position actuelle de l'étudiant.
+ *           Si renseigné, résout via le snapshot annuel immuable inscription_annuelle de cette
+ *           année (bulletin d'une année antérieure après réinscription).
  *     responses:
  *       200:
  *         description: Bulletin HTML

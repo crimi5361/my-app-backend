@@ -6,7 +6,14 @@
 // ce plan n'est plus figé : les versements restants se recalculent en répartissant équitablement
 // le solde réel restant sur le nombre de versements restants — jamais une contrainte bloquante,
 // uniquement un repère prévisionnel affiché à l'étudiant et à l'agent.
+//
+// Cadence : chaque versement restant est espacé de 2 mois du précédent (et non 1), pour laisser
+// davantage de temps aux parents. Toute échéance tombant un jour non ouvrable (week-end ou jour
+// férié en Côte d'Ivoire) est automatiquement reportée au prochain jour ouvrable.
 const moment = require('moment');
+const { prochainJourOuvrable } = require('./joursFeries.service');
+
+const ESPACEMENT_MOIS_ENTRE_VERSEMENTS = 2;
 
 const PREMIER_VERSEMENT_FIXE = 150000;
 
@@ -54,7 +61,8 @@ exports.calculerEcheancier = ({ montantTotal, nombreVersementsPrevu, paiementsEf
       }
       cumul += montant;
 
-      const datePrevue = base.clone().add(k + j, 'month');
+      const datePrevueBrute = base.clone().add((k + j) * ESPACEMENT_MOIS_ENTRE_VERSEMENTS, 'month');
+      const datePrevue = prochainJourOuvrable(datePrevueBrute);
       versements.push({
         numero: k + j + 1,
         montant,
@@ -84,3 +92,13 @@ exports.calculerEcheancier = ({ montantTotal, nombreVersementsPrevu, paiementsEf
 };
 
 exports.PREMIER_VERSEMENT_FIXE = PREMIER_VERSEMENT_FIXE;
+
+// Règle métier (reprise de l'admission) : au-delà d'un certain montant de scolarité, le nombre de
+// versements reste libre (jusqu'à 4) ; entre 150 000 et 210 000 F, il est plafonné à 2 pour garder
+// des versements d'un montant raisonnable. Centralisé ici pour que le frontend n'ait jamais à
+// recalculer cette règle — il ne fait qu'afficher les options renvoyées par le serveur.
+exports.determinerOptionsVersements = (montant) => {
+  const m = parseFloat(montant);
+  const maxVersements = Number.isFinite(m) && m >= 150000 && m <= 210000 ? 2 : 4;
+  return [1, 2, 3, 4].filter(n => n <= maxVersements);
+};

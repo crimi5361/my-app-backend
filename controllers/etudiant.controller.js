@@ -110,6 +110,8 @@ function validatePhotoFile(file) {
 }
 
 exports.validatePhotoFile = validatePhotoFile;
+exports.generateMatriculeIIPEA = generateMatriculeIIPEA;
+exports.generateCodeUnique = generateCodeUnique;
 
 exports.addEtudiant = async (req, res) => {
   // Vérification de l'authentification
@@ -160,7 +162,7 @@ exports.addEtudiant = async (req, res) => {
 
     // Validation des champs obligatoires
     const requiredFields = {
-      etudiant: ['nom', 'prenoms', 'date_naissance', 'sexe', 'nationalite', 'telephone', 'contact_parent'],
+      etudiant: ['nom', 'prenoms', 'date_naissance', 'sexe', 'nationalite', 'telephone', 'email_personnel', 'contact_parent'],
       academique: ['matricule', 'annee_academique_id'],
       inscription: ['niveau_id', 'id_filiere']
     };
@@ -188,19 +190,26 @@ exports.addEtudiant = async (req, res) => {
       });
     }
 
-    // Validation serveur du montant de scolarité : ne jamais faire confiance au montant
-    // envoyé par le client, le recalculer depuis la grille de tarifs (niveau + statut).
-    const { calculerMontantScolarite } = require('./tarif.controller');
-    const tarifApplicable = await calculerMontantScolarite(data.inscription.niveau_id, data.academique.statut_scolaire);
-    if (!tarifApplicable || tarifApplicable.montant === null) {
-      return res.status(409).json({
+    // ✅ Résolution atomique formation+tarif+parcours (services/parcoursProfessionnel.service.js) :
+    // jamais de calcul de tarif ou de garde-fou parcours isolé — les deux dépendent du même niveau
+    // et doivent être cohérents entre eux, pour l'admission agent comme pour le portail Web et la
+    // future vérification scolarité. Ne jamais faire confiance au montant envoyé par le client.
+    const { resoudreFormationEtParcours } = require('../services/parcoursProfessionnel.service');
+    const resolution = await resoudreFormationEtParcours(client, {
+      niveauId: data.inscription.niveau_id,
+      filiereId: data.inscription.id_filiere,
+      curcusId: data.inscription.curcus_id,
+      statutScolaire: data.academique.statut_scolaire,
+    });
+    if (resolution.erreur) {
+      return res.status(resolution.erreur.status).json({
         success: false,
-        error: 'Aucun tarif configuré pour ce niveau. Contactez un administrateur.',
-        code: 'TARIF_INTROUVABLE'
+        error: resolution.erreur.message,
+        code: resolution.erreur.code
       });
     }
-    data.inscription.montant_scolarite = tarifApplicable.montant;
-    data.academique.statut_scolaire = tarifApplicable.statut_applique;
+    data.inscription.montant_scolarite = resolution.tarif.montant;
+    data.academique.statut_scolaire = resolution.tarif.statut_applique;
 
     // req.files est un tableau plat depuis upload.any() (photo + doc_<CODE> mêlés)
     const uploadedFiles = Array.isArray(req.files) ? req.files : [];
@@ -275,14 +284,15 @@ if (photoFile0) {
     const etudiantQuery = `
       INSERT INTO etudiant (
         matricule, nom, prenoms, date_naissance, lieu_naissance, pays_naissance, telephone, email,
+        email_personnel,
         lieu_residence, contact_parent, nom_parent_1, nom_parent_2, code_unique, annee_bac, serie_bac,
         etablissement_origine, inscrit_par, photo_url, site_id, annee_academique_id, groupe_id,
         niveau_id, statut_scolaire, nationalite, standing, numero_table, sexe, password,
         curcus_id, id_filiere, date_inscription, contact_etudiant, contact_parent_2, matricule_iipea,
         ip_ministere,
-        numero_acte_naissance, numero_piece_identite, mention_bac, session_bac,
+        numero_acte_naissance, numero_piece_identite, mention_bac,
         adresse_parent_1, adresse_parent_2, engagement_accepte, code_paiement, nombre_versements_prevu
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, NOW(), $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, NOW(), $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43)
       RETURNING id
     `;
 
@@ -295,6 +305,7 @@ if (photoFile0) {
       data.etudiant.pays_naissance || null,
       data.etudiant.telephone,
       email,
+      data.etudiant.email_personnel,
       data.etudiant.lieu_residence,
       data.etudiant.contact_parent,
       data.etudiant.nom_parent_1 || null,
@@ -324,7 +335,6 @@ if (photoFile0) {
       data.etudiant.numero_acte_naissance || null,
       data.etudiant.numero_piece_identite || null,
       data.academique.mention_bac || null,
-      data.academique.session_bac || null,
       data.etudiant.adresse_parent_1 || null,
       data.etudiant.adresse_parent_2 || null,
       req.body.engagement_accepte === 'true',
@@ -464,62 +474,99 @@ if (photoFile0) {
   }
 };
 
-// ─── GET fiche récapitulative d'inscription (imprimable) ───────────────────
+// ─── Chargement des données de la fiche d'inscription (partagé par les 3 vues ci-dessous) ──
+async function _chargerDonneesFicheAdmission(id) {
+  const { calculerEcheancier } = require('../services/echeancier.service');
+
+  const result = await db.query(
+    `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.standing, e.code_paiement,
+            e.photo_url, e.sexe, e.date_naissance, e.telephone, e.email,
+            e.mention_bac, e.annee_bac, e.contact_parent, e.contact_parent_2,
+            e.date_inscription, e.nombre_versements_prevu, e.inscrit_par,
+            e.valide_scolarite, e.statut_scolaire,
+            f.nom AS filiere_nom, n.libelle AS niveau_libelle, a.annee,
+            ec.nom AS ecole_nom,
+            s.montant_scolarite, s.scolarite_verse, s.scolarite_restante,
+            u.nom AS agent_nom
+     FROM etudiant e
+     JOIN filiere f ON f.id = e.id_filiere
+     JOIN niveau n ON n.id = e.niveau_id
+     LEFT JOIN anneeacademique a ON a.id = e.annee_academique_id
+     LEFT JOIN scolarite s ON s.id = e.scolarite_id
+     LEFT JOIN utilisateur u ON u.id::text = e.inscrit_par
+     LEFT JOIN departement dep ON dep.id = f.departement_id
+     LEFT JOIN ecole ec ON ec.id = dep.ecole_id
+     WHERE e.id = $1`,
+    [id]
+  );
+  if (result.rows.length === 0) return null;
+  const dossier = result.rows[0];
+
+  // Suivi du dossier administratif : chaque pièce demandée à l'admission, avec son statut
+  // (fournie ou non) tel que coché lors de l'inscription.
+  const piecesResult = await db.query(
+    `SELECT td.id, td.code, td.libelle, td.obligatoire, COALESCE(de.fourni, false) AS fourni,
+            COALESCE(de.declare_par_etudiant, false) AS declare_par_etudiant
+     FROM type_document td
+     LEFT JOIN document_etudiant de ON de.type_document_id = td.id AND de.etudiant_id = $1
+     WHERE td.contexte = 'admission'
+     ORDER BY td.id`,
+    [id]
+  );
+  const piecesJustificatives = piecesResult.rows;
+
+  const echeancier = calculerEcheancier({
+    montantTotal: dossier.montant_scolarite,
+    nombreVersementsPrevu: dossier.nombre_versements_prevu,
+    paiementsEffectues: dossier.scolarite_verse > 0
+      ? [{ montant: dossier.scolarite_verse, date: dossier.date_inscription }]
+      : [],
+    dateDepart: dossier.date_inscription,
+  });
+
+  return { dossier, echeancier, piecesJustificatives };
+}
+
+// ─── GET fiche récapitulative d'inscription complète (fiche + engagement) ──────────────────
+// Route agent authentifiée uniquement — admission réalisée directement à l'école (Cas n°1,
+// comportement inchangé) : l'agent imprime les deux pages ensemble pour faire signer sur place.
 exports.afficherFicheAdmission = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { calculerEcheancier } = require('../services/echeancier.service');
-
-    const result = await db.query(
-      `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.standing, e.code_paiement,
-              e.photo_url, e.sexe, e.date_naissance, e.telephone, e.email,
-              e.mention_bac, e.session_bac, e.contact_parent, e.contact_parent_2,
-              e.date_inscription, e.nombre_versements_prevu, e.inscrit_par,
-              f.nom AS filiere_nom, n.libelle AS niveau_libelle, a.annee,
-              ec.nom AS ecole_nom,
-              s.montant_scolarite, s.scolarite_verse, s.scolarite_restante,
-              u.nom AS agent_nom
-       FROM etudiant e
-       JOIN filiere f ON f.id = e.id_filiere
-       JOIN niveau n ON n.id = e.niveau_id
-       LEFT JOIN anneeacademique a ON a.id = e.annee_academique_id
-       LEFT JOIN scolarite s ON s.id = e.scolarite_id
-       LEFT JOIN utilisateur u ON u.id::text = e.inscrit_par
-       LEFT JOIN departement dep ON dep.id = f.departement_id
-       LEFT JOIN ecole ec ON ec.id = dep.ecole_id
-       WHERE e.id = $1`,
-      [id]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).send('Dossier d\'inscription introuvable.');
-    }
-    const dossier = result.rows[0];
-
-    // Suivi du dossier administratif : chaque pièce demandée à l'admission, avec son statut
-    // (fournie ou non) tel que coché lors de l'inscription.
-    const piecesResult = await db.query(
-      `SELECT td.id, td.code, td.libelle, td.obligatoire, COALESCE(de.fourni, false) AS fourni
-       FROM type_document td
-       LEFT JOIN document_etudiant de ON de.type_document_id = td.id AND de.etudiant_id = $1
-       WHERE td.contexte = 'admission'
-       ORDER BY td.id`,
-      [id]
-    );
-    const piecesJustificatives = piecesResult.rows;
-
-    const echeancier = calculerEcheancier({
-      montantTotal: dossier.montant_scolarite,
-      nombreVersementsPrevu: dossier.nombre_versements_prevu,
-      paiementsEffectues: dossier.scolarite_verse > 0
-        ? [{ montant: dossier.scolarite_verse, date: dossier.date_inscription }]
-        : [],
-      dateDepart: dossier.date_inscription,
-    });
-
-
-    res.render('fiche_admission', { dossier, echeancier, piecesJustificatives });
+    const donnees = await _chargerDonneesFicheAdmission(req.params.id);
+    if (!donnees) return res.status(404).send('Dossier d\'inscription introuvable.');
+    res.render('fiche_admission', { ...donnees, sections: ['fiche', 'engagement'] });
   } catch (error) {
     console.error('Erreur afficherFicheAdmission:', error);
+    res.status(500).send('Erreur serveur lors de la génération de la fiche.');
+  }
+};
+
+// ─── GET fiche d'inscription seule (portail public) ─────────────────────────────────────────
+// La fiche d'engagement n'est plus téléchargeable depuis le portail Web (Cas n°2) — elle n'est
+// imprimée qu'au moment de l'activation du code de paiement par l'agent (cf.
+// afficherFicheEngagementSeule ci-dessous).
+exports.afficherFicheInscriptionPublique = async (req, res) => {
+  try {
+    const donnees = await _chargerDonneesFicheAdmission(req.params.id);
+    if (!donnees) return res.status(404).send('Dossier d\'inscription introuvable.');
+    res.render('fiche_admission', { ...donnees, sections: ['fiche'] });
+  } catch (error) {
+    console.error('Erreur afficherFicheInscriptionPublique:', error);
+    res.status(500).send('Erreur serveur lors de la génération de la fiche.');
+  }
+};
+
+// ─── GET fiche d'engagement seule (route agent authentifiée) ───────────────────────────────
+// Ouverte automatiquement par l'application métier juste après la confirmation d'un dossier
+// d'admission Web ("Confirmer pour paiement" = activation du code de paiement), pour impression
+// et signature immédiates par l'étudiant.
+exports.afficherFicheEngagementSeule = async (req, res) => {
+  try {
+    const donnees = await _chargerDonneesFicheAdmission(req.params.id);
+    if (!donnees) return res.status(404).send('Dossier d\'inscription introuvable.');
+    res.render('fiche_admission', { ...donnees, sections: ['engagement'] });
+  } catch (error) {
+    console.error('Erreur afficherFicheEngagementSeule:', error);
     res.status(500).send('Erreur serveur lors de la génération de la fiche.');
   }
 };
@@ -1111,7 +1158,6 @@ exports.getEtudiantById = async (req, res) => {
         e.numero_acte_naissance,
         e.numero_piece_identite,
         e.mention_bac,
-        e.session_bac,
         e.adresse_parent_1,
         e.adresse_parent_2,
         e.engagement_accepte,

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fiche de Situation - <%= etudiant.nom %> <%= etudiant.prenoms %></title>
+    <style>
+        @page {
+            size: A4;
+            margin: 6mm;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Arial', sans-serif;
+            background: white;
+            color: #000;
+            font-size: 11px;
+            line-height: 1.25;
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+
+        p { margin: 4px 0; }
+
+        .fiche-container {
+            width: 210mm;
+            max-width: 100%;
+            margin: 0 auto;
+            padding: 6px 14px;
+            box-sizing: border-box;
+            border: 1px solid #d9d9d9;
+            border-radius: 4px;
+            background: white;
+            position: relative;
+        }
+
+        .header-ministry { display: flex; justify-content: space-between; margin-bottom: 6px; }
+        .ministry-text { font-size: 8px; color: #003366; display: block; margin: 0; line-height: 1.15; }
+        .separator-bar { border-bottom: 2px solid #003366; margin: 6px 0 8px 0; }
+
+        .school-header { display: flex; justify-content: center; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+        .school-logo { height: 36px; width: auto; margin-right: 10px; }
+        .school-name { font-size: 13px; color: #003366; font-weight: bold; text-align: center; margin: 4px 0; }
+
+        .main-title-container { display: flex; justify-content: center; margin-bottom: 8px; }
+        .main-title { border: 1.5px solid #003366; border-radius: 8px; padding: 4px 24px; text-align: center; width: fit-content; background-color: #f0f8ff; }
+        .main-title-text { color: #003366; text-align: center; font-size: 15px; font-weight: bold; text-transform: uppercase; margin: 0; }
+
+        .statut-banner { text-align: center; margin: 4px 0 5px 0; padding: 3px; border-radius: 5px; font-size: 11px; font-weight: bold; background: #fff1f0; color: #cf1322; border: 1px solid #ffa39e; }
+
+        .info-section { margin-bottom: 5px; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 16px; }
+        .info-line { margin-bottom: 3px; font-size: 11px; }
+        .info-label { font-weight: bold; color: #003366; display: inline-block; min-width: 130px; }
+
+        h3.section-title { color: #003366; border-bottom: 1.5px solid #f0f8ff; padding-bottom: 1px; margin: 5px 0 3px 0; font-size: 12px; }
+
+        table.recap-table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+        table.recap-table th, table.recap-table td { border: 1px solid #d9d9d9; padding: 1.5px 7px; font-size: 10.5px; text-align: left; line-height: 1.1; }
+        table.recap-table th { background-color: #f0f8ff; color: #003366; width: 32%; }
+
+        .motif-box { margin: 5px 0; padding: 6px; border: 1px solid #ffa39e; background: #fff1f0; border-radius: 6px; color: #a8071a; white-space: pre-line; font-size: 10.5px; }
+
+        .footer-section { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 5px; flex-wrap: wrap; }
+        .signature-container { text-align: center; flex: 1; min-width: 140px; }
+        .signature-line { border-top: 1px solid #000; width: 170px; margin: 18px auto 0 auto; padding-top: 3px; }
+        .signature-text { font-weight: bold; font-size: 11px; }
+        .date-below-signature { display: block; margin-top: 3px; font-size: 10px; color: #444; }
+
+        .footer { margin-top: 5px; text-align: center; border-top: 1px solid #d9d9d9; padding-top: 3px; }
+        .footer-text { font-size: 7.5px; color: #666; display: block; margin-bottom: 1px; }
+
+        @media print {
+            body { margin: 0 !important; padding: 0 !important; font-size: 11px !important; }
+            .fiche-container { border: none !important; box-shadow: none !important; padding: 4mm !important; width: 100% !important; }
+        }
+    </style>
+</head>
+<body>
+    <div class="fiche-container">
+        <div class="header-ministry">
+            <div>
+                <span class="ministry-text">MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR</span>
+                <span class="ministry-text">ET DE LA RECHERCHE SCIENTIFIQUE</span>
+            </div>
+            <div style="text-align: right;">
+                <span class="ministry-text">RÉPUBLIQUE DE CÔTE D'IVOIRE</span>
+                <span class="ministry-text">Union - Discipline - Travail</span>
+            </div>
+        </div>
+        <div class="separator-bar"></div>
+        <div class="school-header">
+            <img src="/public/IIPEA-Photoroom.png" alt="Logo IIPEA" class="school-logo" onerror="this.style.display='none'">
+            <span class="school-name">Institut International Polytechnique des Elites d'Abidjan - (IIPEA)</span>
+        </div>
+        <div class="main-title-container">
+            <div class="main-title"><h1 class="main-title-text">Fiche de Situation — Réinscription</h1></div>
+        </div>
+
+        <div class="statut-banner">Réinscription bloquée — Scolarité non soldée</div>
+
+        <div class="info-section">
+            <div class="info-grid">
+                <div class="info-line"><span class="info-label">N° Matricule IIPEA :</span><%= etudiant.matricule_iipea %></div>
+                <div class="info-line"><span class="info-label">Nom :</span><%= etudiant.nom %></div>
+                <div class="info-line"><span class="info-label">Prénom(s) :</span><%= etudiant.prenoms %></div>
+                <div class="info-line"><span class="info-label">Site :</span><%= etudiant.site_nom %></div>
+            </div>
+        </div>
+
+        <h3 class="section-title">Situation actuelle</h3>
+        <table class="recap-table">
+            <tr><th>Filière</th><td><%= etudiant.filiere_nom %></td></tr>
+            <tr><th>Niveau</th><td><%= etudiant.niveau_libelle %></td></tr>
+            <tr><th>Montant total de la scolarité</th><td><%= etudiant.montant_scolarite !== null ? Number(etudiant.montant_scolarite).toLocaleString('fr-FR') + ' FCFA' : 'Non spécifié' %></td></tr>
+            <tr><th>Montant versé</th><td><%= etudiant.scolarite_verse !== null ? Number(etudiant.scolarite_verse).toLocaleString('fr-FR') + ' FCFA' : '0 FCFA' %></td></tr>
+            <tr><th>Reste à payer</th><td><strong><%= etudiant.scolarite_restante !== null ? Number(etudiant.scolarite_restante).toLocaleString('fr-FR') + ' FCFA' : 'Non spécifié' %></strong></td></tr>
+        </table>
+
+        <div class="motif-box">
+            Votre scolarité de l'année précédente n'est pas entièrement soldée.<br>
+            Il vous reste <strong><%= etudiant.scolarite_restante !== null ? Number(etudiant.scolarite_restante).toLocaleString('fr-FR') : '0' %> FCFA</strong> à régler.<br>
+            Veuillez vous présenter au service de la Caisse afin de régulariser votre situation avant toute demande de réinscription.
+        </div>
+
+        <h3 class="section-title">Signatures</h3>
+        <div class="footer-section">
+            <div class="signature-container">
+                <div class="signature-line"><span class="signature-text">Signature de l'étudiant</span></div>
+            </div>
+            <div class="signature-container">
+                <div class="signature-line"><span class="signature-text">Service Scolarité</span></div>
+                <span class="date-below-signature">Fait à Abidjan, le <%= dateGeneration.toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' }) %></span>
+            </div>
+        </div>
+
+        <div class="footer">
+            <span class="footer-text">Cocody Riviera 2, Route d'Attoban / Riviera Triangle /Abobo/ Yamoussoukro</span>
+            <span class="footer-text">Tel : +225 05 44 02 60 60 / +225 07 08 08 87 87</span>
+            <span class="footer-text">Email : secretariat@iipea.com | Copyright © IIPEA Tous droits réservés</span>
+        </div>
+    </div>
+</body>
+</html>

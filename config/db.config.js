@@ -5,12 +5,25 @@ const { Pool } = require("pg");
 
 // Bascule automatique local / Neon : DATABASE_URL présent (.env.production) => Neon (SSL requis),
 // sinon les variables DB_HOST/DB_USER/... (.env.local) => PostgreSQL local (pas de SSL).
+// ✅ PERF : dimensionnement explicite du pool (au lieu des valeurs par défaut implicites de `pg`).
+// max relevé à 20 (marge de montée en charge — l'endpoint Neon utilisé en production est le
+// endpoint "-pooler" (PgBouncer), qui absorbe cette hausse côté base). connectionTimeoutMillis
+// passe de 0 (attente indéfinie) à 5000 : si le pool est saturé, une requête échoue proprement
+// après 5s au lieu de rester bloquée sans limite. idleTimeoutMillis explicité mais inchangé.
+const poolConfig = {
+  max: 20,
+  idleTimeoutMillis: 10000,
+  connectionTimeoutMillis: 5000,
+};
+
 const pool = process.env.DATABASE_URL
   ? new Pool({
+      ...poolConfig,
       connectionString: process.env.DATABASE_URL,
       ssl: { rejectUnauthorized: false },
     })
   : new Pool({
+      ...poolConfig,
       user: process.env.DB_USER,
       host: process.env.DB_HOST,
       database: process.env.DB_DATABASE,

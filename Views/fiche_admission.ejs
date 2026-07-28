@@ -87,9 +87,27 @@
             body { margin: 0 !important; padding: 0 !important; font-size: 11px !important; }
             .fiche-container { border: none !important; box-shadow: none !important; padding: 4mm !important; width: 100% !important; }
         }
+
+        .engagement-page {
+            page-break-before: always;
+            break-before: page;
+            padding-top: 10mm;
+        }
+        .engagement-title-container { display: flex; justify-content: center; margin-bottom: 18px; }
+        .engagement-title { border: 1.5px solid #003366; border-radius: 8px; padding: 6px 28px; text-align: center; width: fit-content; background-color: #f0f8ff; }
+        .engagement-title-text { color: #003366; text-align: center; font-size: 15px; font-weight: bold; text-transform: uppercase; margin: 0; letter-spacing: 0.5px; }
+        .engagement-intro { font-size: 11.5px; line-height: 1.6; margin: 16px 0 14px 0; }
+        .engagement-list { font-size: 11px; line-height: 1.7; margin: 0 0 20px 0; padding-left: 20px; }
+        .engagement-list li { margin-bottom: 10px; text-align: justify; }
+        .engagement-signatures { display: flex; justify-content: space-between; margin-top: 40px; flex-wrap: wrap; gap: 20px; }
+        .engagement-field { flex: 1; min-width: 200px; }
+        .engagement-field-label { font-weight: bold; color: #003366; font-size: 11px; }
+        .engagement-field-line { border-bottom: 1px solid #000; display: inline-block; width: 160px; margin-left: 6px; }
+        .engagement-signature-block { text-align: center; flex: 1; min-width: 220px; margin-top: 30px; }
     </style>
 </head>
 <body>
+    <% if (sections.includes('fiche')) { %>
     <div class="fiche-container">
         <div class="header-ministry">
             <div>
@@ -142,6 +160,7 @@
             <tr><th>Filière</th><td><%= dossier.filiere_nom || 'Non spécifié' %></td></tr>
             <tr><th>Niveau</th><td><%= dossier.niveau_libelle %></td></tr>
             <tr><th>Année universitaire</th><td><%= dossier.annee || 'Non spécifié' %></td></tr>
+            <tr><th>Statut scolaire</th><td><%= dossier.statut_scolaire || 'Non déterminé' %></td></tr>
         </table>
 
         <h3 class="section-title">Pièces justificatives</h3>
@@ -151,7 +170,15 @@
                 <% piecesJustificatives.forEach(function(p) { %>
                 <tr>
                     <td><%= p.libelle %><%= p.obligatoire ? ' *' : '' %></td>
-                    <td><%= p.fourni ? '☑ Fournie' : '☐ Non fournie' %></td>
+                    <td>
+                        <% if (p.fourni) { %>
+                            ☑ Fournie et vérifiée
+                        <% } else if (p.declare_par_etudiant) { %>
+                            ☑ Déclarée par l'étudiant (à vérifier à l'école)
+                        <% } else { %>
+                            ☐ Non fournie
+                        <% } %>
+                    </td>
                 </tr>
                 <% }) %>
             </tbody>
@@ -180,7 +207,16 @@
             </tbody>
         </table>
 
-        <% if (dossier.standing !== 'Inscrit') { %>
+        <% if (dossier.standing !== 'Inscrit' && dossier.valide_scolarite === false) { %>
+            <div class="code-paiement-box">
+                <span style="font-size: 10px;">Code de paiement (en attente d'activation)</span>
+                <div class="code-paiement-value"><%= dossier.code_paiement %></div>
+                <span style="font-size: 9px; color: #666;">Ce code sera activé par le Service de la Scolarité.</span>
+            </div>
+            <p style="text-align: center; font-size: 10px; margin: 4px 0;">
+                <strong>Important :</strong> votre dossier doit être validé par le Service de la Scolarité avant l'activation de votre code de paiement. Ne vous présentez pas directement à la caisse.
+            </p>
+        <% } else if (dossier.standing !== 'Inscrit') { %>
             <div class="code-paiement-box">
                 <span style="font-size: 10px;">Code de paiement à présenter à la caisse</span>
                 <div class="code-paiement-value"><%= dossier.code_paiement %></div>
@@ -212,5 +248,67 @@
             <span class="footer-text">Email : secretariat@iipea.com | Copyright © IIPEA Tous droits réservés</span>
         </div>
     </div>
+    <% } %>
+
+    <% if (sections.includes('engagement')) { %>
+    <div class="fiche-container<%= sections.includes('fiche') ? ' engagement-page' : '' %>">
+        <div class="header-ministry">
+            <div>
+                <span class="ministry-text">MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR</span>
+                <span class="ministry-text">ET DE LA RECHERCHE SCIENTIFIQUE</span>
+            </div>
+            <div style="text-align: right;">
+                <span class="ministry-text">RÉPUBLIQUE DE CÔTE D'IVOIRE</span>
+                <span class="ministry-text">Union - Discipline - Travail</span>
+            </div>
+        </div>
+        <div class="separator-bar"></div>
+        <div class="school-header">
+            <img src="/public/IIPEA-Photoroom.png" alt="Logo IIPEA" class="school-logo" onerror="this.style.display='none'">
+            <span class="school-name">Institut International Polytechnique des Elites d'Abidjan - (IIPEA)</span>
+        </div>
+        <div class="engagement-title-container">
+            <div class="engagement-title"><h1 class="engagement-title-text">Engagement de l'étudiant</h1></div>
+        </div>
+
+        <p class="engagement-intro">
+            Je soussigné(e), <strong><%= dossier.nom %> <%= dossier.prenoms %></strong>, déclare par la présente
+            accepter et respecter les conditions ainsi que le règlement intérieur en vigueur au sein de l'IIPEA.
+        </p>
+
+        <ol class="engagement-list">
+            <li>Je m'engage à ne participer à aucun mouvement, groupement, association ou organisation autre que ceux officiellement reconnus par l'IIPEA.</li>
+            <li>Je reconnais que tout manquement à cette règle pourra entraîner des sanctions disciplinaires pouvant aller jusqu'à ma radiation définitive de l'établissement.</li>
+            <li>Je m'engage à respecter intégralement le règlement intérieur de l'école ainsi que toutes les règles administratives en vigueur.</li>
+            <li>Je reconnais qu'aucun remboursement des frais de scolarité ne pourra être effectué au-delà d'un délai de 48 heures après mon inscription.</li>
+        </ol>
+
+        <div class="engagement-signatures">
+            <div class="engagement-field">
+                <span class="engagement-field-label">Fait à :</span>
+                <span class="engagement-field-line">&nbsp;</span>
+            </div>
+            <div class="engagement-field">
+                <span class="engagement-field-label">Le :</span>
+                <span class="engagement-field-line">&nbsp;</span>
+            </div>
+        </div>
+
+        <div class="footer-section" style="margin-top: 50px;">
+            <div class="engagement-signature-block">
+                <div class="signature-line"><span class="signature-text">Signature de l'étudiant(e)</span></div>
+            </div>
+            <div class="engagement-signature-block">
+                <div class="signature-line"><span class="signature-text">Cachet et signature du représentant de l'IIPEA</span></div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <span class="footer-text">Cocody Riviera 2, Route d'Attoban / Riviera Triangle /Abobo/ Yamoussoukro</span>
+            <span class="footer-text">Tel : +225 05 44 02 60 60 / +225 07 08 08 87 87</span>
+            <span class="footer-text">Email : secretariat@iipea.com | Copyright © IIPEA Tous droits réservés</span>
+        </div>
+    </div>
+    <% } %>
 </body>
 </html>

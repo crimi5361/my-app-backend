@@ -473,9 +473,14 @@
     <!-- Boucle sur tous les étudiants -->
     <% 
     const semestreNum = semestre ? parseInt(semestre.id) : 1;
-    // Détection du type de filière professionnelle (BTS)
-    const isProfessionnel = type_filiere && type_filiere.toLowerCase().includes('professionnelles');
-    const isBTS = groupe && groupe.nom && groupe.nom.toUpperCase().includes('BTS');
+    // ✅ Toute filière professionnelle (BTS, Master Pro, ...) bascule sur le layout ECUE-only
+    // sans Moy. UE — auparavant limité aux seuls groupes dont le nom contenait "BTS", ce qui
+    // excluait à tort les Master Pro du layout adapté.
+    // ⚠️ Basé sur type_traitement (résultat de determinerTypeTraitement côté contrôleur), pas sur
+    // type_filiere directement : une "Licence Pro" a type_filiere="Professionnelles" mais est bien
+    // traitée comme universitaire (crédits, Moy. UE, etc.) — type_filiere afficherait à tort le
+    // layout ECUE-only pour ces groupes.
+    const isProfessionnel = type_traitement === 'professionnel';
 
     // ✅ TRI ALPHABÉTIQUE des étudiants par nom et prénom
     const etudiantsTries = [...etudiants].sort((a, b) => {
@@ -536,7 +541,7 @@
         let decisionJury = '';
         let decisionJuryClass = '';
 
-        if (isProfessionnel && isBTS) {
+        if (isProfessionnel) {
             if (moyenneAnnuelle >= 10) {
                 decisionJury = 'ADMIS';
                 decisionJuryClass = 'admis';
@@ -571,7 +576,7 @@
         // ✅ Calcul du rang pour les filières professionnelles
         let rangS2 = 0;
         let rangAnnuel = 0;
-        if (isProfessionnel && isBTS) {
+        if (isProfessionnel) {
             const etudiantsTriesS2 = [...etudiantsTries].sort((a, b) => {
                 let ma = 0, mb = 0;
                 if (a.ues) {
@@ -680,15 +685,16 @@
             <table>
                 <thead>
                     <tr>
-                        <% if (isProfessionnel && isBTS) { %>
-                            <!-- ✅ Tableau BTS : avec mention par ECUE -->
+                        <% if (isProfessionnel) { %>
+                            <!-- ✅ Tableau professionnel (BTS, Master Pro) : évaluation exclusivement au
+                                 niveau ECUE — pas de colonne Moy. UE ni de décision au niveau UE ; la
+                                 décision est propre à chaque ECUE, selon sa propre moyenne. -->
                             <th>CODE ECUE</th>
                             <th>ECUE</th>
                             <th>Moy. ECUE</th>
                             <th>Coef</th>
                             <th>Mention ECUE</th>
-                            <th>Moy. UE</th>
-                            <th>Décision UE</th>
+                            <th>Décision</th>
                         <% } else { %>
                             <!-- ✅ Tableau universitaire -->
                             <th>CODE UE</th>
@@ -708,7 +714,19 @@
                     <% if (uesTableau.length > 0) { 
                         uesTableau.forEach(function(ue) { 
                             const moyUE = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
-                            const ecuesAvecNote = ue.matieres ? ue.matieres.filter(m => m.a_note) : [];
+                            // ✅ ECUE à choix (Espagnol/Allemand, etc.) non suivie : on ne l'affiche
+                            // jamais quand l'autre membre de la paire a une vraie note (cas normal) —
+                            // seule la matière réellement suivie apparaît sur le bulletin. Si les DEUX
+                            // sont à 0 (cas exceptionnel), on affiche quand même une seule ligne, de
+                            // façon déterministe (ordre alphabétique), pour éviter un doublon inutile.
+                            const nonClasseUE = ue.matieres ? ue.matieres.filter(m => m.non_classe) : [];
+                            const nonClasseAGarder = nonClasseUE.length > 1
+                                ? [...nonClasseUE].sort((a, b) => (a.nom || '').localeCompare(b.nom || ''))[0]
+                                : null;
+                            const matieresAffichees = ue.matieres
+                                ? ue.matieres.filter(m => !m.non_classe || (nonClasseUE.length > 1 && m === nonClasseAGarder))
+                                : [];
+                            const ecuesAvecNote = matieresAffichees.filter(m => m.a_note);
                             const rowspan = ecuesAvecNote.length > 0 ? ecuesAvecNote.length : 1;
                             
                             let mentionUE = '';
@@ -721,25 +739,26 @@
                             const ueValidee = ue.valide || false;
                     %>
                         <tr>
-                            <% if (isProfessionnel && isBTS) { %>
-                                <!-- ✅ Ligne BTS : mention par ECUE -->
-                                <% if (ecuesAvecNote.length > 0) { 
+                            <% if (isProfessionnel) { %>
+                                <!-- ✅ Ligne professionnelle : mention ET décision propres à chaque ECUE,
+                                     pas de décision au niveau UE -->
+                                <% if (ecuesAvecNote.length > 0) {
                                     const premierECUE = ecuesAvecNote[0];
                                     const moyECUE = premierECUE.moyenne_affichage !== undefined ? premierECUE.moyenne_affichage : premierECUE.moyenne;
-                                    const mentionECUE = getMentionECUE(moyECUE);
+                                    // ✅ ECUE à choix non comptabilisée (0 informatif) : pas de mention
+                                    const mentionECUE = premierECUE.non_classe ? '' : getMentionECUE(moyECUE);
                                 %>
                                     <td class="code-cell"><%= premierECUE.code_ecue || '-' %></td>
                                     <td><%= premierECUE.nom %></td>
                                     <td><%= moyECUE !== null && moyECUE !== undefined ? moyECUE.toFixed(2) : '0.00' %></td>
                                     <td><%= premierECUE.coefficient || 0 %></td>
                                     <td class="mention"><%= mentionECUE %></td>
+                                    <td class="<%= moyECUE >= 10 ? 'admis' : 'refuse' %>">
+                                        <%= moyECUE >= 10 ? 'ADMIS' : 'AJOURNÉ' %>
+                                    </td>
                                 <% } else { %>
-                                    <td colspan="5">Aucune note</td>
+                                    <td colspan="6">Aucune note</td>
                                 <% } %>
-                                <td rowspan="<%= rowspan %>"><%= moyUE.toFixed(2) %></td>
-                                <td rowspan="<%= rowspan %>" class="<%= ueValidee ? 'admis' : 'refuse' %>">
-                                    <%= ueValidee ? 'ADMIS' : 'REFUSÉ' %>
-                                </td>
                             <% } else { %>
                                 <!-- ✅ Ligne universitaire -->
                                 <td rowspan="<%= rowspan %>" class="code-cell"><%= ue.code_ue || '-' %></td>
@@ -763,18 +782,22 @@
                                 </td>
                             <% } %>
                         </tr>
-                        <% for (let i = 1; i < ecuesAvecNote.length; i++) { 
+                        <% for (let i = 1; i < ecuesAvecNote.length; i++) {
                             const ecue = ecuesAvecNote[i];
                             const moyECUE = ecue.moyenne_affichage !== undefined ? ecue.moyenne_affichage : ecue.moyenne;
-                            const mentionECUE = getMentionECUE(moyECUE);
+                            // ✅ ECUE à choix non comptabilisée (0 informatif) : pas de mention
+                            const mentionECUE = ecue.non_classe ? '' : getMentionECUE(moyECUE);
                         %>
                         <tr>
-                            <% if (isProfessionnel && isBTS) { %>
+                            <% if (isProfessionnel) { %>
                                 <td class="code-cell"><%= ecue.code_ecue || '-' %></td>
                                 <td><%= ecue.nom %></td>
                                 <td><%= moyECUE !== null && moyECUE !== undefined ? moyECUE.toFixed(2) : '0.00' %></td>
                                 <td><%= ecue.coefficient || 0 %></td>
                                 <td class="mention"><%= mentionECUE %></td>
+                                <td class="<%= moyECUE >= 10 ? 'admis' : 'refuse' %>">
+                                    <%= moyECUE >= 10 ? 'ADMIS' : 'AJOURNÉ' %>
+                                </td>
                             <% } else { %>
                                 <td class="code-cell"><%= ecue.code_ecue || '-' %></td>
                                 <td><%= ecue.nom %></td>
@@ -786,7 +809,7 @@
                     <% }); 
                     } else { %>
                         <tr>
-                            <td colspan="<%= isProfessionnel && isBTS ? '7' : '10' %>" style="text-align: center;">Aucune UE trouvée pour ce semestre</td>
+                            <td colspan="<%= isProfessionnel ? '6' : '10' %>" style="text-align: center;">Aucune UE trouvée pour ce semestre</td>
                         </tr>
                     <% } %>
                 </tbody>
@@ -803,13 +826,13 @@
                         <span class="label">Moyenne Semestre 1 :</span>
                         <span class="valeur"><%= moyenneS1.toFixed(2) %> /20</span>
                     </div>
-                    <% if (!isProfessionnel || !isBTS) { %>
+                    <% if (!isProfessionnel) { %>
                         <div class="recap-item">
                             <span class="label">Crédits cumulés S1 :</span>
                             <span class="valeur"><%= creditsValidesS1 %> / <%= creditsS1 || 30 %></span>
                         </div>
                     <% } %>
-                    <% if (isProfessionnel && isBTS) { %>
+                    <% if (isProfessionnel) { %>
                         <div class="recap-item">
                             <span class="label">Rang S1 :</span>
                             <span class="valeur"><%= index + 1 %></span>
@@ -827,20 +850,20 @@
                     <div class="semestre-box">
                         <div class="titre">Semestre 1</div>
                         <div class="valeur">Moyenne : <%= moyenneS1.toFixed(2) %> /20</div>
-                        <% if (!isProfessionnel || !isBTS) { %>
+                        <% if (!isProfessionnel) { %>
                             <div class="valeur">Crédits : <%= creditsValidesS1 %> / <%= creditsS1 || 30 %></div>
                         <% } %>
-                        <% if (isProfessionnel && isBTS) { %>
+                        <% if (isProfessionnel) { %>
                             <div class="valeur">Rang : <%= index + 1 %></div>
                         <% } %>
                     </div>
                     <div class="semestre-box">
                         <div class="titre">Semestre 2</div>
                         <div class="valeur">Moyenne : <%= moyenneS2.toFixed(2) %> /20</div>
-                        <% if (!isProfessionnel || !isBTS) { %>
+                        <% if (!isProfessionnel) { %>
                             <div class="valeur">Crédits : <%= creditsValidesS2 %> / <%= creditsS2 || 30 %></div>
                         <% } %>
-                        <% if (isProfessionnel && isBTS) { %>
+                        <% if (isProfessionnel) { %>
                             <div class="valeur">Rang : <%= rangS2 > 0 ? rangS2 : '-' %></div>
                         <% } %>
                     </div>
@@ -851,13 +874,13 @@
                         <span class="label">Moyenne générale annuelle :</span>
                         <span class="valeur"><%= moyenneAnnuelle.toFixed(2) %> /20</span>
                     </div>
-                    <% if (!isProfessionnel || !isBTS) { %>
+                    <% if (!isProfessionnel) { %>
                         <div class="annuel-item">
                             <span class="label">Crédits totaux cumulés :</span>
                             <span class="valeur"><%= creditsAnnuels %> / 60</span>
                         </div>
                     <% } %>
-                    <% if (isProfessionnel && isBTS) { %>
+                    <% if (isProfessionnel) { %>
                         <div class="annuel-item">
                             <span class="label">Rang annuel :</span>
                             <span class="valeur"><%= rangAnnuel > 0 ? rangAnnuel : '-' %></span>
