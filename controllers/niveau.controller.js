@@ -1,6 +1,6 @@
 const db = require('../config/db.config');
 const { ensureTarifForNiveau } = require('./tarif.controller');
-const { getSiteFromUser, getAnneeAcademiqueEnCoursPourSite } = require('./filieres.controller');
+const { getSiteFromUser, getAnneeAcademiqueEnCoursPourSite, rechainerNiveauCree } = require('./filieres.controller');
 
 exports.getNiveauxByFiliere = async (req, res) => {
     try {
@@ -82,7 +82,7 @@ exports.getAllNiveau = async (req, res) => {
 // cette route permet d'ajouter un niveau à une filière déjà existante sans recréer les autres —
 // utilisée par la nouvelle vue "parcours" de l'administration.
 exports.createNiveau = async (req, res) => {
-    const { filiere_id, libelle, prix_formation, ordre, niveau_suivant_id, parcour } = req.body;
+    const { filiere_id, libelle, prix_formation, ordre, niveau_suivant_id, parcour, anneeacademique_id } = req.body;
 
     if (!filiere_id || !libelle) {
         return res.status(400).json({ message: 'filiere_id et libelle sont requis.' });
@@ -93,7 +93,11 @@ exports.createNiveau = async (req, res) => {
         await client.query('BEGIN');
 
         const siteId = getSiteFromUser(req);
-        const anneeAcademiqueId = await getAnneeAcademiqueEnCoursPourSite(siteId, client);
+        // anneeacademique_id explicite (optionnel) : nécessaire depuis la page "Gestion des
+        // filières" qui permet de préparer une année différente de l'année "en cours" du site
+        // (consultation/complément d'une année déjà ouverte). Défaut inchangé (année en cours) si
+        // absent — comportement historique préservé pour tout appelant existant.
+        const anneeAcademiqueId = anneeacademique_id || await getAnneeAcademiqueEnCoursPourSite(siteId, client);
 
         const filiereCheck = await client.query('SELECT id, type_filiere_id FROM filiere WHERE id = $1', [filiere_id]);
         if (filiereCheck.rows.length === 0) {
@@ -112,6 +116,7 @@ exports.createNiveau = async (req, res) => {
         const niveau = niveauResult.rows[0];
 
         await ensureTarifForNiveau(niveau.id, niveau.libelle, niveau.prix_formation, client);
+        await rechainerNiveauCree(client, { filiereId: filiere_id, siteId, anneeId: anneeAcademiqueId, ordre: niveau.ordre, niveauId: niveau.id, libelle: niveau.libelle });
 
         // Maquette créée en best-effort si un parcours est fourni (même vérification de doublon
         // que POST /api/maquettes/create-maquettes) — ne bloque jamais la création du niveau.
@@ -145,16 +150,24 @@ exports.createNiveau = async (req, res) => {
 // maquette.niveau_id...) n'est cassée par une modification de libellé/prix/ordre/succession.
 // niveau_suivant_id est remplacé tel quel (pas de COALESCE) : envoyer explicitement la valeur
 // actuelle si elle ne doit pas changer, null pour la retirer.
+// `parcours` (optionnel) : tableau de libellés (ex. ["Professionnel jour"]) — remplace
+// intégralement les parcours de ce niveau pour SON année (DELETE+INSERT dans `maquette`), pour
+// corriger le cas d'une filière configurée sans parcours dès le départ (oubli, ou "Aucun" choisi
+// à tort dans le drawer de préparation). Absent du body = parcours inchangés (pas de régression
+// pour les appelants existants qui n'envoient pas ce champ).
 exports.updateNiveau = async (req, res) => {
     const { id } = req.params;
-    const { libelle, prix_formation, ordre, niveau_suivant_id } = req.body;
+    const { libelle, prix_formation, ordre, niveau_suivant_id, parcours } = req.body;
 
     if (niveau_suivant_id && parseInt(niveau_suivant_id, 10) === parseInt(id, 10)) {
         return res.status(400).json({ message: 'Un niveau ne peut pas être son propre niveau suivant.' });
     }
 
+    const client = await db.connect();
     try {
-        const result = await db.query(`
+        await client.query('BEGIN');
+
+        const result = await client.query(`
             UPDATE niveau
             SET libelle = COALESCE($1, libelle),
                 prix_formation = COALESCE($2, prix_formation),
@@ -165,12 +178,30 @@ exports.updateNiveau = async (req, res) => {
         `, [libelle || null, prix_formation ?? null, ordre ?? null, niveau_suivant_id || null, id]);
 
         if (result.rows.length === 0) {
+            await client.query('ROLLBACK');
             return res.status(404).json({ message: 'Niveau introuvable.' });
         }
-        res.status(200).json({ message: 'Niveau mis à jour avec succès.', niveau: result.rows[0] });
+        const niveau = result.rows[0];
+
+        if (Array.isArray(parcours)) {
+            await client.query('DELETE FROM maquette WHERE niveau_id = $1 AND anneeacademique_id = $2', [id, niveau.anneeacademique_id]);
+            for (const parcour of parcours) {
+                if (!parcour) continue;
+                await client.query(
+                    'INSERT INTO maquette (filiere_id, niveau_id, anneeacademique_id, parcour, date_creation) VALUES ($1, $2, $3, $4, NOW())',
+                    [niveau.filiere_id, id, niveau.anneeacademique_id, parcour]
+                );
+            }
+        }
+
+        await client.query('COMMIT');
+        res.status(200).json({ message: 'Niveau mis à jour avec succès.', niveau });
     } catch (error) {
+        await client.query('ROLLBACK');
         console.error('Erreur updateNiveau:', error);
         res.status(500).json({ message: error.message || 'Erreur serveur.' });
+    } finally {
+        client.release();
     }
 };
 
@@ -184,7 +215,6 @@ exports.deleteNiveau = async (req, res) => {
         const enUsage = await db.query(
             `SELECT 1 FROM etudiant WHERE niveau_id = $1
              UNION ALL SELECT 1 FROM classe WHERE niveau_id = $1
-             UNION ALL SELECT 1 FROM inscription_annuelle WHERE niveau_id = $1
              UNION ALL SELECT 1 FROM historique_inscription WHERE niveau_id = $1
              UNION ALL SELECT 1 FROM reinscription WHERE niveau_retenu_id = $1 OR niveau_propose_id = $1
              UNION ALL SELECT 1 FROM niveau WHERE niveau_suivant_id = $1

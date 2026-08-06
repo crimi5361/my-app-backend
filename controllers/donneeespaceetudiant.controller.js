@@ -26,6 +26,7 @@ exports.getStudentProfile = async (req, res) => {
         c.type_parcours,
         g.id as groupe_id,
         g.nom as groupe_nom,
+        g.est_primaire as groupe_est_primaire,
         g.capacite_max,
         cl.nom as classe_nom,
         cl.description as classe_description,
@@ -43,7 +44,11 @@ exports.getStudentProfile = async (req, res) => {
       LEFT JOIN document d ON e.document_id = d.id
       LEFT JOIN curcus c ON e.curcus_id = c.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
-      LEFT JOIN classe cl ON g.classe_id = cl.id
+      -- Chantier 6 : classe résolue via les critères d'affectation de l'étudiant, pas via le
+      -- groupe (absent tant qu'aucun découpage manuel n'a eu lieu) — même clé que
+      -- classeGroupe.service.js / getRecuData / fiche d'admission.
+      LEFT JOIN classe cl ON cl.filiere_id = e.id_filiere AND cl.niveau_id = e.niveau_id
+        AND cl.annee_academique_id = e.annee_academique_id AND cl.curcus_id IS NOT DISTINCT FROM e.curcus_id
       LEFT JOIN scolarite s ON e.scolarite_id = s.id
       WHERE e.id = $1
     `;
@@ -95,8 +100,11 @@ exports.getStudentProfile = async (req, res) => {
         sigle_filiere: studentData.filiere_sigle,
         type_filiere: studentData.type_filiere_libelle,
         type_parcours: studentData.type_parcours,
+        // Chantier 11 (2026-08-04) — sous-phase 2 : le Groupe primaire (technique) n'est jamais
+        // affiché à l'étudiant — groupe_id reste toujours le vrai id (logique interne inchangée),
+        // seul le nom affiché est masqué ici, au moment de construire la réponse.
         groupe_id: studentData.groupe_id,
-        groupe: studentData.groupe_nom,
+        groupe: studentData.groupe_est_primaire ? null : studentData.groupe_nom,
         capacite_groupe: studentData.capacite_max,
         classe: studentData.classe_nom
       },

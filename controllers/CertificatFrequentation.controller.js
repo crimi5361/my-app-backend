@@ -89,6 +89,7 @@ exports.getAllCertificatFrequentation = async (req, res) => {
         n.libelle as niveau_libelle,
         f.nom as filiere_nom,
         g.nom as groupe_nom,
+        g.est_primaire as groupe_est_primaire,
         c.nom as classe_nom,
         e.date_inscription
       FROM etudiant e
@@ -122,7 +123,8 @@ exports.getAllCertificatFrequentation = async (req, res) => {
       annee_id: row.annee_id,
       niveau: row.niveau_libelle,
       filiere: row.filiere_nom,
-      groupe: row.groupe_nom,
+      // Chantier 11 (2026-08-04) — sous-phase 2 : Groupe primaire jamais affiché, classe toujours disponible.
+      groupe: row.groupe_est_primaire ? null : row.groupe_nom,
       classe: row.classe_nom,
       date_inscription: row.date_inscription
     }));

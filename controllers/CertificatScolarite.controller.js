@@ -59,6 +59,7 @@ exports.getAllCertificat = async (req, res) => {
         -- Informations du groupe
         g.id as groupe_id,
         g.nom as groupe_nom,
+        g.est_primaire as groupe_est_primaire,
         g.capacite_max as groupe_capacite,
         
         -- Informations de la classe (via groupe)
@@ -148,7 +149,9 @@ exports.getAllCertificat = async (req, res) => {
           annee: etudiantData.annee_academique,
           etat: etudiantData.annee_etat
         },
-        groupe: etudiantData.groupe_id ? {
+        // Chantier 11 (2026-08-04) — sous-phase 2 : le Groupe primaire (technique) n'est jamais
+        // exposé — la classe (ci-dessous) reste toujours disponible indépendamment.
+        groupe: (etudiantData.groupe_id && !etudiantData.groupe_est_primaire) ? {
           id: etudiantData.groupe_id,
           nom: etudiantData.groupe_nom,
           capacite_max: etudiantData.groupe_capacite

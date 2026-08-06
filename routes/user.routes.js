@@ -6,6 +6,10 @@ const authorizeRoles = require('../middleware/authorize.middleware');
 
 router.get('/', authenticateToken, authorizeRoles('admin'), utilisateurController.getAllUsers);
 router.post('/ajouter', authenticateToken, authorizeRoles('admin'), utilisateurController.createUser);
+router.put('/:id', authenticateToken, authorizeRoles('admin'), utilisateurController.updateUser);
+// Désactivation logique (jamais de suppression physique) — voir user.controller.js::deactivateUser.
+router.patch('/:id/desactiver', authenticateToken, authorizeRoles('admin'), utilisateurController.deactivateUser);
+router.patch('/:id/reactiver', authenticateToken, authorizeRoles('admin'), utilisateurController.reactivateUser);
 
 
 module.exports = router;

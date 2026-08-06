@@ -1,14 +1,32 @@
 const db = require('../config/db.config');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 // Route pour la page Classes (liste simple)
 exports.getListeClasses = async (req, res) => {
   const client = await db.connect();
-  
+
   try {
     const { annee_id } = req.query;
     // Récupérer depuis le token ou les infos de l'utilisateur connecté
     const departement_id = req.user?.departement_id; // Si vous avez middleware d'authentification
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site ($2) existant. c.filiere_id
+    // est une propriété directe de la classe, donc appliqué une seule fois au niveau global plutôt
+    // que dans chacune des 3 branches EXISTS (elles décrivent des sources d'étudiants, pas d'écoles).
+    const ecoleId = getEcoleScopeFromUser(req);
 
+    // Chantier 6 (2026-08-01) : un étudiant n'a plus forcément de groupe tant que sa classe n'a
+    // pas été découpée manuellement — l'effectif et la visibilité de la classe ne doivent donc
+    // plus dépendre de l'existence d'un groupe. Trois sources combinées :
+    //  (1) déjà groupés — logique historique strictement INCHANGÉE (via etudiant.groupe_id) ;
+    //  (2) historique — logique historique strictement INCHANGÉE (via historique_inscription) ;
+    //  (3) NOUVEAU, additif uniquement : étudiants SANS groupe (`groupe_id IS NULL`) dont
+    //      filiere/niveau/annee_academique/curcus correspondent à la classe. Cette 3ᵉ branche ne
+    //      peut jamais rien retirer ni dupliquer ce que trouvent (1)/(2) : elle est explicitement
+    //      exclusive aux étudiants sans groupe, donc n'existe pour aucune donnée antérieure à ce
+    //      chantier (où tous les étudiants avaient déjà un groupe). Ne PAS fusionner (1) et (3) en
+    //      un seul filtre sur les seuls critères filiere/niveau/annee/curcus : des classes
+    //      anciennes ont un curcus_id incohérent avec celui de leurs étudiants réels (constaté en
+    //      base), ce qui ferait disparaître à tort des étudiants déjà correctement groupés.
     const query = `
       SELECT
   c.id,
@@ -20,30 +38,57 @@ exports.getListeClasses = async (req, res) => {
   n.libelle as niveau,
   (SELECT nom FROM site WHERE id = $2) as departement,
   COUNT(DISTINCT g.id) as nombre_groupes,
-  COUNT(DISTINCT roster.etudiant_id) as effectif_total
+  (SELECT COUNT(DISTINCT combined.etudiant_id) FROM (
+     SELECT e5.id AS etudiant_id FROM etudiant e5
+      JOIN groupe g5a ON g5a.id = e5.groupe_id
+      WHERE g5a.classe_id = c.id
+     UNION
+     SELECT h5.etudiant_id FROM historique_inscription h5
+      JOIN groupe g5 ON g5.id = h5.groupe_id
+      WHERE g5.classe_id = c.id
+     UNION
+     SELECT e5b.id FROM etudiant e5b
+      WHERE e5b.groupe_id IS NULL
+        AND e5b.id_filiere = c.filiere_id AND e5b.niveau_id = c.niveau_id
+        AND e5b.annee_academique_id = c.annee_academique_id
+        AND e5b.curcus_id IS NOT DISTINCT FROM c.curcus_id
+   ) combined) as effectif_total
 FROM classe c
 LEFT JOIN filiere f ON f.id = c.filiere_id
 LEFT JOIN niveau n ON n.id = c.niveau_id
 LEFT JOIN anneeacademique aa ON aa.id = c.annee_academique_id
 LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = aa.id AND aas.site_id = $2
-LEFT JOIN groupe g ON g.classe_id = c.id
-LEFT JOIN LATERAL (
-  -- Un étudiant appartient à ce groupe soit "en direct" (etudiant.groupe_id, année en cours),
-  -- soit via la trace figée d'historique_inscription (année clôturée / quittée depuis) — jamais
-  -- uniquement via l'un ou l'autre, sous peine de perdre les effectifs des années passées.
-  SELECT e2.id AS etudiant_id FROM etudiant e2 WHERE e2.groupe_id = g.id
-  UNION
-  SELECT h2.etudiant_id FROM historique_inscription h2 WHERE h2.groupe_id = g.id
-) roster ON true
+-- Chantier 11 (2026-08-03) — sous-phase 3.5 : le Groupe primaire (technique, interne au moteur
+-- d'inscription et à Gestion des groupes) ne doit jamais compter comme un "groupe" pédagogique
+-- visible ici — voir services/classeGroupe.service.js pour ce que ce groupe représente.
+LEFT JOIN groupe g ON g.classe_id = c.id AND g.est_primaire = false
 WHERE ($1::int IS NULL OR c.annee_academique_id = $1)
-AND EXISTS (
-  SELECT 1 FROM etudiant e3 WHERE e3.id = roster.etudiant_id AND e3.site_id = $2
+AND (
+  EXISTS (
+    SELECT 1 FROM etudiant e3
+    JOIN groupe g3a ON g3a.id = e3.groupe_id
+    WHERE g3a.classe_id = c.id AND e3.site_id = $2
+  )
+  OR EXISTS (
+    SELECT 1 FROM historique_inscription h3
+    JOIN groupe g3 ON g3.id = h3.groupe_id
+    JOIN etudiant e3b ON e3b.id = h3.etudiant_id
+    WHERE g3.classe_id = c.id AND e3b.site_id = $2
+  )
+  OR EXISTS (
+    SELECT 1 FROM etudiant e3c
+    WHERE e3c.groupe_id IS NULL
+      AND e3c.id_filiere = c.filiere_id AND e3c.niveau_id = c.niveau_id
+      AND e3c.annee_academique_id = c.annee_academique_id
+      AND e3c.curcus_id IS NOT DISTINCT FROM c.curcus_id AND e3c.site_id = $2
+  )
 )
+AND ($3::int IS NULL OR f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3))
 GROUP BY c.id, c.nom, c.description, aa.annee, aas.etat, f.nom, n.libelle
 ORDER BY c.nom
     `;
 
-    const result = await client.query(query, [annee_id || null, departement_id]);
+    const result = await client.query(query, [annee_id || null, departement_id, ecoleId]);
 
     res.status(200).json({
       success: true,
@@ -74,17 +119,30 @@ exports.getDetailClasse = async (req, res) => {
         c.id,
         c.nom,
         c.description,
+        c.annee_academique_id,
+        c.filiere_id,
+        c.niveau_id,
         aa.annee as annee_academique,
         (SELECT etat FROM anneeacademique_site WHERE anneeacademique_id = aa.id ORDER BY (etat = 'en cour') DESC LIMIT 1) as annee_etat,
         f.nom as filiere,
         n.libelle as niveau,
-        (SELECT COUNT(DISTINCT roster_c.etudiant_id) FROM groupe g4
-           LEFT JOIN LATERAL (
-             SELECT e4.id AS etudiant_id FROM etudiant e4 WHERE e4.groupe_id = g4.id
-             UNION
-             SELECT h4.etudiant_id FROM historique_inscription h4 WHERE h4.groupe_id = g4.id
-           ) roster_c ON true
-         WHERE g4.classe_id = c.id) as effectif_total,
+        -- Chantier 6 : mêmes 3 sources que getListeClasses — groupés (inchangé) + historique
+        -- (inchangé) + sans groupe correspondant aux critères (nouveau, additif uniquement).
+        (SELECT COUNT(DISTINCT combined.etudiant_id) FROM (
+           SELECT e4.id AS etudiant_id FROM etudiant e4
+            JOIN groupe g4a ON g4a.id = e4.groupe_id
+            WHERE g4a.classe_id = c.id
+           UNION
+           SELECT h4.etudiant_id FROM historique_inscription h4
+            JOIN groupe g4 ON g4.id = h4.groupe_id
+            WHERE g4.classe_id = c.id
+           UNION
+           SELECT e4b.id FROM etudiant e4b
+            WHERE e4b.groupe_id IS NULL
+              AND e4b.id_filiere = c.filiere_id AND e4b.niveau_id = c.niveau_id
+              AND e4b.annee_academique_id = c.annee_academique_id
+              AND e4b.curcus_id IS NOT DISTINCT FROM c.curcus_id
+         ) combined) as effectif_total,
         g.id as groupe_id,
         g.nom as groupe_nom,
         g.capacite_max as groupe_capacite,
@@ -93,14 +151,17 @@ exports.getDetailClasse = async (req, res) => {
       LEFT JOIN filiere f ON f.id = c.filiere_id
       LEFT JOIN niveau n ON n.id = c.niveau_id
       LEFT JOIN anneeacademique aa ON aa.id = c.annee_academique_id
-      LEFT JOIN groupe g ON g.classe_id = c.id
+      -- Chantier 11 (2026-08-03) — sous-phase 3.5 : Groupe primaire jamais listé ici (voir même
+      -- remarque dans getListeClasses). effectif_total reste correct : il compte les étudiants du
+      -- primaire (ci-dessus, hors de ce JOIN), ils sont bien inscrits, juste pas encore répartis.
+      LEFT JOIN groupe g ON g.classe_id = c.id AND g.est_primaire = false
       LEFT JOIN LATERAL (
         SELECT e2.id AS etudiant_id FROM etudiant e2 WHERE e2.groupe_id = g.id
         UNION
         SELECT h2.etudiant_id FROM historique_inscription h2 WHERE h2.groupe_id = g.id
       ) roster ON true
       WHERE c.id = $1
-      GROUP BY c.id, c.nom, c.description, aa.id, aa.annee, f.nom, n.libelle, g.id, g.nom, g.capacite_max
+      GROUP BY c.id, c.nom, c.description, c.annee_academique_id, c.filiere_id, c.niveau_id, aa.id, aa.annee, f.nom, n.libelle, g.id, g.nom, g.capacite_max
       ORDER BY g.nom
     `;
 
@@ -118,6 +179,9 @@ exports.getDetailClasse = async (req, res) => {
       id: result.rows[0].id,
       nom: result.rows[0].nom,
       description: result.rows[0].description,
+      annee_academique_id: result.rows[0].annee_academique_id,
+      filiere_id: result.rows[0].filiere_id,
+      niveau_id: result.rows[0].niveau_id,
       annee_academique: result.rows[0].annee_academique,
       annee_etat: result.rows[0].annee_etat,
       filiere: result.rows[0].filiere,
@@ -160,17 +224,20 @@ exports.getGroupeSimpleInfo = async (req, res) => {
     const { id } = req.params;
 
     const query = `
-      SELECT 
+      SELECT
         g.id,
         g.nom,
-        c.description AS classe_description
+        c.description AS classe_description,
+        c.filiere_id,
+        c.niveau_id,
+        c.annee_academique_id
       FROM groupe g
       LEFT JOIN classe c ON g.classe_id = c.id
-      WHERE g.id = $1
+      WHERE g.id = $1 AND g.est_primaire = false
     `;
-    
+
     const result = await client.query(query, [id]);
-    
+
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Groupe non trouvé' });
     }
@@ -212,7 +279,7 @@ exports.getDetailGroupe = async (req, res) => {
         UNION
         SELECT h.etudiant_id FROM historique_inscription h WHERE h.groupe_id = g.id
       ) roster ON true
-      WHERE g.id = $1
+      WHERE g.id = $1 AND g.est_primaire = false
       GROUP BY g.id, g.nom, g.capacite_max, c.nom
     `;
 
@@ -334,15 +401,27 @@ exports.getClassesAvecGroupes = async (req, res) => {
         COUNT(DISTINCT roster.etudiant_id) as effectif_groupe,
         aa.annee as annee_academique,
         (SELECT etat FROM anneeacademique_site WHERE anneeacademique_id = aa.id ORDER BY (etat = 'en cour') DESC LIMIT 1) as annee_etat,
-        (SELECT COUNT(DISTINCT roster2.etudiant_id) FROM groupe g2
-           LEFT JOIN LATERAL (
-             SELECT e2.id AS etudiant_id FROM etudiant e2 WHERE e2.groupe_id = g2.id
-             UNION
-             SELECT h2.etudiant_id FROM historique_inscription h2 WHERE h2.groupe_id = g2.id
-           ) roster2 ON true
-         WHERE g2.classe_id = c.id) as effectif_total_classe
+        -- Chantier 6 : mêmes 3 sources que getListeClasses/getDetailClasse.
+        (SELECT COUNT(DISTINCT combined.etudiant_id) FROM (
+           SELECT e2.id AS etudiant_id FROM etudiant e2
+            JOIN groupe g2a ON g2a.id = e2.groupe_id
+            WHERE g2a.classe_id = c.id
+           UNION
+           SELECT h2.etudiant_id FROM historique_inscription h2
+            JOIN groupe g2 ON g2.id = h2.groupe_id
+            WHERE g2.classe_id = c.id
+           UNION
+           SELECT e2b.id FROM etudiant e2b
+            WHERE e2b.groupe_id IS NULL
+              AND e2b.id_filiere = c.filiere_id AND e2b.niveau_id = c.niveau_id
+              AND e2b.annee_academique_id = c.annee_academique_id
+              AND e2b.curcus_id IS NOT DISTINCT FROM c.curcus_id
+         ) combined) as effectif_total_classe
       FROM classe c
-      LEFT JOIN groupe g ON g.classe_id = c.id
+      -- Chantier 11 (2026-08-03) — sous-phase 3.5 : même exclusion du Groupe primaire que
+      -- getListeClasses/getDetailClasse (pas de consommateur frontend actif à ce jour, corrigé
+      -- par cohérence pour ne pas laisser un piège si cet endpoint est branché plus tard).
+      LEFT JOIN groupe g ON g.classe_id = c.id AND g.est_primaire = false
       LEFT JOIN LATERAL (
         SELECT e3.id AS etudiant_id FROM etudiant e3 WHERE e3.groupe_id = g.id
         UNION

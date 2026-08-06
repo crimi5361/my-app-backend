@@ -69,9 +69,24 @@ function estJourOuvrable(date) {
   return !estJourFerie(m);
 }
 
+// Bug corrigé le 2026-08-01 (trouvé en testant le Chantier 6, sans rapport avec son contenu) :
+// avec une date invalide (ex. `date_inscription` NULL en base), `estJourOuvrable` renvoie
+// toujours `false` et `m.add(1, 'day')` sur une date invalide reste indéfiniment invalide — la
+// boucle ne se terminait jamais, bloquant tout le processus Node (mono-thread). Deux garde-fous :
+// (1) une date invalide en entrée est renvoyée telle quelle, sans boucler ; (2) une limite
+// d'itérations en filet de sécurité, au cas où un autre cas non prévu produirait le même effet
+// (aucun jour férié/week-end connu n'excède quelques jours consécutifs en Côte d'Ivoire — 60
+// jours est très largement suffisant pour un cas normal, jamais atteint en pratique).
+const LIMITE_ITERATIONS_JOUR_OUVRABLE = 60;
+
 function prochainJourOuvrable(date) {
   let m = moment(date);
+  if (!m.isValid()) return m;
+  let iterations = 0;
   while (!estJourOuvrable(m)) {
+    if (++iterations > LIMITE_ITERATIONS_JOUR_OUVRABLE) {
+      throw new Error(`prochainJourOuvrable: aucun jour ouvrable trouvé après ${LIMITE_ITERATIONS_JOUR_OUVRABLE} jours à partir de ${m.format()} — vérifier les données de jours fériés.`);
+    }
     m = m.add(1, 'day');
   }
   return m;

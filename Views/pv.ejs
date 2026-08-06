@@ -683,8 +683,8 @@
                 <tr>
                     <td class="info-label">Semestre:</td>
                     <td>Semestre <%= data.semestre.id %></td>
-                    <td class="info-label">Groupe:</td>
-                    <td><%= data.groupe.nom %></td>
+                    <td class="info-label"><%= data.groupe.nom ? 'Groupe' : 'Classe' %>:</td>
+                    <td><%= data.groupe.nom || data.groupe.classe || '-' %></td>
                 </tr>
             </table>
         </div>
@@ -1044,7 +1044,7 @@
     <div id="reprise-section" class="reprise-container" style="display: none;">
         <div class="reprise-header">
             <h2>📝 LISTE DES ÉTUDIANTS AYANT DES ECUE À REPRENDRE</h2>
-            <h3><%= data.maquette.filiere %> - Semestre <%= data.semestre.id %> - Groupe <%= data.groupe.nom %></h3>
+            <h3><%= data.maquette.filiere %> - Semestre <%= data.semestre.id %> - <%= data.groupe.nom ? 'Groupe ' + data.groupe.nom : 'Classe ' + (data.groupe.classe || '') %></h3>
             <p>Année académique <%= data.groupe.annee_academique %></p>
         </div>
 

@@ -9,5 +9,7 @@ router.post('/', authenticateToken,            filieresController.createFiliere)
 router.put('/:id', authenticateToken,          filieresController.updateFiliere);
 router.delete('/:id', authenticateToken,       filieresController.deleteFiliere);
 router.post('/:id/dupliquer', authenticateToken, filieresController.dupliquerFiliere);
+router.get('/:id/niveaux-catalogue', authenticateToken, filieresController.getCatalogueNiveauxFiliere);
+router.post('/:id/configurer-annee', authenticateToken, filieresController.configurerAnneeFiliere);
 
 module.exports = router;

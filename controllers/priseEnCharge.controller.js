@@ -1,4 +1,5 @@
 const db = require('../config/db.config');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 exports.getActivePECByEtudiant = async (req, res) => {
   try {
@@ -38,6 +39,7 @@ exports.getPECEnAttente = async (req, res) => {
   
   try {
     const departementId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
 
     if (!anneeAcademiqueId) {
@@ -47,8 +49,12 @@ exports.getPECEnAttente = async (req, res) => {
       });
     }
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3)' : '';
+    const params = ecoleId !== null ? [anneeAcademiqueId, departementId, ecoleId] : [anneeAcademiqueId, departementId];
+
     const query = `
-      SELECT 
+      SELECT
         p.id as pec_id,
         p.type_pec,
         p.pourcentage_reduction,
@@ -75,12 +81,13 @@ exports.getPECEnAttente = async (req, res) => {
       JOIN niveau n ON e.niveau_id = n.id
       JOIN scolarite s ON e.scolarite_id = s.id
       WHERE p.statut = 'en_attente'
-        AND e.annee_academique_id = $1
+        AND p.annee_academique_id = $1
         AND e.site_id = $2
+        ${ecoleCond}
       ORDER BY p.date_demande DESC
     `;
 
-    const result = await client.query(query, [anneeAcademiqueId, departementId]);
+    const result = await client.query(query, params);
 
     res.status(200).json({
       success: true,
@@ -106,6 +113,7 @@ exports.getPECTraitees = async (req, res) => {
   
   try {
     const departementId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
 
     if (!anneeAcademiqueId) {
@@ -115,8 +123,12 @@ exports.getPECTraitees = async (req, res) => {
       });
     }
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3)' : '';
+    const params = ecoleId !== null ? [anneeAcademiqueId, departementId, ecoleId] : [anneeAcademiqueId, departementId];
+
     const query = `
-      SELECT 
+      SELECT
         p.id as pec_id,
         p.type_pec,
         p.pourcentage_reduction,
@@ -125,7 +137,7 @@ exports.getPECTraitees = async (req, res) => {
         p.date_demande,
         p.date_validation,
         p.statut,
-        p.motif_refus,  
+        p.motif_refus,
         e.id as etudiant_id,
         e.matricule_iipea,
         e.nom,
@@ -135,25 +147,25 @@ exports.getPECTraitees = async (req, res) => {
         f.nom as filiere,
         f.sigle as filiere_sigle,
         n.libelle as niveau,
-        s.montant_scolarite,
-        s.scolarite_verse,
-        s.scolarite_restante,
-        s.statut_etudiant,
-        (s.montant_scolarite * p.pourcentage_reduction / 100) as reduction_calculee,
-        (s.scolarite_verse + p.montant_reduction) as total_verse_virtuel,
-        (s.montant_scolarite - (s.scolarite_verse + p.montant_reduction)) as restant_virtuel
+        e.montant_scolarite,
+        e.scolarite_verse,
+        e.scolarite_restante,
+        e.statut_paiement AS statut_etudiant,
+        (e.montant_scolarite * p.pourcentage_reduction / 100) as reduction_calculee,
+        (e.scolarite_verse + p.montant_reduction) as total_verse_virtuel,
+        (e.montant_scolarite - (e.scolarite_verse + p.montant_reduction)) as restant_virtuel
       FROM prise_en_charge p
-      JOIN etudiant e ON p.etudiant_id = e.id
+      JOIN vue_position_academique e ON p.etudiant_id = e.id AND e.annee_academique_id = $1
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
-      JOIN scolarite s ON e.scolarite_id = s.id
-      WHERE p.statut IN ('valide', 'refuse')  
-        AND e.annee_academique_id = $1
+      WHERE p.statut IN ('valide', 'refuse')
+        AND p.annee_academique_id = $1
         AND e.site_id = $2
+        ${ecoleCond}
       ORDER BY p.date_validation DESC, e.nom, e.prenoms
     `;
 
-    const result = await client.query(query, [anneeAcademiqueId, departementId]);
+    const result = await client.query(query, params);
 
     res.status(200).json({
       success: true,
@@ -177,6 +189,7 @@ exports.getStatsPECtraitees = async (req, res) => {
   
   try {
     const departementId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
 
     if (!anneeAcademiqueId) {
@@ -186,8 +199,12 @@ exports.getStatsPECtraitees = async (req, res) => {
       });
     }
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND e.id_filiere IN (SELECT f.id FROM filiere f WHERE f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3))' : '';
+    const params = ecoleId !== null ? [anneeAcademiqueId, departementId, ecoleId] : [anneeAcademiqueId, departementId];
+
     const query = `
-      SELECT 
+      SELECT
         COUNT(*) as total_pec_traitees,
         COUNT(*) FILTER (WHERE p.statut = 'valide') as total_validees,
         COUNT(*) FILTER (WHERE p.statut = 'refuse') as total_refusees,
@@ -198,13 +215,14 @@ exports.getStatsPECtraitees = async (req, res) => {
       FROM prise_en_charge p
       JOIN etudiant e ON p.etudiant_id = e.id
       WHERE p.statut IN ('valide', 'refuse')
-        AND e.annee_academique_id = $1
+        AND p.annee_academique_id = $1
         AND e.site_id = $2
+        ${ecoleCond}
       GROUP BY p.type_pec
       ORDER BY count_type DESC
     `;
 
-    const result = await client.query(query, [anneeAcademiqueId, departementId]);
+    const result = await client.query(query, params);
 
     res.status(200).json({
       success: true,

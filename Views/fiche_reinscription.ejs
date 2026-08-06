@@ -34,6 +34,18 @@
             border-radius: 4px;
             background: white;
             position: relative;
+            min-height: 283mm;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Bloc signatures + coordonnées : poussé en bas de page via flex quand le contenu
+           tient sur une seule page (min-height ci-dessus) ; suit simplement le flux normal
+           sans laisser de zone vide quand le contenu déborde sur une page suivante. */
+        .signatures-footer-group {
+            margin-top: auto;
+            page-break-inside: avoid;
+            break-inside: avoid;
         }
 
         .header-ministry { display: flex; justify-content: space-between; margin-bottom: 6px; }
@@ -174,6 +186,9 @@
             <tr><th>Niveau</th><td><%= dossier.niveau_libelle %></td></tr>
             <tr><th>Classe</th><td><%= dossier.filiere_nom ? (dossier.filiere_nom + ' ' + dossier.filiere_sigle + ' ' + dossier.niveau_libelle) : 'Non spécifié' %></td></tr>
             <tr><th>Statut scolaire</th><td><%= dossier.statut_scolaire_retenu || 'Non déterminé' %></td></tr>
+            <% if (dossier.ip_ministere) { %>
+            <tr><th>IP Ministère</th><td><%= dossier.ip_ministere %></td></tr>
+            <% } %>
         </table>
 
         <% if (dossier.statut !== 'non_eligible') { %>
@@ -220,21 +235,23 @@
             </p>
         <% } %>
 
-        <h3 class="section-title">Signatures</h3>
-        <div class="footer-section">
-            <div class="signature-container">
-                <div class="signature-line"><span class="signature-text">Signature de l'étudiant</span></div>
+        <div class="signatures-footer-group">
+            <h3 class="section-title">Signatures</h3>
+            <div class="footer-section">
+                <div class="signature-container">
+                    <div class="signature-line"><span class="signature-text">Signature de l'étudiant</span></div>
+                </div>
+                <div class="signature-container">
+                    <div class="signature-line"><span class="signature-text">Service Scolarité</span></div>
+                    <span class="date-below-signature">Fait à Abidjan, le <%= new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' }) %></span>
+                </div>
             </div>
-            <div class="signature-container">
-                <div class="signature-line"><span class="signature-text">Service Scolarité</span></div>
-                <span class="date-below-signature">Fait à Abidjan, le <%= new Date().toLocaleDateString('fr-FR', { year: 'numeric', month: 'long', day: 'numeric' }) %></span>
-            </div>
-        </div>
 
-        <div class="footer">
-            <span class="footer-text">Cocody Riviera 2, Route d'Attoban / Riviera Triangle /Abobo/ Yamoussoukro</span>
-            <span class="footer-text">Tel : +225 05 44 02 60 60 / +225 07 08 08 87 87</span>
-            <span class="footer-text">Email : secretariat@iipea.com | Copyright © IIPEA Tous droits réservés</span>
+            <div class="footer">
+                <span class="footer-text">Cocody Riviera 2, Route d'Attoban / Riviera Triangle /Abobo/ Yamoussoukro</span>
+                <span class="footer-text">Tel : +225 05 44 02 60 60 / +225 07 08 08 87 87</span>
+                <span class="footer-text">Email : secretariat@iipea.com | Copyright © IIPEA Tous droits réservés</span>
+            </div>
         </div>
     </div>
 </body>

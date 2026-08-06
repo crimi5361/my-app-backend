@@ -1,5 +1,7 @@
 const db = require('../config/db.config');
-const { affecterClasseEtGroupe } = require('../services/classeGroupe.service');
+const { affecterClasse } = require('../services/classeGroupe.service');
+const { isKitSuspenduPourAnnee } = require('../services/kitCampagne.service');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 exports.createPaiement = async (req, res) => {
   const client = await db.connect();
@@ -35,6 +37,13 @@ exports.createPaiement = async (req, res) => {
     const hasActivePEC = pecResult.rows.length > 0;
     const pecActive = hasActivePEC ? pecResult.rows[0] : null;
 
+    // Année académique courante de l'étudiant, tracée sur le paiement pour permettre de
+    // filtrer l'historique par année (les transitions d'année ne sont pas déductibles après coup).
+    // Récupérée ici (avant le bloc kit ci-dessous) pour être réutilisée sans requête dupliquée
+    // lors de l'enregistrement du paiement plus bas.
+    const anneeResult = await client.query('SELECT annee_academique_id FROM etudiant WHERE id = $1', [etudiant_id]);
+    const anneeAcademiqueId = anneeResult.rows[0]?.annee_academique_id || null;
+
     // 1. Vérifier si c'est le premier paiement
     const checkPremierPaiement = await client.query(
       'SELECT COUNT(*) FROM paiement WHERE etudiant_id = $1',
@@ -43,21 +52,25 @@ exports.createPaiement = async (req, res) => {
     const isPremierPaiement = parseInt(checkPremierPaiement.rows[0].count) === 0;
 
     // Gestion du kit pour le premier paiement - TOUJOURS créer une entrée kit
+    // (le kit peut être suspendu pour la campagne en cours — cf. KIT_ANNEES_SUSPENDUES — auquel
+    // cas l'entrée est tout de même créée, à 0/non déposé, sans jamais tenir compte de la case
+    // "veut_kit_ecole", conformément à la suspension du module et non à sa suppression)
+    const kitSuspendu = await isKitSuspenduPourAnnee(client, anneeAcademiqueId);
     if (isPremierPaiement && !hasKit) {
       let kitMontant = 0;
       let kitDeposer = false;
-      
-      if (veut_kit_ecole) {
+
+      if (veut_kit_ecole && !kitSuspendu) {
         // Cas 1: Case cochée - a payé le kit à l'école
         kitMontant = kitAmount;
         kitDeposer = true;
       }
-      // Cas 2: Case non cochée - montant 0 et deposer false
-      
+      // Cas 2: Case non cochée (ou module suspendu) - montant 0 et deposer false
+
       await client.query(
-        `INSERT INTO kit (etudiant_id, montant, deposer, date_enregistrement)
-         VALUES ($1, $2, $3, $4)`,
-        [etudiant_id, kitMontant, kitDeposer, date_paiement]
+        `INSERT INTO kit (etudiant_id, montant, deposer, date_enregistrement, annee_academique_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [etudiant_id, kitMontant, kitDeposer, date_paiement, anneeAcademiqueId]
       );
     }
 
@@ -81,17 +94,12 @@ exports.createPaiement = async (req, res) => {
       const montantReduction = (montantScolarite * pourcentage_reduction) / 100;
 
       await client.query(
-        `INSERT INTO prise_en_charge 
-         (etudiant_id, type_pec, pourcentage_reduction, montant_reduction, reference, statut, date_demande)
-         VALUES ($1, $2, $3, $4, $5, 'en_attente', $6)`,
-        [etudiant_id, type_pec, pourcentage_reduction, montantReduction, reference_pec || null, date_paiement]
+        `INSERT INTO prise_en_charge
+         (etudiant_id, type_pec, pourcentage_reduction, montant_reduction, reference, statut, date_demande, annee_academique_id)
+         VALUES ($1, $2, $3, $4, $5, 'en_attente', $6, $7)`,
+        [etudiant_id, type_pec, pourcentage_reduction, montantReduction, reference_pec || null, date_paiement, anneeAcademiqueId]
       );
     }
-
-    // Année académique courante de l'étudiant, tracée sur le paiement pour permettre de
-    // filtrer l'historique par année (les transitions d'année ne sont pas déductibles après coup).
-    const anneeResult = await client.query('SELECT annee_academique_id FROM etudiant WHERE id = $1', [etudiant_id]);
-    const anneeAcademiqueId = anneeResult.rows[0]?.annee_academique_id || null;
 
     // 2. Créer le reçu avec un numéro unique
     const numeroRecu = `RECU-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -219,21 +227,30 @@ exports.createPaiement = async (req, res) => {
       [newScolariteVerse, newScolariteRestante, statutEtudiant, etudiant.scolarite_id]
     );
 
-    // 7. Gestion spécifique pour le premier paiement - AVEC CAPACITÉ DYNAMIQUE
+    // 7. Gestion spécifique pour le premier paiement
+    // Chantier 6 : affectation à la classe uniquement — le groupe pédagogique réel n'est plus
+    // attribué automatiquement, il le sera plus tard par répartition manuelle (cf. futur écran
+    // Gestion des groupes). Chantier 11 (sous-phase 2) : le groupe technique "primaire" de la
+    // classe, lui, est réaffecté automatiquement — uniquement si la classe relève de la nouvelle
+    // architecture (groupePrimaireId reste null pour toute classe déjà existante avant ce
+    // chantier, donc etudiant.groupe_id reste NULL comme avant pour les années antérieures).
     if (isPremierPaiement) {
-      await affecterClasseEtGroupe(client, {
+      const { groupePrimaireId } = await affecterClasse(client, {
         etudiantId: etudiant_id,
         filiereNom: etudiant.filiere,
         filiereSigle: etudiant.filiere_sigle,
         niveauLibelle: etudiant.niveau,
         cursus: etudiant.cursus,
         curcusId: etudiant.curcus_id,
-        typeFiliere: etudiant.type_filiere,
         anneeAcademiqueId,
         filiereId: etudiant.id_filiere,
         niveauId: etudiant.niveau_id,
       });
-      await client.query(`UPDATE etudiant SET standing = 'Inscrit' WHERE id = $1`, [etudiant_id]);
+      if (groupePrimaireId) {
+        await client.query(`UPDATE etudiant SET standing = 'Inscrit', groupe_id = $1 WHERE id = $2`, [groupePrimaireId, etudiant_id]);
+      } else {
+        await client.query(`UPDATE etudiant SET standing = 'Inscrit' WHERE id = $1`, [etudiant_id]);
+      }
     }
 
     await client.query('COMMIT');
@@ -248,7 +265,7 @@ exports.createPaiement = async (req, res) => {
         scolarite_restante: newScolariteRestante,
         statut_etudiant: statutEtudiant,
         is_premier_paiement: isPremierPaiement,
-        kit_ajoute: isPremierPaiement && veut_kit_ecole,
+        kit_ajoute: isPremierPaiement && veut_kit_ecole && !kitSuspendu,
         demande_pec_envoyee: demande_pec && !hasActivePEC,
         reduction_appliquee: hasActivePEC ? montantReductionPEC : 0,
         total_scolarite: totalScolarite,
@@ -309,26 +326,30 @@ exports.demanderPECSeule = async (req, res) => {
       throw new Error('Une demande de prise en charge est déjà en attente pour cet étudiant');
     }
 
-    // Récupérer le montant de la scolarité pour calculer la réduction
+    // Récupérer le montant de la scolarité (pour calculer la réduction) et l'année académique
+    // courante de l'étudiant (capturée immuablement à la création de la PEC).
     const scolariteResult = await client.query(
-      'SELECT montant_scolarite FROM scolarite WHERE id IN (SELECT scolarite_id FROM etudiant WHERE id = $1)',
+      `SELECT s.montant_scolarite, e.annee_academique_id
+       FROM etudiant e JOIN scolarite s ON s.id = e.scolarite_id
+       WHERE e.id = $1`,
       [etudiant_id]
     );
-    
+
     if (scolariteResult.rows.length === 0) {
       throw new Error('Scolarité non trouvée pour cet étudiant');
     }
-    
+
     const montantScolarite = parseFloat(scolariteResult.rows[0].montant_scolarite);
     const montantReduction = (montantScolarite * pourcentage_reduction) / 100;
+    const anneeAcademiqueId = scolariteResult.rows[0].annee_academique_id;
 
     // Créer la demande de prise en charge AVEC le montant_reduction calculé
     const pecResult = await client.query(
-      `INSERT INTO prise_en_charge 
-       (etudiant_id, type_pec, pourcentage_reduction, montant_reduction, reference, statut, date_demande)
-       VALUES ($1, $2, $3, $4, $5, 'en_attente', $6)
+      `INSERT INTO prise_en_charge
+       (etudiant_id, type_pec, pourcentage_reduction, montant_reduction, reference, statut, date_demande, annee_academique_id)
+       VALUES ($1, $2, $3, $4, $5, 'en_attente', $6, $7)
        RETURNING id`,
-      [etudiant_id, type_pec, pourcentage_reduction, montantReduction, reference_pec || null, date_demande]
+      [etudiant_id, type_pec, pourcentage_reduction, montantReduction, reference_pec || null, date_demande, anneeAcademiqueId]
     );
 
     const pecId = pecResult.rows[0].id;
@@ -568,6 +589,7 @@ exports.getPaiementCountByEtudiant = async (req, res) => {
 exports.getPaiementsByDepartement = async (req, res) => {
   try {
     const departementId = req.query.departement_id || req.user?.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
     
     if (!departementId) {
@@ -609,7 +631,10 @@ exports.getPaiementsByDepartement = async (req, res) => {
     const offset = (page - 1) * limit;
 
     // Construction dynamique de la clause WHERE
-    let whereClauses = ['d.id = $1', 'e.annee_academique_id = $2'];
+    // ✅ p.annee_academique_id (année réelle du paiement, jamais modifiée) au lieu de
+    // e.annee_academique_id (position courante de l'étudiant) — sinon un paiement fait en
+    // 2025-2026 par un étudiant depuis réinscrit se retrouve compté dans 2026-2027.
+    let whereClauses = ['d.id = $1', 'p.annee_academique_id = $2'];
     const params = [departementId, anneeAcademiqueId];
 
     // Ajouter le paramètre de recherche si fourni
@@ -641,6 +666,12 @@ exports.getPaiementsByDepartement = async (req, res) => {
       params.push(req.query.date_fin);
     }
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (d.id) existant.
+    if (ecoleId !== null) {
+      whereClauses.push(`dpt.ecole_id = $${params.length + 1}`);
+      params.push(ecoleId);
+    }
+
     const whereClause = whereClauses.length > 0 ? 'WHERE ' + whereClauses.join(' AND ') : '';
 
     // REQUÊTE CORRIGÉE avec exactement les champs demandés
@@ -665,6 +696,7 @@ exports.getPaiementsByDepartement = async (req, res) => {
       INNER JOIN anneeacademique a ON e.annee_academique_id = a.id
       LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = d.id
       LEFT JOIN filiere f ON e.id_filiere = f.id
+      LEFT JOIN departement dpt ON f.departement_id = dpt.id
       LEFT JOIN niveau n ON e.niveau_id = n.id
       LEFT JOIN utilisateur u ON p.effectue_par::integer = u.id
       ${whereClause}
@@ -680,6 +712,7 @@ exports.getPaiementsByDepartement = async (req, res) => {
       INNER JOIN site d ON e.site_id = d.id
       INNER JOIN anneeacademique a ON e.annee_academique_id = a.id
       LEFT JOIN filiere f ON e.id_filiere = f.id
+      LEFT JOIN departement dpt ON f.departement_id = dpt.id
       LEFT JOIN niveau n ON e.niveau_id = n.id
       ${whereClause}
     `;

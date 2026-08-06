@@ -8,3 +8,11 @@ uploads/
 config/secrets/
 CLAUDE.md
 .claude/
+
+# Documentation interne et scripts de migration — usage exclusif équipe de développement,
+# jamais publiés sur le dépôt distant (voir README.md, section Déploiement).
+docs/
+documentation/
+analyse/
+notes/
+migrations/

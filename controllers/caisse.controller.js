@@ -1,5 +1,6 @@
 const db = require('../config/db.config');
-const { affecterClasseEtGroupe } = require('../services/classeGroupe.service');
+const { affecterClasse } = require('../services/classeGroupe.service');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 const METHODES_VALIDES = ['Espèces', 'Mobile Money', 'Orange Money', 'Wave'];
 
@@ -277,12 +278,12 @@ exports.validerPaiementReinscription = async (req, res) => {
           `INSERT INTO historique_inscription (
              etudiant_id, type_evenement, annee_academique_id, niveau_id, id_filiere, groupe_id,
              statut_scolaire, montant_scolarite, scolarite_verse, scolarite_restante, statut_paiement,
-             decision_academique, moyenne_annuelle, reinscription_id, valide_par
-           ) VALUES ($1, 'cloture', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+             decision_academique, moyenne_annuelle, reinscription_id, valide_par, curcus_id
+           ) VALUES ($1, 'cloture', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
           [etudiant.id, etudiant.annee_academique_id, etudiant.niveau_id, etudiant.id_filiere, etudiant.groupe_id,
            etudiant.statut_scolaire, ancienneScolarite?.montant_scolarite ?? null, ancienneScolarite?.scolarite_verse ?? null,
            ancienneScolarite?.scolarite_restante ?? null, ancienneScolarite?.statut_etudiant ?? null,
-           dossier.decision_academique, dossier.moyenne_annuelle, dossier.id, req.user?.id || null]
+           dossier.decision_academique, dossier.moyenne_annuelle, dossier.id, req.user?.id || null, etudiant.curcus_id ?? null]
         );
       }
     }
@@ -324,40 +325,42 @@ exports.validerPaiementReinscription = async (req, res) => {
       [montantScolarite, montantPaye, scolariteRestante, statutEtudiantScolarite]
     );
 
+    // Chantier 6 : groupe_id remis à NULL explicitement — auparavant, ce champ était écrasé par
+    // affecterClasseEtGroupe (nouveau groupe attribué automatiquement) juste après cette requête ;
+    // maintenant que le groupe n'est plus auto-attribué, rien d'autre ne nettoierait l'ancien
+    // groupe_id (celui de la classe quittée) si on ne le fait pas ici explicitement.
     await client.query(
       `UPDATE etudiant SET
          niveau_id = $1, annee_academique_id = $2, scolarite_id = $3,
          id_filiere = $4, statut_scolaire = $5, standing = 'Inscrit',
-         curcus_id = COALESCE($6, curcus_id)
+         curcus_id = COALESCE($6, curcus_id), groupe_id = NULL
        WHERE id = $7`,
       [dossier.niveau_retenu_id, dossier.anneeacademique_id, scolariteResult.rows[0].id,
        dossier.id_filiere_retenu, dossier.statut_scolaire_retenu, dossier.curcus_id, dossier.etudiant_id]
     );
 
-    // Filet de sécurité pour l'avenir : aucun code n'écrit encore dans inscription_annuelle
-    // aujourd'hui, mais si une ligne existait déjà pour cette année, son parcours doit rester
-    // cohérent avec le choix fait ici plutôt que de rester orpheline.
-    if (dossier.curcus_id) {
-      await client.query(
-        `UPDATE inscription_annuelle SET curcus_id = $1 WHERE etudiant_id = $2 AND annee_academique_id = $3`,
-        [dossier.curcus_id, dossier.etudiant_id, dossier.anneeacademique_id]
-      );
-    }
-
-    // Affectation classe/groupe : toujours celle de la NOUVELLE classe (nouveau niveau/année),
-    // jamais l'ancien groupe de l'étudiant.
-    const { groupeId } = await affecterClasseEtGroupe(client, {
+    // Affectation classe : toujours celle de la NOUVELLE année/niveau, jamais l'ancienne classe
+    // de l'étudiant. Chantier 6 : le groupe pédagogique réel n'est plus attribué automatiquement
+    // — l'ancien groupe appartenait à l'ancienne classe, quittée par définition lors d'une
+    // réinscription. Chantier 11 (sous-phase 2) : seul le groupe technique "primaire" de la
+    // nouvelle classe est réaffecté automatiquement, et uniquement si cette classe relève de la
+    // nouvelle architecture (groupePrimaireId reste null pour toute classe déjà existante avant
+    // ce chantier — notamment toutes celles des années antérieures à 2026-2027).
+    const { groupePrimaireId } = await affecterClasse(client, {
       etudiantId: dossier.etudiant_id,
       filiereNom: infos.filiere_nom,
       filiereSigle: infos.filiere_sigle,
       niveauLibelle: infos.niveau_libelle,
       cursus: infos.cursus,
       curcusId: infos.curcus_id_resolu,
-      typeFiliere: infos.type_filiere,
       anneeAcademiqueId: dossier.anneeacademique_id,
       filiereId: dossier.id_filiere_retenu,
       niveauId: dossier.niveau_retenu_id,
     });
+    if (groupePrimaireId) {
+      await client.query('UPDATE etudiant SET groupe_id = $1 WHERE id = $2', [groupePrimaireId, dossier.etudiant_id]);
+    }
+    const groupeId = groupePrimaireId;
 
     // Historique : trace permanente de ce cycle, consultable même une fois que l'état "courant"
     // de l'étudiant aura été réécrit par une réinscription future (bug #9 du tour précédent).
@@ -365,11 +368,11 @@ exports.validerPaiementReinscription = async (req, res) => {
       `INSERT INTO historique_inscription (
          etudiant_id, type_evenement, annee_academique_id, niveau_id, id_filiere, groupe_id,
          statut_scolaire, montant_scolarite, scolarite_verse, scolarite_restante, statut_paiement,
-         decision_academique, moyenne_annuelle, reinscription_id, valide_par
-       ) VALUES ($1, 'reinscription', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+         decision_academique, moyenne_annuelle, reinscription_id, valide_par, curcus_id
+       ) VALUES ($1, 'reinscription', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
       [dossier.etudiant_id, dossier.anneeacademique_id, dossier.niveau_retenu_id, dossier.id_filiere_retenu, groupeId,
        dossier.statut_scolaire_retenu, montantScolarite, montantPaye, scolariteRestante, statutEtudiantScolarite,
-       dossier.decision_academique, dossier.moyenne_annuelle, dossier.id, req.user?.id || null]
+       dossier.decision_academique, dossier.moyenne_annuelle, dossier.id, req.user?.id || null, dossier.curcus_id ?? null]
     );
 
     const datePaiement = new Date();
@@ -419,9 +422,14 @@ exports.rechercherEtudiantCaisse = async (req, res) => {
   try {
     const { q } = req.query;
     const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     if (!q || q.trim().length < 2) {
       return res.status(400).json({ success: false, message: 'Veuillez saisir au moins 2 caractères.' });
     }
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3)' : '';
+    const params = ecoleId !== null ? [siteId, `%${q.trim()}%`, ecoleId] : [siteId, `%${q.trim()}%`];
 
     const result = await db.query(
       `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.standing, e.code_paiement,
@@ -438,9 +446,10 @@ exports.rechercherEtudiantCaisse = async (req, res) => {
            e.nom ILIKE $2 OR e.prenoms ILIKE $2 OR e.matricule_iipea ILIKE $2
            OR (e.nom || ' ' || e.prenoms) ILIKE $2
          )
+         ${ecoleCond}
        ORDER BY e.nom, e.prenoms
        LIMIT 20`,
-      [siteId, `%${q.trim()}%`]
+      params
     );
 
     res.status(200).json({ success: true, data: result.rows });
@@ -459,13 +468,19 @@ exports.getHistoriqueAnneesEtudiant = async (req, res) => {
   try {
     const { id } = req.params;
     const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND e.id_filiere IN (SELECT id FROM filiere WHERE departement_id IN (SELECT id FROM departement WHERE ecole_id = $3))' : '';
+    const params = ecoleId !== null ? [id, siteId, ecoleId] : [id, siteId];
 
     const etudiantResult = await db.query(
       `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.photo_url, e.standing,
               e.annee_academique_id, e.scolarite_id
        FROM etudiant e
-       WHERE e.id = $1 AND e.site_id = $2`,
-      [id, siteId]
+       WHERE e.id = $1 AND e.site_id = $2
+         ${ecoleCond}`,
+      params
     );
     if (etudiantResult.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
@@ -531,11 +546,16 @@ exports.getPaiementsAnneeEtudiant = async (req, res) => {
   try {
     const { id, anneeAcademiqueId } = req.params;
     const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const anneeId = parseInt(anneeAcademiqueId, 10);
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND id_filiere IN (SELECT id FROM filiere WHERE departement_id IN (SELECT id FROM departement WHERE ecole_id = $3))' : '';
+    const etudiantParams = ecoleId !== null ? [id, siteId, ecoleId] : [id, siteId];
+
     const etudiantResult = await db.query(
-      `SELECT id, annee_academique_id, scolarite_id FROM etudiant WHERE id = $1 AND site_id = $2`,
-      [id, siteId]
+      `SELECT id, annee_academique_id, scolarite_id FROM etudiant WHERE id = $1 AND site_id = $2 ${ecoleCond}`,
+      etudiantParams
     );
     if (etudiantResult.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
@@ -607,6 +627,7 @@ exports.enregistrerPaiementAnneeEtudiant = async (req, res) => {
   try {
     const { id, anneeAcademiqueId } = req.params;
     const { montant, methode } = req.body;
+    const ecoleId = getEcoleScopeFromUser(req);
     const anneeId = parseInt(anneeAcademiqueId, 10);
 
     if (!montant || isNaN(parseFloat(montant)) || parseFloat(montant) <= 0) {
@@ -624,9 +645,13 @@ exports.enregistrerPaiementAnneeEtudiant = async (req, res) => {
       return res.status(409).json({ success: false, code: 'CAISSE_FERMEE', message: 'Ouvrez votre caisse avant d\'encaisser un paiement.' });
     }
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (site_id) existant.
+    const ecoleCondEnreg = ecoleId !== null ? 'AND id_filiere IN (SELECT id FROM filiere WHERE departement_id IN (SELECT id FROM departement WHERE ecole_id = $3))' : '';
+    const etudiantGuardParams = ecoleId !== null ? [id, req.user.departement_id, ecoleId] : [id, req.user.departement_id];
+
     const etudiantResult = await client.query(
-      `SELECT id, annee_academique_id, scolarite_id FROM etudiant WHERE id = $1 AND site_id = $2 FOR UPDATE`,
-      [id, req.user.departement_id]
+      `SELECT id, annee_academique_id, scolarite_id FROM etudiant WHERE id = $1 AND site_id = $2 ${ecoleCondEnreg} FOR UPDATE`,
+      etudiantGuardParams
     );
     if (etudiantResult.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -835,6 +860,7 @@ exports.getDashboardStats = async (req, res) => {
 exports.getPaiements = async (req, res) => {
   try {
     const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const isAdminOuComptable = ['admin', 'comptabilite'].includes(req.user.role);
 
     const whereClauses = ['c.site_id = $1'];
@@ -855,6 +881,12 @@ exports.getPaiements = async (req, res) => {
     if (req.query.numero_recu) {
       whereClauses.push(`r.numero_recu ILIKE $${params.length + 1}`);
       params.push(`%${req.query.numero_recu}%`);
+    }
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (c.site_id) existant.
+    if (ecoleId !== null) {
+      whereClauses.push(`e.id_filiere IN (SELECT id FROM filiere WHERE departement_id IN (SELECT id FROM departement WHERE ecole_id = $${params.length + 1}))`);
+      params.push(ecoleId);
     }
 
     const page = parseInt(req.query.page, 10) || 1;
@@ -1001,30 +1033,38 @@ exports.validerPaiementAdmission = async (req, res) => {
       [montantPaye, scolariteRestante, statutEtudiantScolarite, etudiant.scolarite_id]
     );
 
-    const { groupeId } = await affecterClasseEtGroupe(client, {
+    // Chantier 6 : affectation à la classe, groupe pédagogique réel non attribué automatiquement.
+    // Chantier 11 (sous-phase 2) : le groupe technique "primaire" de la classe, lui, est
+    // réaffecté automatiquement — uniquement si la classe relève de la nouvelle architecture
+    // (groupePrimaireId reste null pour toute classe déjà existante avant ce chantier).
+    const { groupePrimaireId } = await affecterClasse(client, {
       etudiantId: etudiant.id,
       filiereNom: etudiant.filiere_nom,
       filiereSigle: etudiant.filiere_sigle,
       niveauLibelle: etudiant.niveau_libelle,
       cursus: etudiant.cursus,
       curcusId: etudiant.curcus_id,
-      typeFiliere: etudiant.type_filiere,
       anneeAcademiqueId: etudiant.annee_academique_id,
       filiereId: etudiant.id_filiere,
       niveauId: etudiant.niveau_id,
     });
+    const groupeId = groupePrimaireId;
 
-    await client.query(`UPDATE etudiant SET standing = 'Inscrit' WHERE id = $1`, [etudiant.id]);
+    if (groupePrimaireId) {
+      await client.query(`UPDATE etudiant SET standing = 'Inscrit', groupe_id = $1 WHERE id = $2`, [groupePrimaireId, etudiant.id]);
+    } else {
+      await client.query(`UPDATE etudiant SET standing = 'Inscrit' WHERE id = $1`, [etudiant.id]);
+    }
 
     // Historique : première trace du parcours de l'étudiant (couvre aussi la toute première
     // année, que la table réinscription ne peut pas capturer).
     await client.query(
       `INSERT INTO historique_inscription (
          etudiant_id, type_evenement, annee_academique_id, niveau_id, id_filiere, groupe_id,
-         statut_scolaire, montant_scolarite, scolarite_verse, scolarite_restante, statut_paiement, valide_par
-       ) VALUES ($1, 'admission', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         statut_scolaire, montant_scolarite, scolarite_verse, scolarite_restante, statut_paiement, valide_par, curcus_id
+       ) VALUES ($1, 'admission', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [etudiant.id, etudiant.annee_academique_id, etudiant.niveau_id, etudiant.id_filiere, groupeId,
-       etudiant.statut_scolaire, montantScolarite, montantPaye, scolariteRestante, statutEtudiantScolarite, req.user?.id || null]
+       etudiant.statut_scolaire, montantScolarite, montantPaye, scolariteRestante, statutEtudiantScolarite, req.user?.id || null, etudiant.curcus_id ?? null]
     );
 
     const datePaiement = new Date();
@@ -1042,11 +1082,13 @@ exports.validerPaiementAdmission = async (req, res) => {
 
     // Une seule entrée kit par étudiant (comme dans createPaiement) — non déposé par défaut,
     // le caissier n'a pas de case "kit" dans ce parcours minimal ; ajustable plus tard sur le dossier.
+    // annee_academique_id tracé pour permettre à getRecuData de savoir à quelle campagne ce kit
+    // se rattache (utilisé notamment pour la suspension du module par année, cf. kitCampagne.service.js).
     const hasKit = await client.query('SELECT 1 FROM kit WHERE etudiant_id = $1', [etudiant.id]);
     if (hasKit.rows.length === 0) {
       await client.query(
-        `INSERT INTO kit (etudiant_id, montant, deposer, date_enregistrement) VALUES ($1, 0, false, $2)`,
-        [etudiant.id, datePaiement]
+        `INSERT INTO kit (etudiant_id, montant, deposer, date_enregistrement, annee_academique_id) VALUES ($1, 0, false, $2, $3)`,
+        [etudiant.id, datePaiement, etudiant.annee_academique_id]
       );
     }
 
@@ -1091,6 +1133,7 @@ exports.rechercherDossierParCodeUnifie = async (req, res) => {
 exports.getInscriptionsEnAttente = async (req, res) => {
   try {
     const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId, search } = req.query;
     if (!anneeAcademiqueId) {
       return res.status(400).json({ success: false, message: "L'ID de l'année académique est requis", code: 'ACADEMIC_YEAR_REQUIRED' });
@@ -1107,6 +1150,14 @@ exports.getInscriptionsEnAttente = async (req, res) => {
       params.push(`%${search}%`);
     }
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant,
+    // appliqué aux deux branches de l'UNION (admission et réinscription).
+    let ecoleCond = '';
+    if (ecoleId !== null) {
+      ecoleCond = `AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $${params.length + 1})`;
+      params.push(ecoleId);
+    }
+
     const baseQuery = `
       SELECT * FROM (
         SELECT 'admission' AS type, e.id AS etudiant_id, e.nom, e.prenoms, e.matricule_iipea, e.photo_url,
@@ -1115,7 +1166,7 @@ exports.getInscriptionsEnAttente = async (req, res) => {
         FROM etudiant e
         JOIN filiere f ON f.id = e.id_filiere
         JOIN niveau n ON n.id = e.niveau_id
-        WHERE e.standing = 'en attente' AND e.site_id = $1 AND e.annee_academique_id = $2
+        WHERE e.standing = 'en attente' AND e.site_id = $1 AND e.annee_academique_id = $2 ${ecoleCond}
 
         UNION ALL
 
@@ -1126,7 +1177,7 @@ exports.getInscriptionsEnAttente = async (req, res) => {
         JOIN etudiant e ON e.id = r.etudiant_id
         JOIN niveau n ON n.id = r.niveau_retenu_id
         LEFT JOIN filiere f ON f.id = r.id_filiere_retenu
-        WHERE r.statut = 'en_attente_paiement' AND e.site_id = $1 AND r.anneeacademique_id = $2
+        WHERE r.statut = 'en_attente_paiement' AND e.site_id = $1 AND r.anneeacademique_id = $2 ${ecoleCond}
       ) dossiers
       WHERE 1=1 ${searchClause}
     `;

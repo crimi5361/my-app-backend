@@ -333,6 +333,21 @@ router.get(
  */
 router.get('/etudiant/:id', authenticateToken, etudiantController.getEtudiantById);
 
+router.put(
+  '/etudiant/:id/informations-personnelles',
+  authenticateToken,
+  authorizeRoles('admin', 'scolarite'),
+  etudiantController.updateInformationsPersonnelles
+);
+
+router.post(
+  '/etudiant/:id/photo',
+  authenticateToken,
+  authorizeRoles('admin', 'scolarite'),
+  upload.single('photo'),
+  etudiantController.updatePhotoEtudiant
+);
+
 router.post(
   '/etudiant/:id/documents/:typeDocumentCode',
   authenticateToken,

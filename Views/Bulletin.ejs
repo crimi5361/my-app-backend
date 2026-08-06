@@ -384,8 +384,8 @@
                     <span><%= maquette.filiere %> (<%= maquette.sigle %>)</span>
                 </div>
                 <div class="info-item">
-                    <strong>Classe :</strong>
-                    <span><%= groupe.nom %></span>
+                    <strong><%= groupe.nom ? 'Groupe' : 'Classe' %> :</strong>
+                    <span><%= groupe.nom || groupe.classe || '-' %></span>
                 </div>
                 <div class="info-item">
                     <strong>Redoublant :</strong>

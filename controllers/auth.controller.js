@@ -9,7 +9,7 @@ exports.login = async (req, res) => {
     // 1. D'abord vérifier dans la table utilisateur
     let result = await db.query(
       `SELECT u.id, u.nom, u.email, u.mot_de_passe, r.nom AS role, u.code,
-              d.id AS departement_id, d.nom AS departement_nom
+              d.id AS departement_id, d.nom AS departement_nom, u.ecole_id
        FROM utilisateur u
        JOIN role r ON u.role_id = r.id
        JOIN site d ON u.site_id = d.id
@@ -52,11 +52,14 @@ exports.login = async (req, res) => {
 
     // 5. Générer le token avec le type d'utilisateur
     const token = jwt.sign(
-      { 
-        id: utilisateur.id, 
+      {
+        id: utilisateur.id,
         role: userType === 'etudiant' ? 'etudiant' : utilisateur.role,
         code: utilisateur.code,
         departement_id: utilisateur.departement_id,
+        // Cloisonnement par école (Chantier 3, cf. docs/architecture-permissions-ecole.md) —
+        // concerne uniquement les agents (table utilisateur) ; toujours absent pour un etudiant.
+        ecole_id: userType === 'etudiant' ? null : utilisateur.ecole_id,
         userType: userType
       },
       process.env.JWT_SECRET,

@@ -5,6 +5,11 @@ const authenticateToken = require('../middleware/auth.middleware');
 const authorizeRoles = require('../middleware/authorize.middleware');
 
 const caisseOnly = authorizeRoles('admin', 'comptabilite', 'caissier');
+// Lecture seule de l'historique financier d'un étudiant : la Fiche Étudiant (Chantier V1,
+// 2026-08) l'affiche aussi pour le rôle scolarite, qui n'a par ailleurs aucun accès caisse
+// (pas de session à ouvrir) — n'élargit que les 2 routes de LECTURE, jamais l'écriture d'un
+// paiement (restée strictement caisseOnly juste en dessous).
+const caisseOuScolariteLecture = authorizeRoles('admin', 'comptabilite', 'caissier', 'scolarite');
 
 router.get('/reinscription/recherche', authenticateToken, caisseOnly, caisseController.rechercherDossierParCode);
 router.post('/reinscription/:code/valider', authenticateToken, caisseOnly, caisseController.validerPaiementReinscription);
@@ -16,12 +21,12 @@ router.get('/session/:id/rapport', authenticateToken, caisseOnly, caisseControll
 router.get('/session/:id/rapport/impression', authenticateToken, caisseOnly, caisseController.afficherRapportSession);
 
 router.get('/etudiant/recherche', authenticateToken, caisseOnly, caisseController.rechercherEtudiantCaisse);
-router.get('/etudiant/:id/annees', authenticateToken, caisseOnly, caisseController.getHistoriqueAnneesEtudiant);
-router.get('/etudiant/:id/annees/:anneeAcademiqueId/paiements', authenticateToken, caisseOnly, caisseController.getPaiementsAnneeEtudiant);
+router.get('/etudiant/:id/annees', authenticateToken, caisseOuScolariteLecture, caisseController.getHistoriqueAnneesEtudiant);
+router.get('/etudiant/:id/annees/:anneeAcademiqueId/paiements', authenticateToken, caisseOuScolariteLecture, caisseController.getPaiementsAnneeEtudiant);
 router.post('/etudiant/:id/annees/:anneeAcademiqueId/paiements', authenticateToken, caisseOnly, caisseController.enregistrerPaiementAnneeEtudiant);
 router.get('/dashboard/stats', authenticateToken, caisseOnly, caisseController.getDashboardStats);
 router.get('/paiements', authenticateToken, caisseOnly, caisseController.getPaiements);
-router.get('/inscriptions-en-attente', authenticateToken, caisseOnly, caisseController.getInscriptionsEnAttente);
+router.get('/inscriptions-en-attente', authenticateToken, caisseOuScolariteLecture, caisseController.getInscriptionsEnAttente);
 
 router.get('/admission/recherche', authenticateToken, caisseOnly, caisseController.rechercherDossierAdmissionParCode);
 router.post('/admission/:code/valider', authenticateToken, caisseOnly, caisseController.validerPaiementAdmission);

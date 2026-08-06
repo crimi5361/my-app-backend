@@ -98,6 +98,7 @@ const apiRoutes = [
   { path: '/api/rolepermissions',   route: require('./routes/rolePermission.routes') },
   { path: '/api/roles',             route: require('./routes/role.routes') },
   { path: '/api/utilisateurs',      route: require('./routes/user.routes') },
+  { path: '/api/admin',             route: require('./routes/nettoyageAdmin.routes') },
 
   // Structure académique
   { path: '/api/ecoles',            route: require('./routes/ecole.routes') },
@@ -110,6 +111,7 @@ const apiRoutes = [
   { path: '/api/curcus',            route: require('./routes/curcus.routes') },
   { path: '/api/niveaux',           route: require('./routes/niveau.routes') },
   { path: '/api/classes',           route: require('./routes/classes.routes') },
+  { path: '/api/decoupage',         route: require('./routes/divisionGroupe.routes') },
   { path: '/api/semestres',         route: require('./routes/semestre.routes') },
   { path: '/api/maquettes',         route: require('./routes/maquette.routes') },
   { path: '/api/categorie',         route: require('./routes/categorie.routes') },
@@ -120,6 +122,7 @@ const apiRoutes = [
 
   // Étudiants & inscriptions
   { path: '/api/etudiants',         route: require('./routes/etudiant.routes') },
+  { path: '/api/operations-admin',  route: require('./routes/operationsAdmin.routes') },
   { path: '/api/reinscription',     route: require('./routes/reinscription.routes') },
   { path: '/api/verification',      route: require('./routes/verification.routes') },
   { path: '/api/caisse',            route: require('./routes/caisse.routes') },
@@ -147,6 +150,16 @@ const apiRoutes = [
   // Statistiques & tableaux de bord
   { path: '/api/data',            route: require('./routes/data.routes') },
   { path: '/api/StatDashboard',   route: require('./routes/StatDashboard.routes') },
+  { path: '/api/dashboard/scolarite', route: require('./routes/dashboardScolarite.routes') },
+  { path: '/api/dashboard/comptabilite', route: require('./routes/dashboardComptabilite.routes') },
+  { path: '/api/dashboard/administrateur', route: require('./routes/dashboardAdministrateur.routes') },
+  { path: '/api/dashboard/fondateur', route: require('./routes/dashboardFondateur.routes') },
+  { path: '/api/dashboard/moyens-generaux', route: require('./routes/dashboardMoyensGeneraux.routes') },
+  { path: '/api/moyens-generaux/accessoires', route: require('./routes/accessoire.routes') },
+  { path: '/api/moyens-generaux/fournisseurs', route: require('./routes/fournisseur.routes') },
+  { path: '/api/moyens-generaux/commandes', route: require('./routes/commandeFournisseur.routes') },
+  { path: '/api/moyens-generaux/stock', route: require('./routes/stock.routes') },
+  { path: '/api/moyens-generaux/distribution', route: require('./routes/distribution.routes') },
   { path: '/api/statistiques',    route: require('./routes/StatistiqueGeneral.routes') },
 
   // Espace étudiant

@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Bulletins - <%= groupe.nom %></title>
+    <title>Bulletins - <%= groupe.nom || groupe.classe %></title>
     <style>
         * {
             margin: 0;
@@ -665,8 +665,8 @@
             </div>
             <div class="ligne3">
                 <div class="classe">
-                    <span class="label">Classe :</span>
-                    <span class="valeur"><%= groupe.nom %></span>
+                    <span class="label"><%= groupe.nom ? 'Groupe' : 'Classe' %> :</span>
+                    <span class="valeur"><%= groupe.nom || groupe.classe || '-' %></span>
                 </div>
                 <div class="redoublant">
                     <span class="label">Redoublant :</span>

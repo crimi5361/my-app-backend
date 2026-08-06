@@ -47,7 +47,11 @@ const authenticateToken = (req, res, next) => {
           id: decoded.id,
           role: decoded.role,
           code: decoded.code,
-          departement_id: decoded.departement_id // ← Utilisez decoded.departement_id
+          departement_id: decoded.departement_id, // ← Utilisez decoded.departement_id
+          // Cloisonnement par école (Chantier 3) — normalisé à null si absent du token (ex.
+          // anciens tokens émis avant ce chantier, ou compte etudiant) : null = vue globale,
+          // jamais confondu avec "non renseigné" côté consommateur.
+          ecole_id: decoded.ecole_id ?? null
         };
         
         console.log('Utilisateur authentifié:', req.user);

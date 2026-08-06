@@ -17,6 +17,13 @@ exports.getListeClassesPublic = async (req, res) => {
       });
     }
 
+    // Chantier 6 (2026-08-01) : portail public d'admission — ne doit jamais dépendre de
+    // l'existence d'un groupe (un étudiant n'en a plus automatiquement). filiere/niveau/annee
+    // viennent désormais directement des colonnes de `classe` (elle les possède déjà — inutile
+    // de les déduire d'un étudiant au hasard, ce qui était en plus fragile). L'effectif combine
+    // les étudiants déjà groupés (logique inchangée) et ceux sans groupe correspondant aux
+    // critères de la classe (nouveau, additif uniquement — cf. classes.controller.js pour le
+    // raisonnement détaillé sur pourquoi ces deux branches restent séparées).
     const query = `
       SELECT DISTINCT
         c.id,
@@ -24,26 +31,41 @@ exports.getListeClassesPublic = async (req, res) => {
         c.description,
         aa.annee as annee_academique,
         aas.etat as annee_etat,
-        COUNT(DISTINCT g.id) as nombre_groupes,
-        COUNT(DISTINCT e.id) as effectif_total,
-        (SELECT f2.nom FROM filiere f2
-         JOIN etudiant e2 ON e2.id_filiere = f2.id
-         WHERE e2.groupe_id IN (SELECT g2.id FROM groupe g2 WHERE g2.classe_id = c.id)
-         LIMIT 1) as filiere,
-        (SELECT n2.libelle FROM niveau n2
-         JOIN etudiant e2 ON e2.niveau_id = n2.id
-         WHERE e2.groupe_id IN (SELECT g2.id FROM groupe g2 WHERE g2.classe_id = c.id)
-         LIMIT 1) as niveau,
-        d.nom as departement
+        (SELECT COUNT(DISTINCT g3.id) FROM groupe g3 WHERE g3.classe_id = c.id) as nombre_groupes,
+        (SELECT COUNT(DISTINCT combined.etudiant_id) FROM (
+           SELECT e4.id AS etudiant_id FROM etudiant e4
+            JOIN groupe g4 ON g4.id = e4.groupe_id
+            WHERE g4.classe_id = c.id
+           UNION
+           SELECT e4b.id FROM etudiant e4b
+            WHERE e4b.groupe_id IS NULL
+              AND e4b.id_filiere = c.filiere_id AND e4b.niveau_id = c.niveau_id
+              AND e4b.annee_academique_id = c.annee_academique_id
+              AND e4b.curcus_id IS NOT DISTINCT FROM c.curcus_id
+         ) combined) as effectif_total,
+        f.nom as filiere,
+        n.libelle as niveau,
+        (SELECT nom FROM site WHERE id = $2) as departement
       FROM classe c
-      LEFT JOIN groupe g ON g.classe_id = c.id
-      LEFT JOIN etudiant e ON e.groupe_id = g.id
-      LEFT JOIN anneeacademique aa ON e.annee_academique_id = aa.id
+      LEFT JOIN filiere f ON f.id = c.filiere_id
+      LEFT JOIN niveau n ON n.id = c.niveau_id
+      LEFT JOIN anneeacademique aa ON aa.id = c.annee_academique_id
       LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = aa.id AND aas.site_id = $2
-      LEFT JOIN site d ON e.site_id = d.id
       WHERE ($1::int IS NULL OR aa.id = $1)
-      AND e.site_id = $2
-      GROUP BY c.id, c.nom, c.description, aa.annee, aas.etat, d.nom
+      AND (
+        EXISTS (
+          SELECT 1 FROM etudiant e5
+          JOIN groupe g5 ON g5.id = e5.groupe_id
+          WHERE g5.classe_id = c.id AND e5.site_id = $2
+        )
+        OR EXISTS (
+          SELECT 1 FROM etudiant e5b
+          WHERE e5b.groupe_id IS NULL
+            AND e5b.id_filiere = c.filiere_id AND e5b.niveau_id = c.niveau_id
+            AND e5b.annee_academique_id = c.annee_academique_id
+            AND e5b.curcus_id IS NOT DISTINCT FROM c.curcus_id AND e5b.site_id = $2
+        )
+      )
       ORDER BY c.nom
     `;
 
@@ -72,33 +94,43 @@ exports.getDetailClassePublic = async (req, res) => {
   try {
     const { id } = req.params;
     
+    // Chantier 6 : filiere/niveau/annee directement depuis `classe` (plus fiable et plus simple
+    // que de les déduire d'un étudiant groupé au hasard) ; effectif_total combine groupés
+    // (inchangé) + sans groupe correspondant aux critères (nouveau, additif) — voir
+    // classes.controller.js pour le raisonnement détaillé. effectif_groupe (par groupe) reste
+    // group-dépendant par nature, inchangé.
     const query = `
-      SELECT 
+      SELECT
         c.id,
         c.nom,
         c.description,
         aa.annee as annee_academique,
         (SELECT etat FROM anneeacademique_site WHERE anneeacademique_id = aa.id ORDER BY (etat = 'en cour') DESC LIMIT 1) as annee_etat,
-        (SELECT f2.nom FROM filiere f2
-         JOIN etudiant e2 ON e2.id_filiere = f2.id
-         JOIN groupe g2 ON e2.groupe_id = g2.id
-         WHERE g2.classe_id = c.id LIMIT 1) as filiere,
-        (SELECT n2.libelle FROM niveau n2
-         JOIN etudiant e2 ON e2.niveau_id = n2.id
-         JOIN groupe g2 ON e2.groupe_id = g2.id
-         WHERE g2.classe_id = c.id LIMIT 1) as niveau,
-        COUNT(DISTINCT e.id) as effectif_total,
+        f.nom as filiere,
+        n.libelle as niveau,
+        (SELECT COUNT(DISTINCT combined.etudiant_id) FROM (
+           SELECT e4.id AS etudiant_id FROM etudiant e4
+            JOIN groupe g4 ON g4.id = e4.groupe_id
+            WHERE g4.classe_id = c.id
+           UNION
+           SELECT e4b.id FROM etudiant e4b
+            WHERE e4b.groupe_id IS NULL
+              AND e4b.id_filiere = c.filiere_id AND e4b.niveau_id = c.niveau_id
+              AND e4b.annee_academique_id = c.annee_academique_id
+              AND e4b.curcus_id IS NOT DISTINCT FROM c.curcus_id
+         ) combined) as effectif_total,
         g.id as groupe_id,
         g.nom as groupe_nom,
         g.capacite_max as groupe_capacite,
         COUNT(e_g.id) as effectif_groupe
       FROM classe c
+      LEFT JOIN filiere f ON f.id = c.filiere_id
+      LEFT JOIN niveau n ON n.id = c.niveau_id
+      LEFT JOIN anneeacademique aa ON aa.id = c.annee_academique_id
       LEFT JOIN groupe g ON g.classe_id = c.id
-      LEFT JOIN etudiant e ON e.groupe_id = g.id
       LEFT JOIN etudiant e_g ON e_g.groupe_id = g.id
-      LEFT JOIN anneeacademique aa ON e.annee_academique_id = aa.id
       WHERE c.id = $1
-      GROUP BY c.id, c.nom, c.description, aa.id, aa.annee, g.id, g.nom, g.capacite_max
+      GROUP BY c.id, c.nom, c.description, aa.id, aa.annee, f.nom, n.libelle, g.id, g.nom, g.capacite_max
       ORDER BY g.nom
     `;
 
@@ -254,9 +286,11 @@ exports.getReferenceDataAdmission = async (req, res) => {
       db.query(`SELECT id, annee AS nom FROM annee_bac ORDER BY annee DESC`),
       db.query(`SELECT id, nom_etablissement, situation_geographique FROM etablissement_origine ORDER BY nom_etablissement`),
       // ✅ Parcours JOUR/SOIR (curcus) : exposée ici (route déjà publique) car GET /api/curcus exige
-      // authenticateToken, inutilisable par le portail Web qui n'a pas de session. "Universitaire"
-      // exclu : jamais un choix manuel, résolu automatiquement côté client (StepFormation.tsx).
-      db.query(`SELECT id, type_parcours FROM curcus WHERE type_parcours != 'Universitaire' ORDER BY type_parcours`),
+      // authenticateToken, inutilisable par le portail Web qui n'a pas de session. La ligne
+      // "Universitaire" est incluse (comme /api/curcus côté agent) car StepFormation.tsx en a besoin
+      // pour résoudre curcus_id automatiquement sur une filière Universitaire ; elle est filtrée côté
+      // client pour ne jamais apparaître dans le Select de choix manuel (Jour/Soir).
+      db.query(`SELECT id, type_parcours FROM curcus ORDER BY type_parcours`),
     ]);
     res.status(200).json({
       success: true,
@@ -278,16 +312,19 @@ exports.getReferenceDataAdmission = async (req, res) => {
 };
 
 // Cascade École → Département (formulaire public, pas de site/année implicite via req.user).
+// Chantier "inscription Web Filière-first" (2026-08-02) : ecole_id devient optionnel — omis,
+// retourne tous les départements (toutes écoles), nécessaire pour résoudre École/Département
+// côté client à partir de la filière choisie, sans cascade préalable. Comportement existant
+// (filtré par ecole_id) strictement inchangé quand le paramètre est fourni.
 exports.getDepartementsPublic = async (req, res) => {
   try {
     const { ecole_id } = req.query;
-    if (!ecole_id) {
-      return res.status(400).json({ success: false, message: 'Le paramètre ecole_id est requis.' });
-    }
-    const result = await db.query(
-      `SELECT id, nom, sigle, ecole_id FROM departement WHERE ecole_id = $1 ORDER BY nom`,
-      [ecole_id]
-    );
+    const result = ecole_id
+      ? await db.query(
+          `SELECT id, nom, sigle, ecole_id FROM departement WHERE ecole_id = $1 ORDER BY nom`,
+          [ecole_id]
+        )
+      : await db.query(`SELECT id, nom, sigle, ecole_id FROM departement ORDER BY nom`);
     res.status(200).json({ success: true, data: result.rows });
   } catch (error) {
     console.error('Erreur getDepartementsPublic:', error);
@@ -317,11 +354,17 @@ exports.getTarifPreviewPublic = async (req, res) => {
 // Cascade Département + Site → Filières (avec leurs niveaux imbriqués, pour l'année en cours
 // de ce site) — même forme que getAllFilieresTable côté métier, mais site/année ne viennent
 // pas de req.user (public) : le site est explicitement choisi par le candidat.
+//
+// Chantier "inscription Web Filière-first" (2026-08-02) : departement_id devient optionnel —
+// omis, retourne les filières de TOUS les départements pour ce site/année (chaque ligne porte
+// déjà f.departement_id), nécessaire pour permettre au candidat de choisir directement sa
+// filière puis résoudre Département/École côté client, sans cascade préalable. Comportement
+// existant (filtré par departement_id) strictement inchangé quand le paramètre est fourni.
 exports.getFilieresAvecNiveauxPublic = async (req, res) => {
   try {
     const { departement_id, site_id } = req.query;
-    if (!departement_id || !site_id) {
-      return res.status(400).json({ success: false, message: 'Les paramètres departement_id et site_id sont requis.' });
+    if (!site_id) {
+      return res.status(400).json({ success: false, message: 'Le paramètre site_id est requis.' });
     }
 
     const anneeResult = await db.query(
@@ -349,14 +392,14 @@ exports.getFilieresAvecNiveauxPublic = async (req, res) => {
        FROM filiere f
        JOIN typefiliere tf ON tf.id = f.type_filiere_id
        LEFT JOIN niveau n ON n.filiere_id = f.id AND n.anneeacademique_id = $1 AND n.site_id = $2
-       WHERE f.departement_id = $3
+       WHERE ($3::int IS NULL OR f.departement_id = $3)
          AND EXISTS (
            SELECT 1 FROM niveau n2
            WHERE n2.filiere_id = f.id AND n2.anneeacademique_id = $1 AND n2.site_id = $2
          )
        GROUP BY f.id, f.nom, f.sigle, f.departement_id, tf.id, tf.libelle
        ORDER BY f.nom`,
-      [anneeAcademiqueId, site_id, departement_id]
+      [anneeAcademiqueId, site_id, departement_id || null]
     );
     res.status(200).json({ success: true, data: { anneeAcademiqueId, filieres: result.rows } });
   } catch (error) {

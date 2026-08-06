@@ -420,7 +420,7 @@ exports.getFicheSituationBloqueePublic = async (req, res) => {
     const { matricule_iipea } = req.query;
 
     const result = await db.query(
-      `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea,
+      `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.ip_ministere,
               f.nom AS filiere_nom, n.libelle AS niveau_libelle, s.nom AS site_nom,
               sc.montant_scolarite, sc.scolarite_verse, sc.scolarite_restante
        FROM etudiant e

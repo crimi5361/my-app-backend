@@ -1,9 +1,9 @@
 const db = require('../config/db.config');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const PVController = require('./PV.controller');
 const PaiementEspaceController = require('./PaiementEespaceetudiant.controller');
 const TarifController = require('./tarif.controller');
 const { validatePhotoFile } = require('./etudiant.controller');
-const { affecterClasseEtGroupe } = require('../services/classeGroupe.service');
 const { avecRetryCodeUnique } = require('../services/codePaiement.service');
 const { requiertChoixParcours } = require('../services/parcoursProfessionnel.service');
 const { validerReferentielsIdentite } = require('../services/referentielIdentite.service');
@@ -165,12 +165,17 @@ exports.rechercherEtudiant = async (req, res) => {
   try {
     const { q } = req.query;
     const siteId = req.user?.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     if (!q || q.trim().length < 2) {
       return res.status(400).json({ success: false, message: 'Veuillez saisir au moins 2 caractères.' });
     }
     if (!siteId) {
       return res.status(400).json({ success: false, message: 'Site non identifié pour votre compte.' });
     }
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3)' : '';
+    const params = ecoleId !== null ? [siteId, `%${q.trim()}%`, ecoleId] : [siteId, `%${q.trim()}%`];
 
     const result = await db.query(
       `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.photo_url,
@@ -185,9 +190,10 @@ exports.rechercherEtudiant = async (req, res) => {
            OR (e.nom || ' ' || e.prenoms) ILIKE $2
            OR (e.prenoms || ' ' || e.nom) ILIKE $2
          )
+         ${ecoleCond}
        ORDER BY e.nom, e.prenoms
        LIMIT 20`,
-      [siteId, `%${q.trim()}%`]
+      params
     );
 
     res.status(200).json({ success: true, data: result.rows });
@@ -245,14 +251,27 @@ exports.getDossierReinscription = async (req, res) => {
       academiqueErreur = err.message;
     }
 
-    // Niveau proposé (successeur configuré, même filière) + tarif associé
+    // Niveau proposé (successeur configuré, même filière) + tarif associé.
+    // ⚠️ Avec une filière préparée progressivement (certains niveaux d'une année pas encore
+    // ouverts), niveau.niveau_suivant_id peut encore pointer vers un niveau de l'ANCIENNE année
+    // (chaînage provisoire, non corrigé tant que le niveau cible n'a pas été créé pour l'année en
+    // cours — voir rechainerNiveauCree). On ne propose JAMAIS ce niveau automatiquement dans ce
+    // cas : silencieusement rediriger l'agent vers un niveau de la mauvaise année a été la cause
+    // du bug historique de classes dupliquées. progressionBloqueeMessage explique pourquoi à
+    // l'agent au lieu de résoudre en silence.
     let niveauPropose = null;
+    let progressionBloqueeMessage = null;
     if (etudiant.niveau_suivant_id) {
       const niveauProposeResult = await db.query(
-        `SELECT n.id, n.libelle, n.filiere_id FROM niveau n WHERE n.id = $1`,
+        `SELECT n.id, n.libelle, n.filiere_id, n.anneeacademique_id FROM niveau n WHERE n.id = $1`,
         [etudiant.niveau_suivant_id]
       );
-      niveauPropose = niveauProposeResult.rows[0] || null;
+      const candidat = niveauProposeResult.rows[0] || null;
+      if (candidat && anneeCible && candidat.anneeacademique_id !== anneeCible.id) {
+        progressionBloqueeMessage = `Le niveau "${candidat.libelle}" n'est pas encore configuré pour l'année ${anneeCible.annee} : préparez d'abord cette filière depuis Gestion des filières avant de proposer une progression automatique.`;
+      } else {
+        niveauPropose = candidat;
+      }
     }
 
     // ✅ Accès Master strict : un passage Licence → Master n'est proposé que si l'année de
@@ -347,6 +366,7 @@ exports.getDossierReinscription = async (req, res) => {
         situation_academique: situationAcademique,
         situation_academique_erreur: academiqueErreur,
         niveau_propose: niveauPropose,
+        progression_bloquee_message: progressionBloqueeMessage,
         niveau_retenu_propose: niveauRetenuPropose,
         parcours_requis: parcoursRequis,
         parcours_options: parcoursOptions,
@@ -394,6 +414,25 @@ exports.traiterDemandeReinscription = async (client, {
     return { erreur: { status: 409, code: null, message: "Aucune année académique en cours pour ce site." } };
   }
 
+  // ✅ Garde-fou définitif (filière préparée progressivement) : le niveau retenu — qu'il vienne
+  // d'une progression automatique, d'un changement de cycle choisi manuellement ou d'une
+  // orientation — doit obligatoirement appartenir à l'année académique cible. Un niveau existant
+  // mais rattaché à une autre année (filière pas encore préparée pour cette année) est refusé
+  // explicitement ici, jamais résolu silencieusement.
+  const niveauRetenuCheck = await client.query('SELECT id, libelle, anneeacademique_id FROM niveau WHERE id = $1', [niveauRetenuId]);
+  if (niveauRetenuCheck.rows.length === 0) {
+    return { erreur: { status: 404, code: null, message: 'Niveau retenu introuvable.' } };
+  }
+  if (niveauRetenuCheck.rows[0].anneeacademique_id !== anneeCible.id) {
+    return {
+      erreur: {
+        status: 409,
+        code: 'NIVEAU_ANNEE_INCORRECTE',
+        message: `Le niveau "${niveauRetenuCheck.rows[0].libelle}" n'est pas configuré pour l'année académique en cours (${anneeCible.annee}). Préparez d'abord cette filière depuis Gestion des filières.`
+      }
+    };
+  }
+
   const existingResult = await client.query(
     `SELECT * FROM reinscription WHERE etudiant_id = $1 AND anneeacademique_id = $2 FOR UPDATE`,
     [etudiantId, anneeCible.id]
@@ -409,7 +448,7 @@ exports.traiterDemandeReinscription = async (client, {
       erreur: {
         status: 409,
         code: 'DEJA_INSCRIT',
-        message: "Cet étudiant est déjà réinscrit et son paiement a déjà été validé pour cette année académique."
+        message: `Cet étudiant est déjà inscrit pour l'année académique ${anneeCible.annee}.`
       }
     };
   }
@@ -752,6 +791,7 @@ exports.afficherFicheReinscription = async (req, res) => {
 
     const result = await db.query(
       `SELECT r.*, e.nom, e.prenoms, e.matricule_iipea, e.date_naissance, e.lieu_naissance,
+              e.ip_ministere,
               f.nom AS filiere_nom, f.sigle AS filiere_sigle, n.libelle AS niveau_libelle, a.annee
        FROM reinscription r
        JOIN etudiant e ON e.id = r.etudiant_id

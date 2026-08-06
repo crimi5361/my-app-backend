@@ -1,5 +1,18 @@
 const db = require('../config/db.config');
 
+// ✅ Toutes les requêtes ci-dessous sourcent vue_position_academique (pas `etudiant` directement) :
+// etudiant.annee_academique_id n'est qu'une position COURANTE, écrasée à chaque réinscription — un
+// étudiant réinscrit vers l'année suivante ne doit pas disparaître rétroactivement des statistiques
+// de l'année qu'il vient de quitter.
+//
+// Niveaux qui impliquent forcément une progression depuis une année antérieure (donc une
+// réinscription) — Chantier Statistiques 2026-08 : la liste d'origine ('LICENCE 2', 'LICENCE 3',
+// 'BTS 2') omettait les équivalents PRO, sous-comptant les réinscriptions d'environ 750 étudiants
+// (LICENCE 2 PRO + LICENCE 3 PRO) vérifié sur la base réelle. MASTER 1/1 PRO/2/2 PRO restent
+// volontairement exclus : un Master 1 peut être une admission externe fraîche, pas forcément une
+// réinscription IIPEA — question métier à trancher, non tranchée unilatéralement ici.
+const NIVEAUX_IMPLIQUANT_REINSCRIPTION = ['LICENCE 2', 'LICENCE 2 PRO', 'LICENCE 3', 'LICENCE 3 PRO', 'BTS 2'];
+
 // Statistiques par cycles (Type de filière)
 exports.getStatisticsByCycle = async (req, res) => {
     try {
@@ -12,9 +25,9 @@ exports.getStatisticsByCycle = async (req, res) => {
                 COUNT(CASE WHEN e.statut_scolaire = 'Affecté' THEN 1 END) as etudiants_affectes,
                 COUNT(CASE WHEN e.statut_scolaire = 'Non affecté' THEN 1 END) as etudiants_non_affectes,
                 COUNT(CASE WHEN e.standing = 'Inscrit' THEN 1 END) as inscriptions,
-                COUNT(CASE WHEN n.libelle IN ('LICENCE 2', 'LICENCE 3', 'BTS 2') AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
+                COUNT(CASE WHEN n.libelle = ANY($3::text[]) AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
                 COUNT(*) as total
-            FROM etudiant e
+            FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
             INNER JOIN filiere f ON n.filiere_id = f.id
             INNER JOIN typefiliere tf ON f.type_filiere_id = tf.id
@@ -23,7 +36,7 @@ exports.getStatisticsByCycle = async (req, res) => {
             ORDER BY tf.libelle
         `;
 
-        const result = await db.query(query, [annee_academique_id, departement_id]);
+        const result = await db.query(query, [annee_academique_id, departement_id, NIVEAUX_IMPLIQUANT_REINSCRIPTION]);
         
         res.json({
             success: true,
@@ -50,11 +63,11 @@ exports.getStatisticsByNiveau = async (req, res) => {
                 COUNT(CASE WHEN e.statut_scolaire = 'Affecté' THEN 1 END) as etudiants_affectes,
                 COUNT(CASE WHEN e.statut_scolaire = 'Non affecté' THEN 1 END) as etudiants_non_affectes,
                 COUNT(CASE WHEN e.standing = 'Inscrit' THEN 1 END) as inscriptions,
-                COUNT(CASE WHEN n.libelle IN ('LICENCE 2', 'LICENCE 3', 'BTS 2') AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
+                COUNT(CASE WHEN n.libelle = ANY($3::text[]) AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
                 COUNT(*) as total
-            FROM etudiant e
+            FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
-            WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing='Inscrit'
+            WHERE e.annee_academique_id = $1 AND e.site_id = $2
             GROUP BY n.libelle
             ORDER BY 
                  CASE 
@@ -74,8 +87,8 @@ exports.getStatisticsByNiveau = async (req, res) => {
                 END
         `;
 
-        const result = await db.query(query, [annee_academique_id, departement_id]);
-        
+        const result = await db.query(query, [annee_academique_id, departement_id, NIVEAUX_IMPLIQUANT_REINSCRIPTION]);
+
         res.json({
             success: true,
             data: result.rows
@@ -102,9 +115,9 @@ exports.getStatisticsByCursus = async (req, res) => {
                 COUNT(CASE WHEN e.statut_scolaire = 'Affecté' THEN 1 END) as etudiants_affectes,
                 COUNT(CASE WHEN e.statut_scolaire = 'Non affecté' THEN 1 END) as etudiants_non_affectes,
                 COUNT(CASE WHEN e.standing = 'Inscrit' THEN 1 END) as inscriptions,
-                COUNT(CASE WHEN n.libelle IN ('LICENCE 2', 'LICENCE 3', 'BTS 2') AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
+                COUNT(CASE WHEN n.libelle = ANY($3::text[]) AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
                 COUNT(*) as total
-            FROM etudiant e
+            FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
             INNER JOIN curcus c ON e.curcus_id = c.id
             WHERE e.annee_academique_id = $1 AND e.site_id = $2
@@ -112,7 +125,7 @@ exports.getStatisticsByCursus = async (req, res) => {
             ORDER BY c.type_parcours
         `;
 
-        const result = await db.query(query, [annee_academique_id, departement_id]);
+        const result = await db.query(query, [annee_academique_id, departement_id, NIVEAUX_IMPLIQUANT_REINSCRIPTION]);
         
         res.json({
             success: true,
@@ -143,9 +156,9 @@ exports.getStatisticsByFiliere = async (req, res) => {
                 COUNT(CASE WHEN e.statut_scolaire = 'Affecté' THEN 1 END) as etudiants_affectes,
                 COUNT(CASE WHEN e.statut_scolaire = 'Non affecté' THEN 1 END) as etudiants_non_affectes,
                 COUNT(CASE WHEN e.standing = 'Inscrit' THEN 1 END) as inscriptions,
-                COUNT(CASE WHEN n.libelle IN ('LICENCE 2', 'LICENCE 3', 'BTS 2') AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
+                COUNT(CASE WHEN n.libelle = ANY($3::text[]) AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
                 COUNT(*) as total
-            FROM etudiant e
+            FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
             INNER JOIN filiere f ON n.filiere_id = f.id
             INNER JOIN typefiliere tf ON f.type_filiere_id = tf.id
@@ -164,8 +177,8 @@ exports.getStatisticsByFiliere = async (req, res) => {
                 END
         `;
 
-        const result = await db.query(query, [annee_academique_id, departement_id]);
-        
+        const result = await db.query(query, [annee_academique_id, departement_id, NIVEAUX_IMPLIQUANT_REINSCRIPTION]);
+
         // Regrouper par filière
         const groupedData = {};
         result.rows.forEach(row => {
@@ -229,7 +242,7 @@ exports.getDetailedStatistics = async (req, res) => {
         ] = await Promise.all([
             db.query(`
                 SELECT tf.libelle as cycle, COUNT(*) as total
-                FROM etudiant e
+                FROM vue_position_academique e
                 INNER JOIN niveau n ON e.niveau_id = n.id
                 INNER JOIN filiere f ON n.filiere_id = f.id
                 INNER JOIN typefiliere tf ON f.type_filiere_id = tf.id
@@ -239,7 +252,7 @@ exports.getDetailedStatistics = async (req, res) => {
             
             db.query(`
                 SELECT n.libelle as niveau, COUNT(*) as total
-                FROM etudiant e
+                FROM vue_position_academique e
                 INNER JOIN niveau n ON e.niveau_id = n.id
                 WHERE e.annee_academique_id = $1 AND e.site_id = $2
                 GROUP BY n.libelle
@@ -247,7 +260,7 @@ exports.getDetailedStatistics = async (req, res) => {
             
             db.query(`
                 SELECT c.type_parcours as cursus, COUNT(*) as total
-                FROM etudiant e
+                FROM vue_position_academique e
                 INNER JOIN curcus c ON e.curcus_id = c.id
                 WHERE e.annee_academique_id = $1 AND e.site_id = $2
                 GROUP BY c.type_parcours
@@ -255,7 +268,7 @@ exports.getDetailedStatistics = async (req, res) => {
             
             db.query(`
                 SELECT f.nom as filiere, COUNT(*) as total
-                FROM etudiant e
+                FROM vue_position_academique e
                 INNER JOIN niveau n ON e.niveau_id = n.id
                 INNER JOIN filiere f ON n.filiere_id = f.id
                 WHERE e.annee_academique_id = $1 AND e.site_id = $2

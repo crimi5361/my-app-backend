@@ -323,7 +323,7 @@ exports.genererPVByGroupe = async (req, res) => {
 
         res.json({
             success: true,
-            groupe: { id: groupeInfo.id, nom: groupeInfo.nom, annee_academique: groupeInfo.annee_academique },
+            groupe: construireGroupeAffichage(groupeInfo),
             maquette: { id: structureRepresentative.maquette_id, filiere: groupeInfo.filiere, sigle: groupeInfo.sigle, parcour: structureRepresentative.parcour },
             type_filiere: groupeInfo.type_filiere,
             type_traitement: typeTraitement,
@@ -395,7 +395,7 @@ exports.genererPVBySemestre = async (req, res) => {
         console.log('✅ PV semestre généré avec succès');
         res.json({
             success: true,
-            groupe: { id: groupeInfo.id, nom: groupeInfo.nom, annee_academique: groupeInfo.annee_academique },
+            groupe: construireGroupeAffichage(groupeInfo),
             maquette: { id: structureRepresentative.maquette_id, filiere: groupeInfo.filiere, sigle: groupeInfo.sigle, parcour: structureRepresentative.parcour },
             type_filiere: groupeInfo.type_filiere,
             type_traitement: typeTraitement,
@@ -423,50 +423,31 @@ exports.genererPVBySemestre = async (req, res) => {
 // exactement la même séquence que afficherBulletinByMatricule (repêchage par semestre puis
 // calculerRecapitulatifComplet), pour que Réinscription affiche toujours les mêmes chiffres que
 // le Bulletin annuel du même étudiant.
-// ✅ PHASE 2 (inscription_annuelle) : quand anneeAcademiqueId est fourni, résout l'étudiant via
-// le snapshot annuel immuable de CETTE année (un étudiant peut avoir plusieurs lignes
-// inscription_annuelle, une par année) plutôt que via sa position live actuelle. Par défaut
-// (paramètre omis), comportement strictement identique à avant : position actuelle de l'étudiant.
-// Filet de sécurité : si l'année demandée correspond à l'année courante de l'étudiant mais qu'il
-// n'a pas encore de ligne inscription_annuelle (cas non couvert par le backfill Phase 0/1, avant
-// l'automatisation Phase 4), on retombe sur sa position live — même garantie de non-régression
-// que _getEtudiantsGroupe.
+// ✅ vue_position_academique (historique_inscription pour une année déjà quittée, position live
+// pour l'année courante) : quand anneeAcademiqueId est fourni, résout l'étudiant pour CETTE année
+// précisément — un étudiant réinscrit vers une année suivante reste retrouvable pour l'année qu'il
+// a quittée (autrefois : 404 « Étudiant non trouvé », inscription_annuelle n'étant jamais alimentée
+// par le flux de réinscription). Par défaut (paramètre omis), comportement inchangé : position
+// actuelle de l'étudiant.
 exports.calculerResultatsAnnuelsEtudiant = async (etudiantId, anneeAcademiqueId = null) => {
     let etudiant;
     if (anneeAcademiqueId) {
-        const iaQuery = `
-            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, ia.groupe_id,
-                   ia.niveau_id, ia.annee_academique_id, ia.id_filiere,
-                   niv.libelle AS niveau_libelle,
-                   ia.statut_scolaire AS statut_etudiant,
-                   COALESCE(ia.curcus_id, e.curcus_id) AS curcus_id
-            FROM inscription_annuelle ia
-            JOIN etudiant e ON e.id = ia.etudiant_id
-            LEFT JOIN niveau niv ON niv.id = ia.niveau_id
-            WHERE ia.etudiant_id = $1 AND ia.annee_academique_id = $2
+        const posQuery = `
+            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
+                   e.niveau_id, e.annee_academique_id, e.id_filiere,
+                   n.libelle AS niveau_libelle,
+                   e.statut_paiement AS statut_etudiant, e.curcus_id
+            FROM vue_position_academique e
+            LEFT JOIN niveau n ON n.id = e.niveau_id
+            WHERE e.id = $1 AND e.annee_academique_id = $2
         `;
-        const iaResult = await db.query(iaQuery, [etudiantId, anneeAcademiqueId]);
-        if (iaResult.rows.length > 0) {
-            etudiant = iaResult.rows[0];
-        } else {
-            const liveQuery = `
-                SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
-                       e.niveau_id, e.annee_academique_id, e.id_filiere,
-                       n.libelle AS niveau_libelle,
-                       s.statut_etudiant, e.curcus_id
-                FROM etudiant e
-                LEFT JOIN scolarite s ON s.id = e.scolarite_id
-                LEFT JOIN niveau n ON n.id = e.niveau_id
-                WHERE e.id = $1 AND e.annee_academique_id = $2
-            `;
-            const liveResult = await db.query(liveQuery, [etudiantId, anneeAcademiqueId]);
-            if (liveResult.rows.length === 0) {
-                const notFound = new Error(`Étudiant ${etudiantId} non trouvé pour l'année académique ${anneeAcademiqueId}`);
-                notFound.statusCode = 404;
-                throw notFound;
-            }
-            etudiant = liveResult.rows[0];
+        const posResult = await db.query(posQuery, [etudiantId, anneeAcademiqueId]);
+        if (posResult.rows.length === 0) {
+            const notFound = new Error(`Étudiant ${etudiantId} non trouvé pour l'année académique ${anneeAcademiqueId}`);
+            notFound.statusCode = 404;
+            throw notFound;
         }
+        etudiant = posResult.rows[0];
     } else {
         const etudiantQuery = `
             SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
@@ -488,8 +469,10 @@ exports.calculerResultatsAnnuelsEtudiant = async (etudiantId, anneeAcademiqueId 
     }
 
     const groupeQuery = `
-        SELECT g.id, g.nom, f.nom as filiere, f.sigle, tf.libelle as type_filiere
+        SELECT g.id, g.nom, g.est_primaire, cl.nom as classe_nom,
+               f.nom as filiere, f.sigle, tf.libelle as type_filiere
         FROM groupe g
+        LEFT JOIN classe cl ON cl.id = g.classe_id
         LEFT JOIN filiere f ON f.id = $2
         LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
         WHERE g.id = $1
@@ -552,7 +535,7 @@ exports.calculerResultatsAnnuelsEtudiant = async (etudiantId, anneeAcademiqueId 
 
     return {
         etudiant: { id: etudiant.id, matricule_iipea: etudiant.matricule_iipea, nom: etudiant.nom, prenoms: etudiant.prenoms, niveau_id: etudiant.niveau_id },
-        groupe: { id: groupeInfo.id, nom: groupeInfo.nom },
+        groupe: construireGroupeAffichage(groupeInfo),
         type_filiere: groupeInfo.type_filiere,
         type_traitement: typeTraitement,
         moyenne_generale: recap.annuel.moyenne,
@@ -594,37 +577,43 @@ exports.genererPVByEtudiant = async (req, res) => {
 
 // ============ FONCTIONS INTERNES ============
 
-// ✅ PHASE 2 (inscription_annuelle) : représentant du groupe résolu en priorité via le snapshot
-// annuel immuable (retrouve un groupe même si tous ses membres d'origine ont depuis été
-// réinscrits/promus ailleurs), avec repli sur l'étudiant "live" tant qu'aucune ligne
-// inscription_annuelle n'existe pour ce groupe (étudiants postérieurs au backfill Phase 0/1,
-// avant que la Phase 4 n'automatise l'écriture) — même filet de sécurité que _getEtudiantsGroupe.
+// Chantier 11 (2026-08-04) — sous-phase 2 : construit l'objet "groupe" tel qu'envoyé aux
+// templates/JSON (PV, Bulletins). Ne JAMAIS utiliser cette fonction pour la logique métier
+// (determinerTypeTraitement, appliquerRepechageCredits, etc.) — ces fonctions continuent de lire
+// groupeInfo.nom directement, en amont, sur la donnée brute non filtrée : la logique doit
+// toujours connaître le vrai groupe de l'étudiant, seul l'AFFICHAGE final masque le Groupe
+// primaire. Attend un objet source contenant nom/est_primaire/classe_nom/annee_academique (les
+// champs absents restent simplement absents du résultat, sans erreur).
+function construireGroupeAffichage(groupeInfo) {
+  return {
+    id: groupeInfo.id,
+    nom: groupeInfo.est_primaire ? null : groupeInfo.nom,
+    classe: groupeInfo.classe_nom || null,
+    annee_academique: groupeInfo.annee_academique,
+  };
+}
+
+// ✅ vue_position_academique : le représentant du groupe est résolu qu'il soit encore
+// aujourd'hui rattaché à ce groupe (position live) ou qu'il l'ait quitté depuis (position
+// historique figée dans historique_inscription) — un groupe reste retrouvable même si tous ses
+// membres d'origine ont depuis été réinscrits/promus ailleurs. Aucun paramètre année requis :
+// un groupe appartient à une seule classe, elle-même rattachée à une seule année (g.classe_id →
+// classe.annee_academique_id), donc déjà intrinsèquement daté.
 const _getGroupeInfo = async (groupeId) => {
     const query = `
-        SELECT g.id, g.nom, g.classe_id,
-               COALESCE(rep.filiere, live.filiere) as filiere,
-               COALESCE(rep.sigle, live.sigle) as sigle,
-               COALESCE(rep.type_filiere, live.type_filiere) as type_filiere,
-               COALESCE(rep.annee_academique, live.annee_academique) as annee_academique
+        SELECT g.id, g.nom, g.classe_id, g.est_primaire, cl.nom as classe_nom,
+               rep.filiere, rep.sigle, rep.type_filiere, rep.annee_academique
         FROM groupe g
+        LEFT JOIN classe cl ON cl.id = g.classe_id
         LEFT JOIN LATERAL (
             SELECT f.nom as filiere, f.sigle, tf.libelle as type_filiere, aa.annee as annee_academique
-            FROM inscription_annuelle ia
-            LEFT JOIN filiere f ON f.id = ia.id_filiere
+            FROM vue_position_academique e
+            LEFT JOIN filiere f ON f.id = e.id_filiere
             LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-            LEFT JOIN anneeacademique aa ON aa.id = ia.annee_academique_id
-            WHERE ia.groupe_id = g.id
+            LEFT JOIN anneeacademique aa ON aa.id = e.annee_academique_id
+            WHERE e.groupe_id = g.id AND e.standing = 'Inscrit'
             LIMIT 1
         ) rep ON true
-        LEFT JOIN LATERAL (
-            SELECT f.nom as filiere, f.sigle, tf.libelle as type_filiere, aa.annee as annee_academique
-            FROM etudiant et
-            LEFT JOIN filiere f ON f.id = et.id_filiere
-            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-            LEFT JOIN anneeacademique aa ON aa.id = et.annee_academique_id
-            WHERE et.groupe_id = g.id AND et.standing = 'Inscrit'
-            LIMIT 1
-        ) live ON true
         WHERE g.id = $1
         LIMIT 1
     `;
@@ -632,43 +621,23 @@ const _getGroupeInfo = async (groupeId) => {
     return result.rows[0] || null;
 };
 
-// ✅ PHASE 2 (inscription_annuelle) : ramène TOUS les étudiants ayant un jour appartenu à ce
-// groupe (snapshot annuel immuable), au lieu des seuls étudiants dont le groupe_id LIVE
-// correspond encore aujourd'hui — corrige le cas où un groupe entier a depuis été réinscrit/promu
-// ailleurs. Le second bloc UNION ALL est un filet de sécurité : il ne ramène que les étudiants
-// jamais capturés dans inscription_annuelle pour CE groupe (NOT EXISTS), donc aucun doublon
-// possible ; il couvre les inscriptions/réinscriptions postérieures au backfill Phase 0/1, tant
-// que la Phase 4 (écriture automatique) n'est pas en place.
+// ✅ vue_position_academique : ramène TOUS les étudiants ayant un jour appartenu à ce groupe
+// (position live pour ceux qui y sont toujours, position historique figée pour ceux qui l'ont
+// quitté depuis une réinscription) — plus besoin d'un second bloc de repli, la vue couvre déjà
+// les deux cas sans risque de doublon (UNION ALL interne déjà garanti sans chevauchement par
+// vue_position_academique elle-même).
 const _getEtudiantsGroupe = async (groupeId) => {
     const query = `
-        SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, ia.groupe_id,
-               ia.niveau_id, ia.annee_academique_id, ia.id_filiere,
-               COALESCE(niv.libelle, '') as niveau_libelle,
-               ia.statut_scolaire as statut_etudiant,
-               COALESCE(ia.curcus_id, e.curcus_id) as curcus_id
-        FROM inscription_annuelle ia
-        JOIN etudiant e ON e.id = ia.etudiant_id
-        LEFT JOIN niveau niv ON niv.id = ia.niveau_id
-        WHERE ia.groupe_id = $1
-
-        UNION ALL
-
         SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id,
                e.niveau_id, e.annee_academique_id, e.id_filiere,
                COALESCE(niv.libelle, '') as niveau_libelle,
-               s.statut_etudiant,
+               e.statut_paiement as statut_etudiant,
                e.curcus_id
-        FROM etudiant e
-        LEFT JOIN scolarite s ON s.id = e.scolarite_id
+        FROM vue_position_academique e
         LEFT JOIN niveau niv ON niv.id = e.niveau_id
         WHERE e.groupe_id = $1
         AND e.standing = 'Inscrit'
-        AND NOT EXISTS (
-            SELECT 1 FROM inscription_annuelle ia2
-            WHERE ia2.etudiant_id = e.id AND ia2.groupe_id = $1
-        )
-
-        ORDER BY nom, prenoms
+        ORDER BY e.nom, e.prenoms
     `;
     const result = await db.query(query, [groupeId]);
     return result.rows;
@@ -955,17 +924,11 @@ const _buildStatistiques = (totalEtudiants, admisCount, resultatsEtudiants, etud
 const getStructureAcademiqueFonction = async (groupeId, semestreId = null) => {
     const query = `
         WITH etudiants_groupe AS (
-            SELECT id_filiere, niveau_id FROM (
-                SELECT id_filiere, niveau_id, 0 AS priorite
-                FROM inscription_annuelle
-                WHERE groupe_id = $1
-                UNION ALL
-                SELECT id_filiere, niveau_id, 1 AS priorite
-                FROM etudiant
-                WHERE groupe_id = $1
-                AND standing = 'Inscrit'
-            ) rep
-            ORDER BY priorite, id_filiere, niveau_id
+            SELECT id_filiere, niveau_id
+            FROM vue_position_academique
+            WHERE groupe_id = $1
+            AND standing = 'Inscrit'
+            ORDER BY id_filiere, niveau_id
             LIMIT 1
         ),
         maquette_groupe AS (
@@ -1517,7 +1480,7 @@ const getEtudiantComplet = async (etudiantId) => {
                tf.libelle as type_filiere,
                n.libelle as niveau_libelle,
                aa.annee as annee_academique,
-               g.nom as groupe_nom, g.classe_id
+               g.nom as groupe_nom, g.classe_id, g.est_primaire, cl.nom as classe_nom
         FROM etudiant e
         LEFT JOIN scolarite s ON s.id = e.scolarite_id
         LEFT JOIN filiere f ON f.id = e.id_filiere
@@ -1525,6 +1488,7 @@ const getEtudiantComplet = async (etudiantId) => {
         LEFT JOIN niveau n ON n.id = e.niveau_id
         LEFT JOIN anneeacademique aa ON aa.id = e.annee_academique_id
         LEFT JOIN groupe g ON g.id = e.groupe_id
+        LEFT JOIN classe cl ON cl.id = g.classe_id
         WHERE e.id = $1
         AND e.standing = 'Inscrit'
     `;
@@ -1532,65 +1496,36 @@ const getEtudiantComplet = async (etudiantId) => {
     return result.rows[0];
 };
 
-// ✅ PHASE 2 (inscription_annuelle) : quand anneeAcademiqueId est fourni, résout niveau/filière/
-// groupe/statut via le snapshot annuel immuable de CETTE année plutôt que la position live de
-// l'étudiant (identité — nom, contact, date de naissance — reste lue sur `etudiant`, invariante
-// d'une année à l'autre). Par défaut (paramètre omis), comportement strictement identique à avant.
-// Filet de sécurité : si aucune ligne inscription_annuelle ne correspond, repli sur la position
-// live de l'étudiant pour cette même année (cas non encore couvert par le backfill/Phase 4).
+// ✅ vue_position_academique : quand anneeAcademiqueId est fourni, résout niveau/filière/groupe/
+// statut pour CETTE année précisément (position live si l'étudiant y est toujours, position
+// historique figée dans historique_inscription s'il l'a quittée depuis) — identité (nom, contact,
+// date de naissance) reste lue sur `etudiant`, invariante d'une année à l'autre. Par défaut
+// (paramètre omis), comportement inchangé : position actuelle de l'étudiant.
 const getEtudiantCompletByMatricule = async (matricule, anneeAcademiqueId = null) => {
     if (anneeAcademiqueId) {
-        const iaQuery = `
-            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
-                   e.date_naissance, e.lieu_naissance, e.sexe as genre,
-                   e.nationalite, e.pays_naissance, e.telephone, e.email,
-                   e.code_unique, e.numero_table, ia.statut_scolaire, ia.standing,
-                   ia.groupe_id, ia.niveau_id, ia.annee_academique_id, ia.id_filiere,
-                   COALESCE(ia.curcus_id, e.curcus_id) as curcus_id,
-                   s.statut_etudiant as statut_scolarite,
-                   f.nom as filiere_nom, f.sigle as filiere_sigle,
-                   tf.libelle as type_filiere,
-                   n.libelle as niveau_libelle,
-                   aa.annee as annee_academique,
-                   g.nom as groupe_nom, g.classe_id
-            FROM inscription_annuelle ia
-            JOIN etudiant e ON e.id = ia.etudiant_id
-            LEFT JOIN scolarite s ON s.id = e.scolarite_id
-            LEFT JOIN filiere f ON f.id = ia.id_filiere
-            LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-            LEFT JOIN niveau n ON n.id = ia.niveau_id
-            LEFT JOIN anneeacademique aa ON aa.id = ia.annee_academique_id
-            LEFT JOIN groupe g ON g.id = ia.groupe_id
-            WHERE e.matricule_iipea = $1 AND ia.annee_academique_id = $2
-        `;
-        const iaResult = await db.query(iaQuery, [matricule, anneeAcademiqueId]);
-        if (iaResult.rows.length > 0) {
-            return iaResult.rows[0];
-        }
-
-        const liveQuery = `
+        const posQuery = `
             SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
                    e.date_naissance, e.lieu_naissance, e.sexe as genre,
                    e.nationalite, e.pays_naissance, e.telephone, e.email,
                    e.code_unique, e.numero_table, e.statut_scolaire, e.standing,
                    e.groupe_id, e.niveau_id, e.annee_academique_id, e.id_filiere, e.curcus_id,
-                   s.statut_etudiant as statut_scolarite,
+                   e.statut_paiement as statut_scolarite,
                    f.nom as filiere_nom, f.sigle as filiere_sigle,
                    tf.libelle as type_filiere,
                    n.libelle as niveau_libelle,
                    aa.annee as annee_academique,
-                   g.nom as groupe_nom, g.classe_id
-            FROM etudiant e
-            LEFT JOIN scolarite s ON s.id = e.scolarite_id
+                   g.nom as groupe_nom, g.classe_id, g.est_primaire, cl.nom as classe_nom
+            FROM vue_position_academique e
             LEFT JOIN filiere f ON f.id = e.id_filiere
             LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
             LEFT JOIN niveau n ON n.id = e.niveau_id
             LEFT JOIN anneeacademique aa ON aa.id = e.annee_academique_id
             LEFT JOIN groupe g ON g.id = e.groupe_id
+            LEFT JOIN classe cl ON cl.id = g.classe_id
             WHERE e.matricule_iipea = $1 AND e.annee_academique_id = $2
         `;
-        const liveResult = await db.query(liveQuery, [matricule, anneeAcademiqueId]);
-        return liveResult.rows[0];
+        const posResult = await db.query(posQuery, [matricule, anneeAcademiqueId]);
+        return posResult.rows[0];
     }
 
     const query = `
@@ -1604,7 +1539,7 @@ const getEtudiantCompletByMatricule = async (matricule, anneeAcademiqueId = null
                tf.libelle as type_filiere,
                n.libelle as niveau_libelle,
                aa.annee as annee_academique,
-               g.nom as groupe_nom, g.classe_id
+               g.nom as groupe_nom, g.classe_id, g.est_primaire, cl.nom as classe_nom
         FROM etudiant e
         LEFT JOIN scolarite s ON s.id = e.scolarite_id
         LEFT JOIN filiere f ON f.id = e.id_filiere
@@ -1612,6 +1547,7 @@ const getEtudiantCompletByMatricule = async (matricule, anneeAcademiqueId = null
         LEFT JOIN niveau n ON n.id = e.niveau_id
         LEFT JOIN anneeacademique aa ON aa.id = e.annee_academique_id
         LEFT JOIN groupe g ON g.id = e.groupe_id
+        LEFT JOIN classe cl ON cl.id = g.classe_id
         WHERE e.matricule_iipea = $1
         AND e.standing = 'Inscrit'
     `;
@@ -1675,7 +1611,7 @@ exports.afficherPVPage = async (req, res) => {
 
         const pvData = {
             success: true,
-            groupe: { id: groupeInfo.id, nom: groupeInfo.nom, annee_academique: groupeInfo.annee_academique },
+            groupe: construireGroupeAffichage(groupeInfo),
             maquette: { id: structureRepresentative.maquette_id, filiere: groupeInfo.filiere, sigle: groupeInfo.sigle, parcour: structureRepresentative.parcour },
             type_filiere: groupeInfo.type_filiere,
             type_traitement: typeTraitement,
@@ -1716,13 +1652,15 @@ exports.afficherBulletinByMatricule = async (req, res) => {
             return res.status(404).render('error', { title: 'Erreur', message: `Étudiant ${matricule} non trouvé` });
         }
 
-        // ✅ PHASE 2 (inscription_annuelle) : etudiantComplet porte déjà filiere/sigle/type_filiere/
-        // annee_academique/groupe_nom de l'année résolue (courante ou historique demandée) —
-        // la requête séparée précédente (jointure live sur et.matricule_iipea) était redondante
-        // et pouvait diverger de l'année demandée.
+        // ✅ etudiantComplet porte déjà filiere/sigle/type_filiere/annee_academique/groupe_nom de
+        // l'année résolue (courante ou historique demandée, via vue_position_academique) — la
+        // requête séparée précédente (jointure live sur et.matricule_iipea) était redondante et
+        // pouvait diverger de l'année demandée.
         const groupeInfo = {
             id: etudiantComplet.groupe_id,
             nom: etudiantComplet.groupe_nom,
+            est_primaire: etudiantComplet.est_primaire,
+            classe_nom: etudiantComplet.classe_nom,
             filiere: etudiantComplet.filiere_nom,
             sigle: etudiantComplet.filiere_sigle,
             type_filiere: etudiantComplet.type_filiere,
@@ -1865,7 +1803,7 @@ exports.afficherBulletinByMatricule = async (req, res) => {
                 decision_jury_class: decisionJuryClass,
                 decision_s2_class: decisionS2Class
             },
-            groupe: { id: groupeInfo.id, nom: groupeInfo.nom, annee_academique: groupeInfo.annee_academique },
+            groupe: construireGroupeAffichage(groupeInfo),
             maquette: { id: structureAcademique.maquette_id, filiere: groupeInfo.filiere, sigle: groupeInfo.sigle, parcour: structureAcademique.parcour || 'Principal' },
             type_filiere: groupeInfo.type_filiere,
             type_traitement: typeTraitement,
@@ -1920,43 +1858,22 @@ exports.afficherBulletinsMultiples = async (req, res) => {
 
         // ✅ AJOUT : e.id_filiere était absent de cette requête — indispensable pour
         // résoudre la maquette propre à chaque étudiant (combo filiere/niveau).
-        // ✅ PHASE 2 (inscription_annuelle) : même pattern que _getEtudiantsGroupe — ramène tous
-        // les étudiants ayant un jour appartenu à ce groupe (snapshot annuel), avec filet de
-        // sécurité (UNION ALL + NOT EXISTS) vers l'étudiant live tant qu'il n'a pas encore de
-        // ligne inscription_annuelle pour ce groupe.
+        // ✅ vue_position_academique : ramène tous les étudiants ayant un jour appartenu à ce
+        // groupe (live ou historique figé dans historique_inscription pour ceux qui l'ont quitté
+        // depuis une réinscription) — même principe que _getEtudiantsGroupe.
         const etudiantsQuery = `
-            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
-                   e.date_naissance, e.lieu_naissance, e.sexe as genre,
-                   e.nationalite, e.code_unique,
-                   ia.groupe_id, ia.niveau_id, ia.id_filiere,
-                   COALESCE(n.libelle, '') as niveau_libelle,
-                   ia.statut_scolaire as statut_etudiant,
-                   COALESCE(ia.curcus_id, e.curcus_id) as curcus_id
-            FROM inscription_annuelle ia
-            JOIN etudiant e ON e.id = ia.etudiant_id
-            LEFT JOIN niveau n ON n.id = ia.niveau_id
-            WHERE ia.groupe_id = $1
-
-            UNION ALL
-
             SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
                    e.date_naissance, e.lieu_naissance, e.sexe as genre,
                    e.nationalite, e.code_unique,
                    e.groupe_id, e.niveau_id, e.id_filiere,
                    COALESCE(n.libelle, '') as niveau_libelle,
-                   s.statut_etudiant,
+                   e.statut_paiement as statut_etudiant,
                    e.curcus_id
-            FROM etudiant e
-            LEFT JOIN scolarite s ON s.id = e.scolarite_id
+            FROM vue_position_academique e
             LEFT JOIN niveau n ON n.id = e.niveau_id
             WHERE e.groupe_id = $1
             AND e.standing = 'Inscrit'
-            AND NOT EXISTS (
-                SELECT 1 FROM inscription_annuelle ia2
-                WHERE ia2.etudiant_id = e.id AND ia2.groupe_id = $1
-            )
-
-            ORDER BY nom, prenoms
+            ORDER BY e.nom, e.prenoms
         `;
         const etudiantsResult = await db.query(etudiantsQuery, [groupeId]);
         const etudiants = etudiantsResult.rows;
@@ -2130,8 +2047,8 @@ exports.afficherBulletinsMultiples = async (req, res) => {
         const admisCount = resultatsEtudiants.filter(e => e.decision === 'ADMIS' || e.decision === 'DÉROGÉ').length;
 
         res.render('Bulletin_multiple', {
-            title: `Bulletins - ${groupeInfo.nom}`,
-            groupe: { id: groupeInfo.id, nom: groupeInfo.nom, annee_academique: groupeInfo.annee_academique },
+            title: `Bulletins - ${groupeInfo.est_primaire ? (groupeInfo.classe_nom || '') : groupeInfo.nom}`,
+            groupe: construireGroupeAffichage(groupeInfo),
             maquette: { id: structureRepresentative.maquette_id, filiere: groupeInfo.filiere, sigle: groupeInfo.sigle, parcour: structureRepresentative.parcour },
             type_filiere: groupeInfo.type_filiere,
             type_traitement: typeTraitement,
@@ -2356,36 +2273,16 @@ exports.getStatsResultats = async (req, res) => {
         let paramIndex;
 
         if (anneeAcademiqueId) {
-            // ✅ PHASE 2 (inscription_annuelle) : ce filtre existait déjà côté frontend/query mais
-            // interrogeait la position LIVE de l'étudiant (annee_academique_id ne reflète que sa
-            // dernière année) — une année passée ne remontait donc quasiment aucun résultat. On
-            // source désormais depuis le snapshot annuel immuable, avec filet de sécurité
-            // (UNION ALL + NOT EXISTS) vers l'étudiant live pour les inscriptions/réinscriptions
-            // postérieures au backfill Phase 0/1, tant que la Phase 4 (écriture auto) n'existe pas.
+            // ✅ vue_position_academique : source unique, couvre à la fois les étudiants encore sur
+            // cette position (live) et ceux qui l'ont quittée depuis une réinscription (position
+            // figée dans historique_inscription) — autrefois, filtrer sur la position LIVE de
+            // l'étudiant (annee_academique_id ne reflète que sa dernière année) ne remontait
+            // quasiment aucun résultat pour une année déjà close.
             query = `
                 SELECT id, matricule_iipea, nom, prenoms, groupe_id, niveau_id, id_filiere, photo_url,
                        filiere_nom, filiere_sigle, type_filiere, niveau_libelle, groupe_nom,
                        niveau_libelle_etudiant, statut_etudiant, curcus_id
                 FROM (
-                    SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, ia.groupe_id, ia.niveau_id, ia.id_filiere,
-                           e.photo_url,
-                           f.nom as filiere_nom, f.sigle as filiere_sigle,
-                           tf.libelle as type_filiere,
-                           n.libelle as niveau_libelle,
-                           g.nom as groupe_nom,
-                           COALESCE(n.libelle, '') as niveau_libelle_etudiant,
-                           ia.statut_scolaire as statut_etudiant,
-                           COALESCE(ia.curcus_id, e.curcus_id) as curcus_id
-                    FROM inscription_annuelle ia
-                    JOIN etudiant e ON e.id = ia.etudiant_id
-                    LEFT JOIN filiere f ON f.id = ia.id_filiere
-                    LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-                    LEFT JOIN niveau n ON n.id = ia.niveau_id
-                    LEFT JOIN groupe g ON g.id = ia.groupe_id
-                    WHERE ia.annee_academique_id = $1
-
-                    UNION ALL
-
                     SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.groupe_id, e.niveau_id, e.id_filiere,
                            e.photo_url,
                            f.nom as filiere_nom, f.sigle as filiere_sigle,
@@ -2393,20 +2290,15 @@ exports.getStatsResultats = async (req, res) => {
                            n.libelle as niveau_libelle,
                            g.nom as groupe_nom,
                            COALESCE(n.libelle, '') as niveau_libelle_etudiant,
-                           s.statut_etudiant,
+                           e.statut_paiement as statut_etudiant,
                            e.curcus_id
-                    FROM etudiant e
+                    FROM vue_position_academique e
                     LEFT JOIN filiere f ON f.id = e.id_filiere
                     LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
                     LEFT JOIN niveau n ON n.id = e.niveau_id
                     LEFT JOIN groupe g ON g.id = e.groupe_id
-                    LEFT JOIN scolarite s ON s.id = e.scolarite_id
                     WHERE e.annee_academique_id = $1
                     AND e.standing = 'Inscrit'
-                    AND NOT EXISTS (
-                        SELECT 1 FROM inscription_annuelle ia2
-                        WHERE ia2.etudiant_id = e.id AND ia2.annee_academique_id = $1
-                    )
                 ) src
                 WHERE 1=1
             `;
@@ -2613,30 +2505,13 @@ exports.getRecapFiliereNiveau = async (req, res) => {
         let paramIndex;
 
         if (anneeAcademiqueId) {
-            // ✅ PHASE 2 (inscription_annuelle) : même bascule que getStatsResultats — source
-            // depuis le snapshot annuel immuable pour retrouver les étudiants réellement inscrits
-            // cette année-là, avec filet de sécurité (UNION ALL + NOT EXISTS) vers l'étudiant live.
+            // ✅ vue_position_academique : même bascule que getStatsResultats — retrouve les
+            // étudiants réellement positionnés cette année-là, qu'ils y soient encore (live) ou
+            // qu'ils l'aient quittée depuis (position figée dans historique_inscription).
             query = `
                 SELECT id, groupe_id, niveau_id, id_filiere, filiere_nom, filiere_sigle,
                        niveau_libelle, groupe_nom, niveau_libelle_etudiant, type_filiere, curcus_id
                 FROM (
-                    SELECT e.id, ia.groupe_id, ia.niveau_id, ia.id_filiere,
-                           f.nom as filiere_nom, f.sigle as filiere_sigle,
-                           n.libelle as niveau_libelle,
-                           g.nom as groupe_nom,
-                           COALESCE(n.libelle, '') as niveau_libelle_etudiant,
-                           tf.libelle as type_filiere,
-                           COALESCE(ia.curcus_id, e.curcus_id) as curcus_id
-                    FROM inscription_annuelle ia
-                    JOIN etudiant e ON e.id = ia.etudiant_id
-                    LEFT JOIN filiere f ON f.id = ia.id_filiere
-                    LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
-                    LEFT JOIN niveau n ON n.id = ia.niveau_id
-                    LEFT JOIN groupe g ON g.id = ia.groupe_id
-                    WHERE ia.annee_academique_id = $1
-
-                    UNION ALL
-
                     SELECT e.id, e.groupe_id, e.niveau_id, e.id_filiere,
                            f.nom as filiere_nom, f.sigle as filiere_sigle,
                            n.libelle as niveau_libelle,
@@ -2644,17 +2519,13 @@ exports.getRecapFiliereNiveau = async (req, res) => {
                            COALESCE(n.libelle, '') as niveau_libelle_etudiant,
                            tf.libelle as type_filiere,
                            e.curcus_id
-                    FROM etudiant e
+                    FROM vue_position_academique e
                     LEFT JOIN filiere f ON f.id = e.id_filiere
                     LEFT JOIN typefiliere tf ON tf.id = f.type_filiere_id
                     LEFT JOIN niveau n ON n.id = e.niveau_id
                     LEFT JOIN groupe g ON g.id = e.groupe_id
                     WHERE e.annee_academique_id = $1
                     AND e.standing = 'Inscrit'
-                    AND NOT EXISTS (
-                        SELECT 1 FROM inscription_annuelle ia2
-                        WHERE ia2.etudiant_id = e.id AND ia2.annee_academique_id = $1
-                    )
                 ) src
                 WHERE 1=1
             `;

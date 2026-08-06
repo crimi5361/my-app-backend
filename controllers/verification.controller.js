@@ -5,6 +5,7 @@ const { requiertChoixParcours, resoudreFormationEtParcours } = require('../servi
 const { validatePhotoFile } = require('./etudiant.controller');
 const { traiterDemandeReinscription, IDENTITE_FIELDS: REINSCRIPTION_IDENTITE_FIELDS, chargerPiecesReinscription } = require('./reinscription.controller');
 const { validerReferentielsIdentite } = require('../services/referentielIdentite.service');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 // Champs d'identité éditables lors de la vérification — mêmes règles obligatoires que addEtudiant
 // (nom, prenoms, date_naissance, sexe, nationalite, telephone, email_personnel, contact_parent).
@@ -23,6 +24,7 @@ exports.rechercherDossierVerification = async (req, res) => {
   try {
     const { q, statut } = req.query;
     const siteId = req.user?.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     if (!q || q.trim().length < 2) {
       return res.status(400).json({ success: false, message: 'Veuillez saisir au moins 2 caractères.' });
     }
@@ -36,6 +38,10 @@ exports.rechercherDossierVerification = async (req, res) => {
     } else if (statut === 'tous') {
       statutFiltre = '';
     }
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3)' : '';
+    const params = ecoleId !== null ? [siteId, `%${q.trim()}%`, ecoleId] : [siteId, `%${q.trim()}%`];
 
     const result = await db.query(
       `SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.photo_url, e.valide_scolarite,
@@ -52,9 +58,10 @@ exports.rechercherDossierVerification = async (req, res) => {
            OR (e.nom || ' ' || e.prenoms) ILIKE $2
            OR (e.prenoms || ' ' || e.nom) ILIKE $2
          )
+         ${ecoleCond}
        ORDER BY e.nom, e.prenoms
        LIMIT 20`,
-      [siteId, `%${q.trim()}%`]
+      params
     );
     res.status(200).json({ success: true, data: result.rows });
   } catch (error) {
@@ -334,6 +341,7 @@ exports.rechercherReinscriptionVerification = async (req, res) => {
   try {
     const { q, statut } = req.query;
     const siteId = req.user?.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     if (!q || q.trim().length < 2) {
       return res.status(400).json({ success: false, message: 'Veuillez saisir au moins 2 caractères.' });
     }
@@ -347,6 +355,10 @@ exports.rechercherReinscriptionVerification = async (req, res) => {
     } else if (statut === 'tous') {
       statutFiltre = '';
     }
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (e.site_id) existant.
+    const ecoleCond = ecoleId !== null ? 'AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3)' : '';
+    const params = ecoleId !== null ? [siteId, `%${q.trim()}%`, ecoleId] : [siteId, `%${q.trim()}%`];
 
     const result = await db.query(
       `SELECT r.id AS reinscription_id, e.id AS etudiant_id, e.nom, e.prenoms, e.matricule_iipea, e.photo_url,
@@ -365,9 +377,10 @@ exports.rechercherReinscriptionVerification = async (req, res) => {
            OR (e.nom || ' ' || e.prenoms) ILIKE $2
            OR (e.prenoms || ' ' || e.nom) ILIKE $2
          )
+         ${ecoleCond}
        ORDER BY e.nom, e.prenoms
        LIMIT 20`,
-      [siteId, `%${q.trim()}%`]
+      params
     );
     res.status(200).json({ success: true, data: result.rows });
   } catch (error) {

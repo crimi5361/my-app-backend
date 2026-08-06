@@ -114,6 +114,9 @@
         <table class="recap-table">
             <tr><th>Filière</th><td><%= etudiant.filiere_nom %></td></tr>
             <tr><th>Niveau</th><td><%= etudiant.niveau_libelle %></td></tr>
+            <% if (etudiant.ip_ministere) { %>
+            <tr><th>IP Ministère</th><td><%= etudiant.ip_ministere %></td></tr>
+            <% } %>
             <tr><th>Montant total de la scolarité</th><td><%= etudiant.montant_scolarite !== null ? Number(etudiant.montant_scolarite).toLocaleString('fr-FR') + ' FCFA' : 'Non spécifié' %></td></tr>
             <tr><th>Montant versé</th><td><%= etudiant.scolarite_verse !== null ? Number(etudiant.scolarite_verse).toLocaleString('fr-FR') + ' FCFA' : '0 FCFA' %></td></tr>
             <tr><th>Reste à payer</th><td><strong><%= etudiant.scolarite_restante !== null ? Number(etudiant.scolarite_restante).toLocaleString('fr-FR') + ' FCFA' : 'Non spécifié' %></strong></td></tr>

@@ -3,8 +3,11 @@ const bcrypt = require('bcrypt');
 const moment = require('moment');
 const path = require('path');
 const fs = require('fs');
+const { isKitSuspenduPourAnnee } = require('../services/kitCampagne.service');
 const { v4: uuidv4 } = require('uuid');
 const { genererCodeCandidat } = require('../services/codePaiement.service');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
+const { validerReferentielsIdentite } = require('../services/referentielIdentite.service');
 
 const UPLOAD_DIR = path.join(__dirname, '../uploads/photos');
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -483,11 +486,12 @@ async function _chargerDonneesFicheAdmission(id) {
             e.photo_url, e.sexe, e.date_naissance, e.telephone, e.email,
             e.mention_bac, e.annee_bac, e.contact_parent, e.contact_parent_2,
             e.date_inscription, e.nombre_versements_prevu, e.inscrit_par,
-            e.valide_scolarite, e.statut_scolaire,
+            e.valide_scolarite, e.statut_scolaire, e.ip_ministere,
             f.nom AS filiere_nom, n.libelle AS niveau_libelle, a.annee,
             ec.nom AS ecole_nom,
             s.montant_scolarite, s.scolarite_verse, s.scolarite_restante,
-            u.nom AS agent_nom
+            u.nom AS agent_nom,
+            c.nom AS classe_nom, g.nom AS groupe_nom, g.est_primaire
      FROM etudiant e
      JOIN filiere f ON f.id = e.id_filiere
      JOIN niveau n ON n.id = e.niveau_id
@@ -496,11 +500,25 @@ async function _chargerDonneesFicheAdmission(id) {
      LEFT JOIN utilisateur u ON u.id::text = e.inscrit_par
      LEFT JOIN departement dep ON dep.id = f.departement_id
      LEFT JOIN ecole ec ON ec.id = dep.ecole_id
+     -- Chantier 6 : classe résolue par les critères d'affectation de l'étudiant (pas via le
+     -- groupe, absent tant qu'aucun découpage manuel n'a eu lieu) — même clé que
+     -- classeGroupe.service.js et getRecuData.
+     LEFT JOIN classe c ON c.filiere_id = e.id_filiere AND c.niveau_id = e.niveau_id
+       AND c.annee_academique_id = e.annee_academique_id AND c.curcus_id IS NOT DISTINCT FROM e.curcus_id
+     LEFT JOIN groupe g ON g.id = e.groupe_id
      WHERE e.id = $1`,
     [id]
   );
   if (result.rows.length === 0) return null;
   const dossier = result.rows[0];
+
+  // Chantier 11 (2026-08-04) — sous-phase 2 : le Groupe primaire (technique) ne doit jamais
+  // apparaître sur les fiches imprimées — la requête ci-dessus ramène toujours le vrai groupe
+  // (avec est_primaire), la décision de le masquer se prend uniquement ici, au moment de
+  // construire les données envoyées au template (déjà conditionnel : `<% if (dossier.groupe_nom) %>`).
+  if (dossier.est_primaire) {
+    dossier.groupe_nom = null;
+  }
 
   // Suivi du dossier administratif : chaque pièce demandée à l'admission, avec son statut
   // (fournie ou non) tel que coché lors de l'inscription.
@@ -575,6 +593,7 @@ exports.afficherFicheEngagementSeule = async (req, res) => {
 exports.getEtudiantsByDepartement = async (req, res) => {
   try {
     const departementId = req.query.departement_id || req.user?.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
     const searchTerm = req.query.search || '';
     
@@ -633,7 +652,7 @@ exports.getEtudiantsByDepartement = async (req, res) => {
       params.push(req.query.filiere);
       paramCounter++;
     }
-    
+
     // Filtre par niveau si fourni
     if (req.query.niveau) {
       whereClauses.push(`n.libelle = $${paramCounter}`);
@@ -644,17 +663,25 @@ exports.getEtudiantsByDepartement = async (req, res) => {
     // Recherche textuelle si fournie
     if (searchTerm) {
       whereClauses.push(`(
-        e.nom ILIKE $${paramCounter} OR 
-        e.prenoms ILIKE $${paramCounter} OR 
-        e.matricule ILIKE $${paramCounter} OR 
-        e.code_unique ILIKE $${paramCounter} OR 
-        e.matricule_iipea ILIKE $${paramCounter} OR 
-        f.nom ILIKE $${paramCounter} OR 
-        f.sigle ILIKE $${paramCounter} OR 
-        e.telephone ILIKE $${paramCounter} OR 
+        e.nom ILIKE $${paramCounter} OR
+        e.prenoms ILIKE $${paramCounter} OR
+        e.matricule ILIKE $${paramCounter} OR
+        e.code_unique ILIKE $${paramCounter} OR
+        e.matricule_iipea ILIKE $${paramCounter} OR
+        f.nom ILIKE $${paramCounter} OR
+        f.sigle ILIKE $${paramCounter} OR
+        e.telephone ILIKE $${paramCounter} OR
         e.nationalite ILIKE $${paramCounter}
       )`);
       params.push(`%${searchTerm}%`);
+      paramCounter++;
+    }
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site ci-dessus, appliqué
+    // uniquement si l'agent est restreint à une école (ecoleId non nul). Vue globale inchangée.
+    if (ecoleId !== null) {
+      whereClauses.push(`dpt.ecole_id = $${paramCounter}`);
+      params.push(ecoleId);
       paramCounter++;
     }
 
@@ -710,22 +737,27 @@ exports.getEtudiantsByDepartement = async (req, res) => {
 
         -- Informations de groupe
         g.nom as groupe_nom,
+        g.est_primaire as groupe_est_primaire,
 
-        -- Informations de scolarité
-        s.montant_scolarite,
-        s.scolarite_verse,
-        s.scolarite_restante,
-        s.statut_etudiant,
+        -- Informations de scolarité — sourcées depuis vue_position_academique (montants déjà
+        -- corrects par branche, live pour l'année courante, figés depuis historique_inscription
+        -- pour une année déjà quittée) plutôt que via etudiant.scolarite_id, un pointeur COURANT
+        -- qui ne retrouve plus rien pour un étudiant depuis réinscrit.
+        e.montant_scolarite,
+        e.scolarite_verse,
+        e.scolarite_restante,
+        e.statut_paiement AS statut_etudiant,
         s.prise_en_charge_id,
-        COALESCE(s.montant_scolarite, 0) as montant_total_scolarite,
-        COALESCE(s.scolarite_verse, 0) as montant_paye,
-        COALESCE(s.scolarite_restante, 0) as montant_restant,
+        COALESCE(e.montant_scolarite, 0) as montant_total_scolarite,
+        COALESCE(e.scolarite_verse, 0) as montant_paye,
+        COALESCE(e.scolarite_restante, 0) as montant_restant,
         CASE
-          WHEN s.montant_scolarite IS NULL OR s.montant_scolarite = 0 THEN 0
-          ELSE ROUND((COALESCE(s.scolarite_verse, 0) / s.montant_scolarite) * 100, 2)
+          WHEN e.montant_scolarite IS NULL OR e.montant_scolarite = 0 THEN 0
+          ELSE ROUND((COALESCE(e.scolarite_verse, 0) / e.montant_scolarite) * 100, 2)
         END as pourcentage_paye
-      FROM etudiant e
+      FROM vue_position_academique e
       JOIN filiere f ON e.id_filiere = f.id
+      LEFT JOIN departement dpt ON f.departement_id = dpt.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
       LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
@@ -738,15 +770,15 @@ exports.getEtudiantsByDepartement = async (req, res) => {
       ORDER BY e.nom ASC, e.prenoms ASC
       LIMIT $${paramCounter} OFFSET $${paramCounter + 1}
     `;
-    
+
     // Requête de comptage
     const countQuery = `
-      SELECT COUNT(*) 
-      FROM etudiant e
+      SELECT COUNT(*)
+      FROM vue_position_academique e
       JOIN filiere f ON e.id_filiere = f.id
+      LEFT JOIN departement dpt ON f.departement_id = dpt.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
-      LEFT JOIN scolarite s ON e.scolarite_id = s.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
       ${whereClause}
     `;
@@ -760,9 +792,17 @@ exports.getEtudiantsByDepartement = async (req, res) => {
       db.query(countQuery, params)
     ]);
 
+    // Chantier 11 (2026-08-04) — sous-phase 2 : le Groupe primaire (technique) ne doit jamais
+    // apparaître dans les listes/exports affichés à l'agent — masqué ici uniquement, au moment de
+    // construire la réponse ; groupe_id et toute autre donnée restent inchangés.
+    const etudiantsAffiches = dataResult.rows.map((row) => ({
+      ...row,
+      groupe_nom: row.groupe_est_primaire ? null : row.groupe_nom,
+    }));
+
     return res.status(200).json({
       success: true,
-      data: dataResult.rows,
+      data: etudiantsAffiches,
       total: parseInt(countResult.rows[0].count, 10),
       page,
       limit,
@@ -789,6 +829,7 @@ exports.getEtudiantsByDepartement = async (req, res) => {
 exports.exportEtudiantsByDepartement = async (req, res) => {
   try {
     const departementId = req.query.departement_id || req.user?.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
     const searchTerm = req.query.search || '';
     
@@ -843,7 +884,7 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
       params.push(req.query.filiere);
       paramCounter++;
     }
-    
+
     // Filtre par niveau si fourni
     if (req.query.niveau) {
       whereClauses.push(`n.libelle = $${paramCounter}`);
@@ -854,17 +895,25 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
     // Recherche textuelle si fournie
     if (searchTerm) {
       whereClauses.push(`(
-        e.nom ILIKE $${paramCounter} OR 
-        e.prenoms ILIKE $${paramCounter} OR 
-        e.matricule ILIKE $${paramCounter} OR 
-        e.code_unique ILIKE $${paramCounter} OR 
-        e.matricule_iipea ILIKE $${paramCounter} OR 
-        f.nom ILIKE $${paramCounter} OR 
-        f.sigle ILIKE $${paramCounter} OR 
-        e.telephone ILIKE $${paramCounter} OR 
+        e.nom ILIKE $${paramCounter} OR
+        e.prenoms ILIKE $${paramCounter} OR
+        e.matricule ILIKE $${paramCounter} OR
+        e.code_unique ILIKE $${paramCounter} OR
+        e.matricule_iipea ILIKE $${paramCounter} OR
+        f.nom ILIKE $${paramCounter} OR
+        f.sigle ILIKE $${paramCounter} OR
+        e.telephone ILIKE $${paramCounter} OR
         e.nationalite ILIKE $${paramCounter}
       )`);
       params.push(`%${searchTerm}%`);
+      paramCounter++;
+    }
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site, appliqué uniquement
+    // si l'agent est restreint (ecoleId non nul).
+    if (ecoleId !== null) {
+      whereClauses.push(`dpt.ecole_id = $${paramCounter}`);
+      params.push(ecoleId);
       paramCounter++;
     }
 
@@ -903,24 +952,25 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
         c.type_parcours,
         
         g.nom AS groupe_nom,
-        
-        COALESCE(s.montant_scolarite, 0) AS montant_total_scolarite,
-        COALESCE(s.scolarite_verse, 0) AS montant_paye,
-        COALESCE(s.scolarite_restante, 0) AS montant_restant,
-        s.statut_etudiant,
-        
+        g.est_primaire AS groupe_est_primaire,
+
+        COALESCE(e.montant_scolarite, 0) AS montant_total_scolarite,
+        COALESCE(e.scolarite_verse, 0) AS montant_paye,
+        COALESCE(e.scolarite_restante, 0) AS montant_restant,
+        e.statut_paiement AS statut_etudiant,
+
         -- Calcul du pourcentage payé
-        CASE 
-          WHEN s.montant_scolarite IS NULL OR s.montant_scolarite = 0 THEN 0
-          ELSE ROUND((COALESCE(s.scolarite_verse, 0) / s.montant_scolarite) * 100, 2)
+        CASE
+          WHEN e.montant_scolarite IS NULL OR e.montant_scolarite = 0 THEN 0
+          ELSE ROUND((COALESCE(e.scolarite_verse, 0) / e.montant_scolarite) * 100, 2)
         END AS pourcentage_paye
-        
-      FROM etudiant e
+
+      FROM vue_position_academique e
       JOIN filiere f ON e.id_filiere = f.id
+      LEFT JOIN departement dpt ON f.departement_id = dpt.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
       LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
-      LEFT JOIN scolarite s ON e.scolarite_id = s.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN curcus c ON e.curcus_id = c.id
       ${whereClause}
@@ -930,9 +980,16 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
     // Exécution de la requête (sans pagination)
     const result = await db.query(exportQuery, params);
 
+    // Chantier 11 (2026-08-04) — sous-phase 2 : Groupe primaire jamais exporté (même principe
+    // que getEtudiantsByDepartement ci-dessus).
+    const etudiantsExportes = result.rows.map((row) => ({
+      ...row,
+      groupe_nom: row.groupe_est_primaire ? null : row.groupe_nom,
+    }));
+
     return res.status(200).json({
       success: true,
-      data: result.rows,
+      data: etudiantsExportes,
       total: result.rows.length,
       anneeAcademique: {
         id: anneeAcademiqueId,
@@ -956,6 +1013,7 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
 exports.getEtudiantsByDepartementEnAttente = async (req, res) => {
   try {
     const departementId = req.query.departement_id || req.user?.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
     
     if (!departementId) {
@@ -1024,6 +1082,13 @@ exports.getEtudiantsByDepartementEnAttente = async (req, res) => {
       params.push(req.query.niveau);
     }
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site, appliqué uniquement
+    // si l'agent est restreint (ecoleId non nul).
+    if (ecoleId !== null) {
+      whereClauses.push(`dpt.ecole_id = $${params.length + 1}`);
+      params.push(ecoleId);
+    }
+
     const whereClause = whereClauses.length > 0 ? 'WHERE ' + whereClauses.join(' AND ') : '';
 
     const dataQuery = `
@@ -1069,6 +1134,7 @@ exports.getEtudiantsByDepartementEnAttente = async (req, res) => {
         doc.fiche_orientation
       FROM etudiant e
       JOIN filiere f ON e.id_filiere = f.id
+      LEFT JOIN departement dpt ON f.departement_id = dpt.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
       LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
@@ -1078,11 +1144,12 @@ exports.getEtudiantsByDepartementEnAttente = async (req, res) => {
       ORDER BY e.date_inscription DESC, e.nom ASC, e.prenoms ASC
       LIMIT $${params.length + 1} OFFSET $${params.length + 2}
     `;
-    
+
     const countQuery = `
-      SELECT COUNT(*) 
+      SELECT COUNT(*)
       FROM etudiant e
       JOIN filiere f ON e.id_filiere = f.id
+      LEFT JOIN departement dpt ON f.departement_id = dpt.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
       ${whereClause}
@@ -1148,6 +1215,7 @@ exports.getEtudiantById = async (req, res) => {
         e.contact_parent,
         e.code_unique,
         e.pays_naissance,
+        e.email_personnel,
         e.nom_parent_1,
         e.nom_parent_2,
         e.date_inscription,
@@ -1162,7 +1230,11 @@ exports.getEtudiantById = async (req, res) => {
         e.adresse_parent_2,
         e.engagement_accepte,
         e.ip_ministere,
+        u.nom as inscrit_par_nom,
         u.email as inscrit_par_email,
+        uv.nom as verifie_par_nom,
+        uv.email as verifie_par_email,
+        e.date_verification,
         e.date_inscription,
         e.nationalite,
         e.standing,
@@ -1172,21 +1244,22 @@ exports.getEtudiantById = async (req, res) => {
         e.contact_etudiant,
         e.contact_parent_2,
         e.matricule_iipea,
+        e.nombre_versements_prevu,
         f.nom as filiere,
         f.sigle as filiere_sigle,
         n.libelle as niveau,
         a.annee as annee_academique,
-        s.nom as departement,
-        doc.extrait_naissance,
-        doc.justificatif_identite,
-        doc.dernier_diplome,
-        doc.fiche_orientation,
+        s.nom as site,
+        dept.nom as departement,
+        ec.nom as ecole,
+        cur.type_parcours as cursus,
         sc.montant_scolarite,
         sc.scolarite_verse,
         sc.scolarite_restante,
-        e.statut_scolaire as statut_etudiant,
+        sc.statut_etudiant as statut_paiement,
         g.id as groupe_id,
         g.nom as groupe_nom,
+        g.est_primaire as groupe_est_primaire,
         g.capacite_max as groupe_capacite,
         c.id as classe_id,
         c.nom as classe_nom,
@@ -1212,8 +1285,11 @@ exports.getEtudiantById = async (req, res) => {
       JOIN niveau n ON e.niveau_id = n.id
       JOIN anneeacademique a ON e.annee_academique_id = a.id
       JOIN site s ON e.site_id = s.id
-      LEFT JOIN document doc ON e.document_id = doc.id
+      LEFT JOIN departement dept ON dept.id = f.departement_id
+      LEFT JOIN ecole ec ON ec.id = dept.ecole_id
+      LEFT JOIN curcus cur ON cur.id = e.curcus_id
       LEFT JOIN utilisateur u ON e.inscrit_par::integer = u.id
+      LEFT JOIN utilisateur uv ON e.verifie_par = uv.id
       LEFT JOIN scolarite sc ON e.scolarite_id = sc.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN classe c ON g.classe_id = c.id
@@ -1237,12 +1313,16 @@ exports.getEtudiantById = async (req, res) => {
     // Formater les données de base
     const etudiant = {
       ...etudiantData,
-      inscrit_par: etudiantData.inscrit_par_email,
-      
-      // Structurer les informations de groupe et classe
+      cree_par: etudiantData.inscrit_par_nom || etudiantData.inscrit_par_email || null,
+      verifie_par: etudiantData.verifie_par_nom || etudiantData.verifie_par_email || null,
+      compte_actif: etudiantData.standing === 'Inscrit',
+
+      // Structurer les informations de groupe et classe — Chantier 11 (2026-08-04) sous-phase 2 :
+      // le Groupe primaire (technique) n'est jamais affiché, seul son nom est masqué ici ; la
+      // classe imbriquée ci-dessous reste toujours disponible, id/capacite_max inchangés.
       groupe: {
         id: etudiantData.groupe_id,
-        nom: etudiantData.groupe_nom,
+        nom: etudiantData.groupe_est_primaire ? null : etudiantData.groupe_nom,
         capacite_max: etudiantData.groupe_capacite,
         classe: {
           id: etudiantData.classe_id,
@@ -1276,13 +1356,14 @@ exports.getEtudiantById = async (req, res) => {
     
     // Supprimer les champs temporaires
     const fieldsToDelete = [
-      'groupe_id', 'groupe_nom', 'groupe_capacite', 'classe_id', 'classe_nom', 'classe_description',
+      'groupe_id', 'groupe_nom', 'groupe_est_primaire', 'groupe_capacite', 'classe_id', 'classe_nom', 'classe_description',
       'kit_id', 'kit_montant', 'kit_deposer', 'kit_date_enregistrement',
       'prise_en_charge_id', 'prise_en_charge_reference', 'prise_en_charge_type',
       'prise_en_charge_pourcentage', 'prise_en_charge_montant_reduction',
       'prise_en_charge_statut', 'prise_en_charge_date_demande',
       'prise_en_charge_date_validation', 'prise_en_charge_valide_par',
-      'prise_en_charge_motif_refus', 'inscrit_par_email'
+      'prise_en_charge_motif_refus', 'inscrit_par_email', 'inscrit_par_nom',
+      'verifie_par_email', 'verifie_par_nom'
     ];
     
     fieldsToDelete.forEach(field => {
@@ -1294,7 +1375,7 @@ exports.getEtudiantById = async (req, res) => {
       etudiant.montant_scolarite = 0;
       etudiant.scolarite_verse = 0;
       etudiant.scolarite_restante = 0;
-      etudiant.statut_etudiant = "NON_DEFINI";
+      etudiant.statut_paiement = "NON_DEFINI";
     }
 
     // Gérer les cas où le kit n'est pas défini
@@ -1332,6 +1413,106 @@ exports.getEtudiantById = async (req, res) => {
     });
   }
 }
+
+///=================================================================================================
+// Fiche étudiant (Chantier Fiche Étudiant V1, 2026-08) : édition des informations personnelles
+// (état civil, contacts, parents) depuis la fiche, pour un étudiant DÉJÀ 'Inscrit' — délibérément
+// distincte de `confirmerVerification` (verification.controller.js), qui reste réservée au flux de
+// vérification d'un dossier Web non finalisé (source_inscription='web', standing≠'Inscrit') et
+// déclenche des effets de bord propres à ce flux (valide_scolarite, verifie_par, re-résolution de
+// formation/tarif) qui n'ont pas leur place dans un simple correctif de fiche. Aucune colonne
+// académique (niveau/filière/curcus) n'est modifiable ici — hors périmètre V1, cf. fiche étudiant.
+exports.updateInformationsPersonnelles = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const identite = req.body || {};
+
+    const etudiantResult = await db.query(
+      `SELECT nom, prenoms, sexe, nationalite, pays_naissance FROM etudiant WHERE id = $1`,
+      [id]
+    );
+    if (etudiantResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
+    }
+    const etudiantActuel = etudiantResult.rows[0];
+
+    const champsRequis = ['nom', 'prenoms', 'date_naissance', 'sexe', 'nationalite', 'telephone', 'email_personnel', 'contact_parent'];
+    const manquants = champsRequis.filter(f => !identite[f]);
+    if (manquants.length > 0) {
+      return res.status(400).json({ success: false, message: 'Champs obligatoires manquants.', missingFields: manquants, code: 'MISSING_FIELDS' });
+    }
+
+    const champsInvalides = await validerReferentielsIdentite(identite, etudiantActuel);
+    if (champsInvalides.length > 0) {
+      return res.status(400).json({
+        success: false,
+        code: 'REFERENTIEL_INVALIDE',
+        message: `Valeur(s) invalide(s) pour : ${champsInvalides.join(', ')}.`
+      });
+    }
+
+    const result = await db.query(
+      `UPDATE etudiant SET
+         nom = $1, prenoms = $2, date_naissance = $3, sexe = $4, nationalite = $5,
+         telephone = $6, email_personnel = $7, contact_parent = $8, contact_parent_2 = $9,
+         lieu_naissance = $10, pays_naissance = $11, lieu_residence = $12,
+         nom_parent_1 = $13, nom_parent_2 = $14, adresse_parent_1 = $15, adresse_parent_2 = $16
+       WHERE id = $17
+       RETURNING id`,
+      [
+        identite.nom.toUpperCase(), identite.prenoms.toUpperCase(),
+        moment(identite.date_naissance).format('YYYY-MM-DD'),
+        identite.sexe, identite.nationalite, identite.telephone, identite.email_personnel,
+        identite.contact_parent, identite.contact_parent_2 || null,
+        identite.lieu_naissance || null, identite.pays_naissance || null, identite.lieu_residence || null,
+        identite.nom_parent_1 || null, identite.nom_parent_2 || null,
+        identite.adresse_parent_1 || null, identite.adresse_parent_2 || null,
+        id
+      ]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
+    }
+
+    res.status(200).json({ success: true, message: 'Informations personnelles mises à jour.' });
+  } catch (error) {
+    console.error('Erreur updateInformationsPersonnelles:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// Remplacement de la photo depuis la fiche étudiant — endpoint dédié, indépendant de l'admission
+// et de la vérification (aucun des deux flux existants n'exposait de route seule pour ça).
+// L'ancien fichier n'est volontairement pas supprimé du disque (même choix que
+// verification.controller.js::confirmerVerification), seul le pointeur photo_url change.
+exports.updatePhotoEtudiant = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'Aucune photo reçue.', code: 'NO_FILE' });
+    }
+    const validation = validatePhotoFile(req.file);
+    if (!validation.valid) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ success: false, message: validation.error, code: 'INVALID_PHOTO' });
+    }
+
+    const photoUrl = `/uploads/photos/${req.file.filename}`;
+    const result = await db.query(
+      `UPDATE etudiant SET photo_url = $1 WHERE id = $2 RETURNING photo_url`,
+      [photoUrl, id]
+    );
+    if (result.rows.length === 0) {
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
+    }
+
+    res.status(200).json({ success: true, message: 'Photo mise à jour.', data: { photo_url: photoUrl } });
+  } catch (error) {
+    console.error('Erreur updatePhotoEtudiant:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
 
 ///=================================================================================================
 // Archivage a posteriori d'une pièce justificative (rôle archiviste) : la pièce a déjà été
@@ -1436,10 +1617,18 @@ exports.getRecuData = async (req, res) => {
         aa.annee as annee_academique,
         s.montant_scolarite, s.scolarite_verse, s.scolarite_restante, s.statut_etudiant,
         g.nom as groupe_nom,
-        c.nom as classe_nom,
+        -- Chantier 11 (2026-08-04) — correctif régression : la classe doit TOUJOURS s'afficher,
+        -- que l'étudiant ait un groupe ou non (primaire ou réel) — jamais l'un OU l'autre. Priorité
+        -- à la classe du groupe réellement affecté (gc, non filtré par est_primaire — contrairement
+        -- à g ci-dessus qui, lui, sert uniquement à decider si le NOM du groupe est affiché) :
+        -- fiable, indépendante du cursus. Repli sur le matching filière/niveau/année/curcus
+        -- uniquement si l'étudiant n'a aucun groupe — nécessaire pour certaines classes 2025-2026
+        -- dont le curcus_id n'a jamais été renseigné (donnée héritée, non corrigée ici).
+        COALESCE(cgc.nom, c.nom) as classe_nom,
         p.id as paiement_id, p.montant as paiement_montant, p.date_paiement, p.methode,
         r.id as recu_id, r.numero_recu, r.date_emission, r.emetteur,
         k.montant as kit_montant, k.deposer as kit_deposer, k.date_enregistrement as kit_date,
+        k.annee_academique_id as kit_annee_academique_id,
         pec.id as pec_id, pec.type_pec, pec.pourcentage_reduction, pec.montant_reduction,
         pec.statut as pec_statut, pec.reference as pec_reference,
         pec.date_demande as pec_date_demande, pec.date_validation as pec_date_validation,
@@ -1450,8 +1639,21 @@ exports.getRecuData = async (req, res) => {
       JOIN scolarite s ON e.scolarite_id = s.id
       LEFT JOIN site st ON e.site_id = st.id
       LEFT JOIN anneeacademique aa ON e.annee_academique_id = aa.id
-      LEFT JOIN groupe g ON e.groupe_id = g.id
-      LEFT JOIN classe c ON g.classe_id = c.id
+      -- Chantier 11 (2026-08-04) — sous-phase 1 : le Groupe primaire (technique, interne au
+      -- moteur d'inscription) ne doit jamais apparaître sur le reçu — tant qu'un étudiant n'est
+      -- pas affecté à un vrai groupe pédagogique, seule la classe est affichée (voir plus bas,
+      -- groupe_nom restera NULL, et le champ groupe de la réponse JSON est déjà construit de
+      -- façon conditionnelle : null tant que groupe_nom est vide, sans changement frontend requis).
+      LEFT JOIN groupe g ON e.groupe_id = g.id AND g.est_primaire = false
+      -- gc : le groupe RÉEL de l'étudiant, jamais filtré par est_primaire (contrairement à g
+      -- ci-dessus) — sert uniquement à retrouver sa classe de façon fiable via gc.classe_id.
+      LEFT JOIN groupe gc ON gc.id = e.groupe_id
+      LEFT JOIN classe cgc ON cgc.id = gc.classe_id
+      -- Chantier 6 : repli historique, utilisé seulement si l'étudiant n'a aucun groupe — résolution
+      -- depuis les critères d'affectation (mêmes filiere/niveau/annee_academique/curcus que
+      -- classeGroupe.service.js utilise pour trouver/créer la classe).
+      LEFT JOIN classe c ON c.filiere_id = e.id_filiere AND c.niveau_id = e.niveau_id
+        AND c.annee_academique_id = e.annee_academique_id AND c.curcus_id IS NOT DISTINCT FROM e.curcus_id
       LEFT JOIN paiement p ON p.etudiant_id = e.id AND p.annee_academique_id = COALESCE($2::int, e.annee_academique_id)
       LEFT JOIN recu r ON p.recu_id = r.id
       LEFT JOIN kit k ON k.etudiant_id = e.id
@@ -1470,18 +1672,37 @@ exports.getRecuData = async (req, res) => {
     // Structurer les données
     const etudiantData = result.rows[0];
 
-    // Année demandée différente de l'année courante de l'étudiant : les infos académiques/
-    // financières ne viennent plus de scolarite/etudiant (valeurs live de l'année en cours),
-    // mais de l'instantané figé dans historique_inscription pour cette année précise.
+    // Année demandée différente de l'année courante de l'étudiant : AUCUNE information
+    // académique ne doit venir de l'état live de `etudiant` (filiere/niveau/classe/groupe
+    // peuvent avoir changé depuis, via une réinscription) — tout provient de l'instantané figé
+    // dans historique_inscription pour cette année précise, y compris classe et groupe
+    // (régression corrigée le 2026-08-04 : avant ce correctif, classe_nom/groupe_nom restaient
+    // ceux résolus par la requête principale sur l'état live de l'étudiant, jamais réécrits ici).
     const isAnneeCourante = !anneeAcademiqueIdParam || Number(anneeAcademiqueIdParam) === Number(etudiantData.annee_academique_id);
     if (!isAnneeCourante) {
       const historiqueResult = await client.query(
         `SELECT hi.montant_scolarite, hi.scolarite_verse, hi.scolarite_restante, hi.statut_paiement,
-                n.libelle AS niveau, f.nom AS filiere, f.sigle AS filiere_sigle, aa.annee AS annee_academique
+                n.libelle AS niveau, f.nom AS filiere, f.sigle AS filiere_sigle, aa.annee AS annee_academique,
+                g.nom AS groupe_nom, g.est_primaire AS groupe_est_primaire,
+                -- Classe historique : priorité au groupe de l'époque (fiable, capté à chaque
+                -- admission/réinscription/clôture) ; repli sur un matching filière/niveau/année
+                -- si ce groupe est introuvable (ex. tout premier historique, avant tout
+                -- découpage). Ce repli ne connaît pas le cursus (curcus_id n'existe pas dans
+                -- historique_inscription) — limite acceptée et documentée, sans impact ici
+                -- puisque le reçu n'a jamais affiché de cursus.
+                COALESCE(
+                  cl.nom,
+                  (SELECT c2.nom FROM classe c2
+                   WHERE c2.filiere_id = hi.id_filiere AND c2.niveau_id = hi.niveau_id
+                     AND c2.annee_academique_id = hi.annee_academique_id
+                   ORDER BY c2.id LIMIT 1)
+                ) AS classe_nom
          FROM historique_inscription hi
          LEFT JOIN niveau n ON n.id = hi.niveau_id
          LEFT JOIN filiere f ON f.id = hi.id_filiere
          LEFT JOIN anneeacademique aa ON aa.id = hi.annee_academique_id
+         LEFT JOIN groupe g ON g.id = hi.groupe_id
+         LEFT JOIN classe cl ON cl.id = g.classe_id
          WHERE hi.etudiant_id = $1 AND hi.annee_academique_id = $2
          ORDER BY hi.created_at DESC LIMIT 1`,
         [id, anneeAcademiqueIdParam]
@@ -1498,6 +1719,10 @@ exports.getRecuData = async (req, res) => {
       etudiantData.scolarite_verse = historique.scolarite_verse;
       etudiantData.scolarite_restante = historique.scolarite_restante;
       etudiantData.statut_etudiant = historique.statut_paiement;
+      // Chantier 11 (2026-08-04) — même règle de masquage du Groupe primaire que pour l'année
+      // courante, appliquée ici au groupe HISTORIQUE (pas au groupe live).
+      etudiantData.classe_nom = historique.classe_nom;
+      etudiantData.groupe_nom = historique.groupe_est_primaire ? null : historique.groupe_nom;
     }
 
     // Modalités de paiement du cycle en cours : priorité à la réinscription si elle correspond
@@ -1550,6 +1775,12 @@ exports.getRecuData = async (req, res) => {
     const pecEnAttente = toutesLesPEC.find(pec => pec.statut === 'en_attente');
     const pecRefusee = toutesLesPEC.find(pec => pec.statut === 'refuse');
 
+    // Le kit peut être suspendu pour la campagne à laquelle il se rattache (cf.
+    // KIT_ANNEES_SUSPENDUES) — dans ce cas le bloc est entièrement masqué du reçu, jamais
+    // affiché à 0/non déposé. Basé sur l'année propre au kit (kit_annee_academique_id), pas sur
+    // l'année courante de l'étudiant, pour ne jamais masquer un kit d'une campagne antérieure.
+    const kitSuspendu = await isKitSuspenduPourAnnee(client, etudiantData.kit_annee_academique_id);
+
     const response = {
       etudiant: {
         // Informations personnelles
@@ -1577,13 +1808,13 @@ exports.getRecuData = async (req, res) => {
         niveau: etudiantData.niveau,
         departement: etudiantData.departement,
         annee_academique: etudiantData.annee_academique,
-        groupe: etudiantData.groupe_nom ? {
-          nom: etudiantData.groupe_nom,
-          classe: {
-            nom: etudiantData.classe_nom
-          }
-        } : null,
-        
+        // Chantier 6 : classe et groupe sont désormais deux champs indépendants (avant, `classe`
+        // n'était accessible qu'imbriquée dans `groupe`, donc invisible tant qu'aucun groupe
+        // n'existait). La classe est connue dès le premier paiement ; le groupe seulement après
+        // découpage manuel de la classe par un administrateur.
+        classe: etudiantData.classe_nom ? { nom: etudiantData.classe_nom } : null,
+        groupe: etudiantData.groupe_nom ? { nom: etudiantData.groupe_nom } : null,
+
         // Scolarité
         scolarite: {
           montant_scolarite: etudiantData.montant_scolarite,
@@ -1592,8 +1823,8 @@ exports.getRecuData = async (req, res) => {
           statut_etudiant: etudiantData.statut_etudiant || 'NON_SOLDE'
         },
         
-        // Kit
-        kit: etudiantData.kit_montant !== null ? {
+        // Kit (masqué si le module est suspendu pour l'année à laquelle ce kit se rattache)
+        kit: (etudiantData.kit_montant !== null && !kitSuspendu) ? {
           montant: etudiantData.kit_montant,
           deposer: etudiantData.kit_deposer,
           date_enregistrement: etudiantData.kit_date

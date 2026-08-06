@@ -1,99 +1,130 @@
 const db = require('../config/db.config');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 exports.getStatsInscriptions = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const departementId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const anneeAcademiqueId = req.query.anneeAcademiqueId || await getAnneeAcademiqueCourante(departementId);
 
     let dateCondition = '';
     let dateParams = [anneeAcademiqueId, departementId];
-    
+
     if (startDate && endDate) {
       dateCondition = 'AND DATE(e.date_inscription) BETWEEN $3 AND $4';
       dateParams.push(startDate, endDate);
     }
 
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site_id. L'index du
+    // paramètre dépend de la présence ou non du filtre de dates ($3/$4 déjà pris si présent).
+    const ecoleIdx = dateParams.length + 1;
+    const ecoleCondAliasE = ecoleId !== null
+      ? `AND e.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $${ecoleIdx})`
+      : '';
+    const ecoleCondNoAlias = ecoleId !== null
+      ? `AND id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $${ecoleIdx})`
+      : '';
+    if (ecoleId !== null) dateParams.push(ecoleId);
+
+    // Queries 2 et 4 ci-dessous n'utilisent jamais dateParams (pas de filtre date) : paramètre
+    // école toujours en position $3 pour elles.
+    const shortParams = [anneeAcademiqueId, departementId, ...(ecoleId !== null ? [ecoleId] : [])];
+    const ecoleCondAliasEShort = ecoleId !== null
+      ? 'AND e.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $3)'
+      : '';
+
     // 1. Nombre total d'étudiants inscrits
+    // ✅ vue_position_academique (pas `etudiant` directement, ici et dans les requêtes suivantes
+    // qui comptent des étudiants "de l'année $1") : etudiant.annee_academique_id n'est qu'une
+    // position COURANTE — un étudiant réinscrit vers l'année suivante ne doit pas disparaître
+    // rétroactivement des statistiques de l'année où il a réellement été admis/positionné.
     const nbEtudiants = await db.query(`
       SELECT COUNT(*) AS total
-      FROM etudiant e
-      WHERE e.annee_academique_id = $1 
+      FROM vue_position_academique e
+      WHERE e.annee_academique_id = $1
         AND e.site_id = $2
         AND e.standing = 'Inscrit'
         ${dateCondition}
+        ${ecoleCondAliasE}
     `, dateParams);
 
     // 2. Inscriptions aujourd'hui
     const aujourdhui = await db.query(`
       SELECT COUNT(*) AS total
-      FROM etudiant e
-      WHERE e.annee_academique_id = $1 
+      FROM vue_position_academique e
+      WHERE e.annee_academique_id = $1
         AND e.site_id = $2
         AND DATE(e.date_inscription) = CURRENT_DATE
-    `, [anneeAcademiqueId, departementId]);
+        ${ecoleCondAliasEShort}
+    `, shortParams);
 
     // 3. Étudiants en attente
     const enAttente = await db.query(`
       SELECT COUNT(*) AS total
-      FROM etudiant e
-      WHERE e.annee_academique_id = $1 
+      FROM vue_position_academique e
+      WHERE e.annee_academique_id = $1
         AND e.site_id = $2
-        AND e.standing = 'en attente'  
+        AND e.standing = 'en attente'
         ${dateCondition}
+        ${ecoleCondAliasE}
     `, dateParams);
 
     // 4. Confirmés aujourd'hui
     const confirmesAujourdhui = await db.query(`
       SELECT COUNT(*) AS total
-      FROM etudiant e
-      WHERE e.annee_academique_id = $1 
+      FROM vue_position_academique e
+      WHERE e.annee_academique_id = $1
         AND e.site_id = $2
         AND e.standing = 'Inscrit'
         AND DATE(e.date_inscription) = CURRENT_DATE
-    `, [anneeAcademiqueId, departementId]);
+        ${ecoleCondAliasEShort}
+    `, shortParams);
 
     // 5. Inscriptions par utilisateur
     const inscriptionsParUtilisateur = await db.query(`
-      SELECT 
+      SELECT
         u.id AS utilisateur_id,
         u.nom AS utilisateur_nom,
         u.email AS utilisateur_email,
         COUNT(e.id) AS total_inscrits,
-        SUM(CASE WHEN e.standing = 'en attente' THEN 1 ELSE 0 END) AS en_attente,  
+        SUM(CASE WHEN e.standing = 'en attente' THEN 1 ELSE 0 END) AS en_attente,
         SUM(CASE WHEN e.standing = 'Inscrit' THEN 1 ELSE 0 END) AS confirmes
       FROM utilisateur u
-      LEFT JOIN etudiant e ON u.id = e.inscrit_par::integer
-      WHERE e.annee_academique_id = $1 
+      LEFT JOIN vue_position_academique e ON u.id = e.inscrit_par::integer
+      WHERE e.annee_academique_id = $1
         AND e.site_id = $2
         ${startDate && endDate ? 'AND DATE(e.date_inscription) BETWEEN $3 AND $4' : ''}
+        ${ecoleCondAliasE}
       GROUP BY u.id, u.nom, u.email
       ORDER BY total_inscrits DESC
     `, dateParams);
 
     // 6. Inscriptions journalières
     const inscriptionsJournalieres = await db.query(`
-      SELECT 
+      SELECT
         DATE(date_inscription) AS date,
         COUNT(*) AS nombre_inscriptions,
         SUM(CASE WHEN standing = 'Inscrit' THEN 1 ELSE 0 END) AS confirmes
-      FROM etudiant
-      WHERE annee_academique_id = $1 
+      FROM vue_position_academique
+      WHERE annee_academique_id = $1
         AND site_id = $2
         ${startDate && endDate ? 'AND DATE(date_inscription) BETWEEN $3 AND $4' : ''}
+        ${ecoleCondNoAlias}
       GROUP BY DATE(date_inscription)
       ORDER BY date DESC
     `, dateParams);
 
     // 7. Statistiques par statut
     const statsParStatut = await db.query(`
-      SELECT 
+      SELECT
         statut_scolaire,
         COUNT(*) AS nombre
-      FROM etudiant
-      WHERE annee_academique_id = $1 
+      FROM vue_position_academique
+      WHERE annee_academique_id = $1
         AND site_id = $2
         ${startDate && endDate ? 'AND DATE(date_inscription) BETWEEN $3 AND $4' : ''}
+        ${ecoleCondNoAlias}
       GROUP BY statut_scolaire
       ORDER BY nombre DESC
     `, dateParams);
@@ -112,6 +143,7 @@ exports.getStatsInscriptions = async (req, res) => {
         AND e.annee_academique_id = $1
         AND e.site_id = $2
         ${startDate && endDate ? 'AND DATE(p.date_paiement) BETWEEN $3 AND $4' : ''}
+        ${ecoleCondAliasE}
       GROUP BY u.id, u.nom, u.email
       ORDER BY nombre_paiements DESC
     `, dateParams);
@@ -124,6 +156,7 @@ exports.getStatsInscriptions = async (req, res) => {
       WHERE e.annee_academique_id = $1
         AND e.site_id = $2
         ${startDate && endDate ? 'AND DATE(p.date_paiement) BETWEEN $3 AND $4' : ''}
+        ${ecoleCondAliasE}
     `, dateParams);
 
     res.json({
@@ -176,6 +209,7 @@ exports.getStatsDetaillees = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
     const departementId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
     const anneeAcademiqueId = req.query.anneeAcademiqueId || await getAnneeAcademiqueCourante(departementId);
 
     const params = [anneeAcademiqueId, departementId];
@@ -185,6 +219,12 @@ exports.getStatsDetaillees = async (req, res) => {
       dateCondition = 'AND DATE(date_inscription) BETWEEN $3 AND $4';
       params.push(startDate, endDate);
     }
+
+    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site_id.
+    const ecoleCondNoAlias = ecoleId !== null
+      ? `AND id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $${params.length + 1})`
+      : '';
+    if (ecoleId !== null) params.push(ecoleId);
 
     const result = await db.query(`
       SELECT 
@@ -199,11 +239,12 @@ exports.getStatsDetaillees = async (req, res) => {
         -- Par période
         COUNT(*) FILTER (WHERE DATE(date_inscription) = CURRENT_DATE) AS aujourdhui,
         COUNT(*) FILTER (WHERE DATE(date_inscription) = CURRENT_DATE - INTERVAL '1 day') AS hier
-        
-      FROM etudiant
-      WHERE annee_academique_id = $1 
+
+      FROM vue_position_academique
+      WHERE annee_academique_id = $1
         AND site_id = $2
         ${dateCondition}
+        ${ecoleCondNoAlias}
     `, params);
 
     res.json(result.rows[0]);

@@ -1,20 +1,37 @@
 const db = require('../config/db.config');
 const bcrypt = require('bcrypt');
 
- // Récupérer toutes les roles
+// Valide qu'une école existe et est active avant de l'affecter à un agent (Chantier 3 —
+// convention documentée dans docs/architecture-permissions-ecole.md, jamais codée jusqu'ici).
+// ecole_id vide (null/undefined) est un cas valide : vue globale, aucune validation nécessaire.
+const validerEcoleActive = async (ecoleId) => {
+  if (!ecoleId) return { valide: true };
+  const result = await db.query(`SELECT id FROM public.ecole WHERE id = $1 AND statut = 'actif'`, [ecoleId]);
+  if (result.rows.length === 0) {
+    return { valide: false, message: "École introuvable ou inactive." };
+  }
+  return { valide: true };
+};
+
+// Récupérer tous les utilisateurs
 exports.getAllUsers = async (req, res) => {
   try {
-    const result = await db.query(`SELECT 
+    const result = await db.query(`SELECT
             u.id,
             u.nom,
             u.email,
-            d.nom AS departement, 
-            r.nom AS role,        
+            u.site_id,
+            d.nom AS departement,
+            u.role_id,
+            r.nom AS role,
             u.statut,
-            u.code
+            u.code,
+            u.ecole_id,
+            ec.nom AS ecole_nom
             FROM public.utilisateur u
             JOIN public.site d ON u.site_id = d.id
             JOIN public.role r ON u.role_id = r.id
+            LEFT JOIN public.ecole ec ON u.ecole_id = ec.id
 `);
     res.status(200).json(result.rows);
   } catch (error) {
@@ -28,7 +45,7 @@ exports.getAllUsers = async (req, res) => {
 
 // Ajouter un nouvel utilisateur
 exports.createUser = async (req, res) => {
-  const { nom, email, departement_id, role_id } = req.body;
+  const { nom, email, departement_id, role_id, ecole_id } = req.body;
 
   // Validation minimale
   if (!nom || !email || !departement_id || !role_id) {
@@ -46,6 +63,11 @@ exports.createUser = async (req, res) => {
       return res.status(409).json({ message: "L'utilisateur existe déjà." });
     }
 
+    const ecoleValidation = await validerEcoleActive(ecole_id);
+    if (!ecoleValidation.valide) {
+      return res.status(400).json({ message: ecoleValidation.message });
+    }
+
     // Hasher le mot de passe par défaut
     const hashedPassword = await bcrypt.hash('@elites@', 10); // sel de 10
 
@@ -54,9 +76,9 @@ exports.createUser = async (req, res) => {
 
     // Insérer l'utilisateur avec le code
     const result = await db.query(
-      `INSERT INTO public.utilisateur (nom, email, mot_de_passe, site_id, role_id, statut, code)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-      [nom, email, hashedPassword, departement_id, role_id, 'active', code]
+      `INSERT INTO public.utilisateur (nom, email, mot_de_passe, site_id, role_id, statut, code, ecole_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      [nom, email, hashedPassword, departement_id, role_id, 'active', code, ecole_id || null]
     );
 
     res.status(201).json({
@@ -66,5 +88,103 @@ exports.createUser = async (req, res) => {
   } catch (error) {
     console.error('Erreur lors de la création de l’utilisateur:', error);
     res.status(500).json({ message: 'Erreur serveur lors de la création de l’utilisateur.' });
+  }
+};
+
+//============================================================================================================
+
+// Modifier le rôle, le site et l'affectation à une école d'un utilisateur existant (Chantier 3 —
+// permet de créer, modifier ou retirer (ecole_id = null) l'affectation d'un agent à une école).
+exports.updateUser = async (req, res) => {
+  const { id } = req.params;
+  const { role_id, departement_id, ecole_id } = req.body;
+
+  if (!role_id || !departement_id) {
+    return res.status(400).json({ message: 'role_id et departement_id sont requis.' });
+  }
+
+  try {
+    const ecoleValidation = await validerEcoleActive(ecole_id);
+    if (!ecoleValidation.valide) {
+      return res.status(400).json({ message: ecoleValidation.message });
+    }
+
+    const result = await db.query(
+      `UPDATE public.utilisateur
+       SET role_id = $1, site_id = $2, ecole_id = $3
+       WHERE id = $4
+       RETURNING id, nom, email, role_id, site_id, ecole_id, statut, code`,
+      [role_id, departement_id, ecole_id || null, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+
+    res.status(200).json({
+      message: 'Utilisateur mis à jour avec succès.',
+      user: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Erreur lors de la mise à jour de l’utilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur lors de la mise à jour de l’utilisateur.' });
+  }
+};
+
+//============================================================================================================
+
+// Désactivation d'un utilisateur — jamais de suppression physique : le compte reste en base
+// (historique, audit, documents déjà émis en son nom) mais son statut passe à 'desactive'.
+// Le login le refuse déjà explicitement (auth.controller.js : WHERE u.statut = 'active'), donc
+// aucun autre changement n'est nécessaire pour bloquer sa connexion.
+exports.deactivateUser = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await db.query(
+      `UPDATE public.utilisateur SET statut = 'desactive' WHERE id = $1
+       RETURNING id, nom, email, statut`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+
+    res.status(200).json({
+      message: 'Utilisateur désactivé avec succès.',
+      user: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Erreur lors de la désactivation de l’utilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur lors de la désactivation de l’utilisateur.' });
+  }
+};
+
+//============================================================================================================
+
+// Symétrique de deactivateUser : remet le statut à 'active', ce qui suffit à rouvrir l'accès au
+// login (même condition WHERE u.statut = 'active' dans auth.controller.js).
+exports.reactivateUser = async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const result = await db.query(
+      `UPDATE public.utilisateur SET statut = 'active' WHERE id = $1
+       RETURNING id, nom, email, statut`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+
+    res.status(200).json({
+      message: 'Utilisateur réactivé avec succès.',
+      user: result.rows[0],
+    });
+  } catch (error) {
+    console.error('Erreur lors de la réactivation de l’utilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur lors de la réactivation de l’utilisateur.' });
   }
 };
