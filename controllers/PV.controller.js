@@ -264,6 +264,197 @@ const appliquerRepechageCredits = (uesAvecResultats, totalCreditsMaquette, semes
     return { ues: uesRepechees, repechageApplique: true };
 };
 
+// ============ REPÊCHAGE MOYENNE BTS (BTS 1 / BTS 2 UNIQUEMENT) ============
+
+/**
+ * ✅ REPÊCHAGE MOYENNE BTS — mécanisme totalement indépendant du repêchage crédits
+ * ci-dessus (qui ne concerne que les Licences universitaires).
+ *
+ * Règle : pour un étudiant BTS 1/BTS 2 dont la moyenne générale (sur le périmètre
+ * fourni — un semestre ou l'année) est comprise entre 8,00 et 9,99, on harmonise
+ * AU STRICT MINIMUM les ECUE en échec (moyenne_pro < 10) pour que la moyenne
+ * générale atteigne exactement 10,00 — jamais plus. `ACTIF: false` désactive
+ * entièrement le mécanisme sans toucher au reste du code.
+ */
+const REPECHAGE_MOYENNE_BTS_CONFIG = {
+    ACTIF: true,
+    MOYENNE_MIN: 8,
+    MOYENNE_MAX: 9.99,
+    CIBLE: 10,
+    NIVEAU_ELIGIBLE_REGEX: /\bbts\s*[12]\b/i
+};
+
+const estNiveauEligibleRepechageMoyenneBTS = (niveauLibelle, groupeNom) => {
+    const texte = `${niveauLibelle || ''} ${groupeNom || ''}`;
+    return REPECHAGE_MOYENNE_BTS_CONFIG.NIVEAU_ELIGIBLE_REGEX.test(texte);
+};
+
+/**
+ * ✅ Note effective d'une ECUE pour le calcul de la moyenne générale professionnelle :
+ * la note harmonisée BTS si elle existe, sinon moyenne_pro, sinon la moyenne brute.
+ * (Même priorité que celle utilisée côté vues EJS pour l'affichage — voir Étape 5.)
+ */
+const getMoyenneEffectiveECUE = (matiere) => {
+    if (matiere.moyenne_pro_affichage !== undefined && matiere.moyenne_pro_affichage !== null) {
+        return matiere.moyenne_pro_affichage;
+    }
+    if (matiere.moyenne_pro !== undefined && matiere.moyenne_pro !== null) {
+        return matiere.moyenne_pro;
+    }
+    return matiere.moyenne;
+};
+
+/**
+ * Somme pondérée (par coefficient) et coefficient total des ECUE notées d'un
+ * ensemble d'UE — brique de base pour calculer une moyenne "à plat" (voir analyse :
+ * pour le professionnel, ue.credits = somme des coefficients de ses ECUE, donc la
+ * moyenne pondérée par UE équivaut exactement à la moyenne pondérée par ECUE).
+ *
+ * ✅ Exclut les ECUE à choix non suivies (non_classe — ex. Espagnol/Allemand, voir
+ * PAIRES_ECUE_CHOIX), exactement comme calculerTotauxFonction/calculerResultatsUEAvecDetailsFonction
+ * les exclut de la moyenne officielle : sans ce filtre, coeffCible ci-dessous compterait un total
+ * de coefficients supérieur à celui réellement utilisé par la moyenne affichée.
+ */
+const _sommeEtCoeffECUE = (ues) => {
+    let somme = 0;
+    let coeff = 0;
+    (ues || []).forEach(ue => (ue.matieres || []).forEach(m => {
+        if (m.a_note && !m.non_classe) {
+            somme += getMoyenneEffectiveECUE(m) * m.coefficient;
+            coeff += m.coefficient;
+        }
+    }));
+    return { somme, coeff };
+};
+
+/**
+ * ✅ REPÊCHAGE ANNUEL BTS (BTS 1 / BTS 2 uniquement) — VERSION INDÉPENDANTE DE LA MAQUETTE.
+ *
+ * ⚠️ Cette fonction ne calcule JAMAIS une moyenne "à plat" sur les coefficients cumulés des
+ * deux semestres — cette ancienne approche divergeait de la règle officielle dès que les
+ * maquettes S1/S2 n'avaient pas exactement le même total de coefficients (ex. 16/18, 25/11),
+ * laissant la moyenne annuelle officiellement affichée bloquée à 9,95/9,98 au lieu de 10,00.
+ *
+ * RÈGLE UNIQUE (celle utilisée partout ailleurs — PV, bulletins, décisions) :
+ *
+ *   moyenneAnnuelle = (moyenneS1 + moyenneS2) / 2
+ *
+ * moyenneS1/moyenneS2 sont calculées via calculerTotauxFonction — LA MÊME fonction que celle
+ * utilisée en aval pour l'affichage officiel — jamais un recalcul parallèle. Ainsi la décision
+ * d'éligibilité porte exactement sur la valeur qui sera ensuite affichée/décidée.
+ *
+ * - moyenneAnnuelle >= 10  → ADMIS, aucune note modifiée.
+ * - moyenneAnnuelle < 8    → AJOURNÉ, aucun repêchage.
+ * - 8 <= moyenneAnnuelle < 10 → éligible : on identifie le semestre le plus faible (celui
+ *   ayant la plus petite moyenne), et on calcule sa CIBLE — Cible = 2×10 − MoyenneAutreSemestre
+ *   — indépendante de tout total de coefficients, donc valable identiquement quelle que soit
+ *   la répartition de la maquette. Les points manquants sur ce semestre
+ *   ((Cible − MoyenneSemestre) × TotalCoefficientsDuSemestre) sont ensuite répartis, comme
+ *   avant, uniquement sur les ECUE en échec de CE SEUL semestre, proportionnellement à leur
+ *   coefficient.
+ *
+ * Preuve d'atteignabilité : l'éligibilité impose moyenneAnnuelle < 10, donc
+ * MoyenneAutreSemestre >= moyenneAnnuelle >= 8 (l'autre semestre est toujours le plus fort ou
+ * égal), donc Cible = 20 − MoyenneAutreSemestre <= 12 — toujours largement atteignable, quelle
+ * que soit la maquette.
+ *
+ * L'autre semestre n'est JAMAIS modifié. Ne mute jamais les tableaux reçus (retourne de
+ * nouveaux tableaux uesS1/uesS2), comme appliquerRepechageCredits.
+ *
+ * ⚠️ Arrondi PAR EXCÈS (Math.ceil) sur les valeurs harmonisées uniquement : un double
+ * arrondi (ECUE puis UE) au plus proche pourrait laisser la moyenne finale à 9,99 au
+ * lieu de 10,00 dans de rares cas limites. L'arrondi par excès garantit ≥10,00 de
+ * façon fiable, au prix d'un dépassement négligeable (≤0,01 point).
+ */
+const appliquerRepechageAnnuelBTS = (uesS1, uesS2, typeTraitement, niveauLibelle, groupeNom) => {
+    const cfg = REPECHAGE_MOYENNE_BTS_CONFIG;
+    const resultatInchange = { uesS1, uesS2, repechageApplique: false, semestreHarmonise: null };
+
+    if (!cfg.ACTIF || typeTraitement !== 'professionnel') return resultatInchange;
+    if (!estNiveauEligibleRepechageMoyenneBTS(niveauLibelle, groupeNom)) return resultatInchange;
+
+    // ✅ Moyennes semestrielles OFFICIELLES — calculerTotauxFonction est la même fonction que
+    // celle utilisée par le PV et les bulletins (via calculerRecapitulatifComplet). Aucun
+    // recalcul parallèle, aucune formule différente. Le 3e argument (totalCreditsMaquette)
+    // n'intervient pas dans moyenneGenerale pour le traitement 'professionnel' (0 accepté).
+    const moyenneS1 = calculerTotauxFonction(uesS1, typeTraitement, 0).moyenneGenerale;
+    const moyenneS2 = calculerTotauxFonction(uesS2, typeTraitement, 0).moyenneGenerale;
+
+    // ✅ RÈGLE OFFICIELLE UNIQUE (calculerMoyenneAnnuelleDepuisSemestres) : la seule définition
+    // de la moyenne annuelle dans tout le système, ici comme partout ailleurs.
+    const moyenneAnnuelle = calculerMoyenneAnnuelleDepuisSemestres(moyenneS1, moyenneS2);
+    if (DEBUG_VERBOSE) console.log(`🎓 appliquerRepechageAnnuelBTS: moyenne annuelle officielle=${moyenneAnnuelle.toFixed(2)} (S1=${moyenneS1.toFixed(2)}, S2=${moyenneS2.toFixed(2)}), niveau="${niveauLibelle}", groupe="${groupeNom}"`);
+
+    // ✅ Décision UNIQUEMENT sur la moyenne annuelle officielle : déjà admis (>=10) ou hors
+    // plage de repêchage (<8) → on ne touche à rien.
+    if (moyenneAnnuelle < cfg.MOYENNE_MIN || moyenneAnnuelle >= cfg.CIBLE) {
+        return resultatInchange;
+    }
+
+    // ✅ Semestre le plus faible = celui à harmoniser (règle inchangée).
+    const cibleEstS1 = moyenneS1 <= moyenneS2;
+    const uesCible = cibleEstS1 ? uesS1 : uesS2;
+    const moyenneCible = cibleEstS1 ? moyenneS1 : moyenneS2;
+    const moyenneAutre = cibleEstS1 ? moyenneS2 : moyenneS1;
+
+    const { coeff: coeffCible } = _sommeEtCoeffECUE(uesCible);
+    if (coeffCible === 0) return resultatInchange;
+
+    const matieresCible = [];
+    uesCible.forEach(ue => (ue.matieres || []).forEach(m => { if (m.a_note && !m.non_classe) matieresCible.push(m); }));
+
+    const coeffFaible = matieresCible
+        .filter(m => getMoyenneEffectiveECUE(m) < cfg.CIBLE)
+        .reduce((sum, m) => sum + m.coefficient, 0);
+
+    if (coeffFaible === 0) {
+        // Ne devrait pas arriver si le semestre ciblé a une moyenne < 10, mais on reste défensif.
+        return resultatInchange;
+    }
+
+    // ✅ Cible du semestre faible — indépendante de toute répartition de coefficients entre
+    // semestres : Cible = 2×10 − MoyenneAutreSemestre. Puis points manquants sur CE semestre
+    // uniquement, à répartir (mécanique inchangée) sur ses ECUE en échec.
+    const cibleSemestre = 2 * cfg.CIBLE - moyenneAutre;
+    const pointsManquants = (cibleSemestre - moyenneCible) * coeffCible;
+
+    if (DEBUG_VERBOSE) console.log(`🎯 ✅ Repêchage annuel BTS APPLIQUÉ sur le semestre ${cibleEstS1 ? 1 : 2} (moyenne annuelle ${moyenneAnnuelle.toFixed(2)} → cible du semestre ${cibleSemestre.toFixed(2)})`);
+
+    const uesCibleHarmonisees = uesCible.map(ue => {
+        const matieresHarmonisees = (ue.matieres || []).map(matiere => {
+            const moyenneEffective = getMoyenneEffectiveECUE(matiere);
+            if (!matiere.a_note || moyenneEffective >= cfg.CIBLE) {
+                return matiere;
+            }
+
+            const augmentation = pointsManquants * (matiere.coefficient / coeffFaible);
+            const nouvelleMoyenne = Math.min(20, moyenneEffective + (augmentation / matiere.coefficient));
+
+            return {
+                ...matiere,
+                moyenne_pro_originale: moyenneEffective,
+                moyenne_pro_affichage: Math.min(20, Math.ceil(nouvelleMoyenne * 100) / 100),
+                harmonisee_bts: true
+            };
+        });
+
+        const matieresNotees = matieresHarmonisees.filter(m => m.a_note && !m.non_classe);
+        const coeffUE = matieresNotees.reduce((sum, m) => sum + m.coefficient, 0);
+        const sommeUE = matieresNotees.reduce((sum, m) => sum + (getMoyenneEffectiveECUE(m) * m.coefficient), 0);
+        const moyenneUEHarmonisee = coeffUE > 0 ? sommeUE / coeffUE : (ue.moyenne_affichage ?? ue.moyenne ?? 0);
+
+        return {
+            ...ue,
+            moyenne_affichage: Math.ceil(moyenneUEHarmonisee * 100) / 100,
+            matieres: matieresHarmonisees
+        };
+    });
+
+    return cibleEstS1
+        ? { uesS1: uesCibleHarmonisees, uesS2, repechageApplique: true, semestreHarmonise: 1 }
+        : { uesS1, uesS2: uesCibleHarmonisees, repechageApplique: true, semestreHarmonise: 2 };
+};
+
 // ============ FONCTIONS PRINCIPALES PV ============
 
 exports.genererPVByGroupe = async (req, res) => {
@@ -525,7 +716,9 @@ exports.calculerResultatsAnnuelsEtudiant = async (etudiantId, anneeAcademiqueId 
     );
 
     // ✅ SOURCE UNIQUE DE VÉRITÉ pour crédits/moyennes/décisions S1, S2, annuel — identique au Bulletin
-    const recap = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement);
+    // (niveauLibelle/groupeNom transmis pour que le repêchage annuel BTS s'applique ici aussi —
+    // une décision AJOURNÉ/ADMIS erronée à cet endroit fausserait la fiche de réinscription).
+    const recap = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement, etudiant.niveau_libelle, groupeInfo.nom);
 
     const aSoldeScolarite = (etudiant.statut_etudiant || '').toUpperCase() === 'SOLDE';
     // ✅ typeTraitement transmis ici (contrairement aux autres appels de cette fonction, laissés
@@ -732,62 +925,74 @@ const _calculerResultatsTousEtudiants = async (etudiants, typeTraitement, semest
         const structureAcademique = await getStructurePourEtudiant(etudiant);
         const totalCreditsMaquette = calculerTotalCreditsMaquette(structureAcademique.ues);
 
-        const uesS1 = structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === 1);
-        const uesS2 = structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === 2);
-        const totalCreditsS1 = uesS1.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
-        const totalCreditsS2 = uesS2.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
+        const uesS1Def = structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+        const uesS2Def = structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+        const totalCreditsS1 = uesS1Def.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
+        const totalCreditsS2 = uesS2Def.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
 
-        // Si un semestre précis est demandé, on ne garde que les UE de ce semestre
         const semestreNumDemande = semestreId ? parseInt(semestreId, 10) : null;
-        const uesPourCalcul = semestreNumDemande
-            ? structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === semestreNumDemande)
-            : structureAcademique.ues;
 
         const notes = await getNotesEtudiantAvecDetailsFonction(etudiant.id, structureAcademique.maquette_id);
 
+        // ✅ On calcule TOUJOURS les résultats des DEUX semestres, même si un seul est demandé à
+        // l'affichage : le repêchage BTS ne peut être décidé qu'à partir de la moyenne ANNUELLE
+        // (S1+S2), jamais d'un semestre isolé.
         let uesAvecResultats = [];
-        for (const ue of uesPourCalcul) {
+        for (const ue of structureAcademique.ues) {
             const resultatsUE = await calculerResultatsUEAvecDetailsFonction(ue, notes, typeTraitement);
             uesAvecResultats.push(resultatsUE);
         }
 
-        if (!semestreId) {
-            // Mode annuel : traiter S1 et S2 séparément (repêchage)
-            const uesS1Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
-            const uesS2Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+        const uesS1Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+        const uesS2Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
 
-            const { ues: uesS1Repechees } = appliquerRepechageCredits(
-                uesS1Resultats, totalCreditsS1 || 30, 1, etudiant.niveau_libelle, groupeNom
-            );
+        // Repêchage crédits (Licence universitaire uniquement — no-op pour le professionnel)
+        const { ues: uesS1ApresCredits } = appliquerRepechageCredits(
+            uesS1Resultats, totalCreditsS1 || 30, 1, etudiant.niveau_libelle, groupeNom
+        );
+        const { ues: uesS2ApresCredits } = appliquerRepechageCredits(
+            uesS2Resultats, totalCreditsS2 || 30, 2, etudiant.niveau_libelle, groupeNom
+        );
 
-            const { ues: uesS2Repechees } = appliquerRepechageCredits(
-                uesS2Resultats, totalCreditsS2 || 30, 2, etudiant.niveau_libelle, groupeNom
-            );
+        // ✅ Repêchage annuel BTS : décision et harmonisation basées UNIQUEMENT sur la
+        // moyenne annuelle — no-op pour tout ce qui n'est pas BTS 1/2 professionnel.
+        const { uesS1: uesS1Final, uesS2: uesS2Final } = appliquerRepechageAnnuelBTS(
+            uesS1ApresCredits, uesS2ApresCredits, typeTraitement, etudiant.niveau_libelle, groupeNom
+        );
 
-            const uesS1RepecheesMap = new Map(uesS1Repechees.map(ue => [ue.ue_id, ue]));
-            const uesS2RepecheesMap = new Map(uesS2Repechees.map(ue => [ue.ue_id, ue]));
+        uesAvecResultats = [...uesS1Final, ...uesS2Final];
 
-            uesAvecResultats = uesAvecResultats.map(ue => {
-                if (parseInt(ue.semestre_id, 10) === 1) {
-                    return uesS1RepecheesMap.get(ue.ue_id) || ue;
-                } else {
-                    return uesS2RepecheesMap.get(ue.ue_id) || ue;
-                }
-            });
-        } else {
-            // Semestre spécifique
-            const totalCreditsSemestre = uesAvecResultats.reduce((sum, ue) => sum + ue.credits, 0);
-            const { ues: uesRepechees } = appliquerRepechageCredits(
-                uesAvecResultats, totalCreditsSemestre, semestreId, etudiant.niveau_libelle, groupeNom
-            );
-            uesAvecResultats = uesRepechees;
-        }
+        // ✅ Périmètre affiché/compté : le semestre demandé, ou l'année complète —
+        // mais toujours à partir des UE déjà (éventuellement) repêchées ci-dessus.
+        const uesPourAffichage = semestreNumDemande
+            ? uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === semestreNumDemande)
+            : uesAvecResultats;
 
-        const totalCreditsPourTotaux = semestreId
-            ? uesAvecResultats.reduce((sum, ue) => sum + ue.credits, 0)
+        const totalCreditsPourTotaux = semestreNumDemande
+            ? uesPourAffichage.reduce((sum, ue) => sum + ue.credits, 0)
             : totalCreditsMaquette;
 
-        const totaux = calculerTotauxFonction(uesAvecResultats, typeTraitement, totalCreditsPourTotaux);
+        let totaux;
+        if (semestreNumDemande) {
+            // Un seul semestre en jeu : pas de moyenne annuelle à dériver.
+            totaux = calculerTotauxFonction(uesPourAffichage, typeTraitement, totalCreditsPourTotaux);
+        } else {
+            // ✅ RÈGLE MÉTIER OFFICIELLE : moyenne annuelle = (Moyenne S1 + Moyenne S2) / 2
+            // à partir des moyennes semestrielles déjà arrondies — jamais un recalcul
+            // indépendant "à plat" sur les UE de l'année (source unique de vérité,
+            // identique à calculerRecapitulatifComplet côté Bulletins).
+            const uesS1PourTotaux = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+            const uesS2PourTotaux = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+            const creditsS1PourTotaux = uesS1PourTotaux.reduce((sum, ue) => sum + ue.credits, 0);
+            const creditsS2PourTotaux = uesS2PourTotaux.reduce((sum, ue) => sum + ue.credits, 0);
+            const totauxS1PourAnnuel = calculerTotauxFonction(uesS1PourTotaux, typeTraitement, creditsS1PourTotaux);
+            const totauxS2PourAnnuel = calculerTotauxFonction(uesS2PourTotaux, typeTraitement, creditsS2PourTotaux);
+
+            totaux = {
+                ...calculerTotauxFonction(uesPourAffichage, typeTraitement, totalCreditsPourTotaux),
+                moyenneGenerale: calculerMoyenneAnnuelleDepuisSemestres(totauxS1PourAnnuel.moyenneGenerale, totauxS2PourAnnuel.moyenneGenerale)
+            };
+        }
 
         // ✅ UTILISER LA NOUVELLE FONCTION DE DÉCISION
         const decision = determinerDecisionFonction(
@@ -797,28 +1002,16 @@ const _calculerResultatsTousEtudiants = async (etudiants, typeTraitement, semest
 
         // ✅ DÉCISION DU JURY (ANNUELLE) — exposée même en vue "un seul semestre", pour que le PV
         // n'affiche jamais une décision différente de celle du Bulletin pour le même étudiant.
-        // Recalcule les résultats sur la maquette complète (S1+S2) via la même séquence
-        // repêchage + calculerRecapitulatifComplet que le Bulletin (SOURCE UNIQUE DE VÉRITÉ),
-        // sans toucher aux variables ci-dessus qui pilotent l'affichage "vue semestre" existant.
+        // uesAvecResultats est déjà repêché (crédits + BTS annuel) sur l'année complète ci-dessus ;
+        // calculerRecapitulatifComplet est donc appelé sur ce même tableau — appliquerRepechageAnnuelBTS
+        // est idempotent (une moyenne annuelle déjà ≥10 n'est jamais réharmonisée), donc aucun risque
+        // de double-harmonisation.
         let decisionJury = decision;
         let moyenneAnnuelle = totaux.moyenneGenerale;
         let creditsAnnuelsValides = totaux.creditsValides;
         let creditsAnnuelsTotal = totaux.creditsTotal;
         if (semestreNumDemande) {
-            let uesAnnuelles = [];
-            for (const ue of structureAcademique.ues) {
-                uesAnnuelles.push(await calculerResultatsUEAvecDetailsFonction(ue, notes, typeTraitement));
-            }
-            const uesS1Ann = uesAnnuelles.filter(ue => parseInt(ue.semestre_id, 10) === 1);
-            const uesS2Ann = uesAnnuelles.filter(ue => parseInt(ue.semestre_id, 10) === 2);
-            const { ues: uesS1AnnRep } = appliquerRepechageCredits(uesS1Ann, totalCreditsS1 || 30, 1, etudiant.niveau_libelle, groupeNom);
-            const { ues: uesS2AnnRep } = appliquerRepechageCredits(uesS2Ann, totalCreditsS2 || 30, 2, etudiant.niveau_libelle, groupeNom);
-            const uesS1AnnMap = new Map(uesS1AnnRep.map(ue => [ue.ue_id, ue]));
-            const uesS2AnnMap = new Map(uesS2AnnRep.map(ue => [ue.ue_id, ue]));
-            uesAnnuelles = uesAnnuelles.map(ue =>
-                parseInt(ue.semestre_id, 10) === 1 ? (uesS1AnnMap.get(ue.ue_id) || ue) : (uesS2AnnMap.get(ue.ue_id) || ue)
-            );
-            const recapAnnuel = calculerRecapitulatifComplet(uesAnnuelles, typeTraitement);
+            const recapAnnuel = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement, etudiant.niveau_libelle, groupeNom);
             decisionJury = recapAnnuel.annuel.decision;
             moyenneAnnuelle = recapAnnuel.annuel.moyenne;
             creditsAnnuelsValides = recapAnnuel.annuel.creditsValides;
@@ -826,7 +1019,7 @@ const _calculerResultatsTousEtudiants = async (etudiants, typeTraitement, semest
         }
 
         const aSoldeScolarite = (etudiant.statut_etudiant || '').toUpperCase() === 'SOLDE';
-        const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats);
+        const ecueAReprendre = _collecterEcueAReprendre(uesPourAffichage, typeTraitement);
 
         if (ecueAReprendre.length > 0) {
             etudiantsAReprendre.push({
@@ -853,7 +1046,7 @@ const _calculerResultatsTousEtudiants = async (etudiants, typeTraitement, semest
             moyenne_annuelle: moyenneAnnuelle,
             credits_annuels: creditsAnnuelsValides,
             credits_annuels_total: creditsAnnuelsTotal,
-            ues: uesAvecResultats,
+            ues: uesPourAffichage,
             scolarite_soldee: aSoldeScolarite,
             statut_etudiant: etudiant.statut_etudiant || 'NON_DEFINI',
             ecue_a_reprendre: ecueAReprendre
@@ -1432,6 +1625,13 @@ const calculerTotauxFonction = (ues, typeTraitement, totalCreditsMaquette) => {
     return { moyenneGenerale: parseFloat(moyenneGenerale.toFixed(2)), creditsValides: totalCreditsValides, creditsTotal: totalCreditsMaquette, uesAvecNotes, uesTotal: ues.length };
 };
 
+// ✅ RÈGLE MÉTIER OFFICIELLE : moyenne annuelle = (Moyenne S1 + Moyenne S2) / 2, à partir des
+// moyennes semestrielles déjà arrondies — jamais un recalcul indépendant "à plat" sur les UE de
+// l'année (élimine tout écart de double arrondi avec les moyennes semestrielles affichées).
+const calculerMoyenneAnnuelleDepuisSemestres = (moyenneS1Affichee, moyenneS2Affichee) => {
+    return parseFloat((((moyenneS1Affichee || 0) + (moyenneS2Affichee || 0)) / 2).toFixed(2));
+};
+
 /**
  * ✅ NOUVEAU — SOURCE UNIQUE DE VÉRITÉ POUR S1 / S2 / ANNUEL
  * Calcule, à partir d'un tableau d'UE déjà résolues et repêchées (avec semestre_id
@@ -1439,13 +1639,25 @@ const calculerTotauxFonction = (ues, typeTraitement, totalCreditsMaquette) => {
  * pour le semestre 1, le semestre 2 et l'année complète — via calculerTotauxFonction
  * et determinerDecisionFonction, EXACTEMENT comme le fait le PV.
  *
+ * ✅ Applique aussi le repêchage annuel BTS (voir appliquerRepechageAnnuelBTS) : la
+ * décision d'éligibilité et l'harmonisation se font UNE SEULE FOIS, à partir de la
+ * moyenne annuelle (S1+S2) — jamais semestre par semestre. Le tableau `ues` retourné
+ * (fusion des UE éventuellement harmonisées) doit être utilisé par l'appelant pour
+ * l'affichage (table des ECUE, ecue_a_reprendre, etc.), afin que les notes visibles
+ * soient toujours celles réellement comptées dans la moyenne — source unique.
+ *
  * Utilisée par le bulletin individuel ET les bulletins multiples, afin que ces
  * documents ne recalculent plus JAMAIS les crédits/moyennes/décisions avec leur
  * propre logique ad-hoc (source des incohérences PV / Bulletin / Stats observées).
  */
-const calculerRecapitulatifComplet = (uesAvecResultats, typeTraitement) => {
-    const uesS1 = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
-    const uesS2 = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+const calculerRecapitulatifComplet = (uesAvecResultats, typeTraitement, niveauLibelle, groupeNom) => {
+    const uesS1Brutes = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+    const uesS2Brutes = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+
+    // ✅ Repêchage annuel BTS : UNE SEULE décision, basée sur la moyenne annuelle
+    // (S1+S2), qui harmonise au besoin le seul semestre le plus faible.
+    const { uesS1, uesS2 } = appliquerRepechageAnnuelBTS(uesS1Brutes, uesS2Brutes, typeTraitement, niveauLibelle, groupeNom);
+    const uesAnnuel = [...uesS1, ...uesS2];
 
     const totalCreditsS1 = uesS1.reduce((sum, ue) => sum + (ue.credits || 0), 0);
     const totalCreditsS2 = uesS2.reduce((sum, ue) => sum + (ue.credits || 0), 0);
@@ -1453,7 +1665,14 @@ const calculerRecapitulatifComplet = (uesAvecResultats, typeTraitement) => {
 
     const totauxS1 = calculerTotauxFonction(uesS1, typeTraitement, totalCreditsS1);
     const totauxS2 = calculerTotauxFonction(uesS2, typeTraitement, totalCreditsS2);
-    const totauxAnnuel = calculerTotauxFonction(uesAvecResultats, typeTraitement, totalCreditsAnnuel);
+    // ✅ Crédits/uesAvecNotes = sommes authentiques sur l'année complète, MAIS la
+    // moyenne est TOUJOURS écrasée par la règle officielle (S1+S2)/2 — voir
+    // calculerMoyenneAnnuelleDepuisSemestres — pour éliminer tout écart de double
+    // arrondi avec les moyennes semestrielles réellement affichées.
+    const totauxAnnuel = {
+        ...calculerTotauxFonction(uesAnnuel, typeTraitement, totalCreditsAnnuel),
+        moyenneGenerale: calculerMoyenneAnnuelleDepuisSemestres(totauxS1.moyenneGenerale, totauxS2.moyenneGenerale)
+    };
 
     const decisionS1 = determinerDecisionFonction(totauxS1.creditsValides, totauxS1.creditsTotal, typeTraitement, totauxS1.moyenneGenerale, totauxS1.uesAvecNotes);
     const decisionS2 = determinerDecisionFonction(totauxS2.creditsValides, totauxS2.creditsTotal, typeTraitement, totauxS2.moyenneGenerale, totauxS2.uesAvecNotes);
@@ -1462,7 +1681,10 @@ const calculerRecapitulatifComplet = (uesAvecResultats, typeTraitement) => {
     return {
         s1: { moyenne: totauxS1.moyenneGenerale, creditsValides: totauxS1.creditsValides, creditsTotal: totauxS1.creditsTotal, decision: decisionS1 },
         s2: { moyenne: totauxS2.moyenneGenerale, creditsValides: totauxS2.creditsValides, creditsTotal: totauxS2.creditsTotal, decision: decisionS2 },
-        annuel: { moyenne: totauxAnnuel.moyenneGenerale, creditsValides: totauxAnnuel.creditsValides, creditsTotal: totauxAnnuel.creditsTotal, decision: decisionAnnuelle }
+        annuel: { moyenne: totauxAnnuel.moyenneGenerale, creditsValides: totauxAnnuel.creditsValides, creditsTotal: totauxAnnuel.creditsTotal, decision: decisionAnnuelle },
+        // ✅ UE finales (avec ECUE éventuellement harmonisés BTS) — à utiliser par
+        // l'appelant à la place du tableau d'UE d'origine pour tout affichage.
+        ues: uesAnnuel
     };
 };
 
@@ -1727,11 +1949,15 @@ exports.afficherBulletinByMatricule = async (req, res) => {
         );
 
         // ✅ SOURCE UNIQUE DE VÉRITÉ pour crédits/moyennes/décisions S1, S2, annuel
-        // (identique à ce qu'utiliserait le PV pour ce même étudiant)
-        const recap = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement);
+        // (identique à ce qu'utiliserait le PV pour ce même étudiant), y compris le
+        // repêchage moyenne BTS le cas échéant.
+        const recap = calculerRecapitulatifComplet(
+            uesAvecResultats, typeTraitement, etudiantComplet.niveau_libelle, groupeInfo.nom
+        );
+        uesAvecResultats = recap.ues;
 
         const aSoldeScolarite = (etudiantComplet.statut_scolarite || '').toUpperCase() === 'SOLDE';
-        const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats);
+        const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats, typeTraitement);
 
         // ✅ Redoublant : basé sur la moyenne/crédits ANNUELS officiels (recap.annuel)
         let redoublant = 'NON';
@@ -1947,56 +2173,40 @@ exports.afficherBulletinsMultiples = async (req, res) => {
                     uesAvecResultats.push(resultatsUE);
                 }
 
-                // ✅ APPLIQUER LE REPÊCHAGE COMME DANS LE PV
-                if (!semestreId) {
-                    // Mode annuel : traiter S1 et S2 séparément
-                    const uesS1Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
-                    const uesS2Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+                // ✅ CORRECTIF RACINE : le repêchage crédits est appliqué INCONDITIONNELLEMENT aux
+                // DEUX semestres, quel que soit le semestre demandé dans l'URL pour l'affichage —
+                // EXACTEMENT comme le fait le PV (_calculerResultatsTousEtudiants) et le bulletin
+                // individuel (afficherBulletinByMatricule). Le document affiche toujours les deux
+                // semestres ; laisser le semestre non demandé avec ses valeurs BRUTES créait des
+                // écarts PV/Bulletin (moyenne et crédits du semestre non demandé non harmonisés).
+                const uesS1Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+                const uesS2Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
 
-                    const { ues: uesS1Repechees } = appliquerRepechageCredits(
-                        uesS1Resultats, totalCreditsS1, 1, etudiant.niveau_libelle, groupeInfo.nom
-                    );
-                    const { ues: uesS2Repechees } = appliquerRepechageCredits(
-                        uesS2Resultats, totalCreditsS2, 2, etudiant.niveau_libelle, groupeInfo.nom
-                    );
+                const { ues: uesS1ApresCredits } = appliquerRepechageCredits(
+                    uesS1Resultats, totalCreditsS1, 1, etudiant.niveau_libelle, groupeInfo.nom
+                );
+                const { ues: uesS2ApresCredits } = appliquerRepechageCredits(
+                    uesS2Resultats, totalCreditsS2, 2, etudiant.niveau_libelle, groupeInfo.nom
+                );
 
-                    const uesS1Map = new Map(uesS1Repechees.map(ue => [ue.ue_id, ue]));
-                    const uesS2Map = new Map(uesS2Repechees.map(ue => [ue.ue_id, ue]));
+                // ✅ Repêchage annuel BTS : UNE SEULE décision, basée sur la moyenne annuelle
+                // (S1+S2) — jamais semestre par semestre. No-op pour tout ce qui n'est pas
+                // BTS 1/2 professionnel.
+                const { uesS1: uesS1Final, uesS2: uesS2Final } = appliquerRepechageAnnuelBTS(
+                    uesS1ApresCredits, uesS2ApresCredits, typeTraitement, etudiant.niveau_libelle, groupeInfo.nom
+                );
 
-                    uesAvecResultats = uesAvecResultats.map(ue => {
-                        if (parseInt(ue.semestre_id, 10) === 1) {
-                            return uesS1Map.get(ue.ue_id) || ue;
-                        } else {
-                            return uesS2Map.get(ue.ue_id) || ue;
-                        }
-                    });
-                } else {
-                    // Semestre spécifique
-                    const semestreNum = parseInt(semestreId, 10);
-                    const uesSemestre = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === semestreNum);
-                    const totalCreditsSemestre = uesSemestre.reduce((sum, ue) => sum + ue.credits, 0);
+                uesAvecResultats = [...uesS1Final, ...uesS2Final];
 
-                    const { ues: uesRepechees } = appliquerRepechageCredits(
-                        uesSemestre, totalCreditsSemestre, semestreId, etudiant.niveau_libelle, groupeInfo.nom
-                    );
+                // ✅ SOURCE UNIQUE DE VÉRITÉ pour crédits/moyennes/décisions (S1, S2, annuel) —
+                // EXACTEMENT la même logique que le PV et le bulletin individuel, y compris le
+                // repêchage annuel BTS le cas échéant. Le template Bulletin_multiple.ejs consomme
+                // directement ces valeurs (décision_s1/s2/jury, moyennes, crédits) sans jamais
+                // les recalculer.
+                const recap = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement, etudiant.niveau_libelle, groupeInfo.nom);
+                uesAvecResultats = recap.ues;
 
-                    const uesRepecheesMap = new Map(uesRepechees.map(ue => [ue.ue_id, ue]));
-                    uesAvecResultats = uesAvecResultats.map(ue => {
-                        if (parseInt(ue.semestre_id, 10) === semestreNum) {
-                            return uesRepecheesMap.get(ue.ue_id) || ue;
-                        }
-                        return ue;
-                    });
-                }
-
-                // ✅ SOURCE UNIQUE DE VÉRITÉ pour crédits/moyennes/décisions (S1, S2, annuel)
-                // -- exposée pour info dans la réponse, MAIS le rendu détaillé
-                // (décision du jury affichée dans le PDF) est recalculé dans le
-                // template Bulletin_multiple.ejs, désormais aligné sur cette même
-                // logique (moyenne >= 10 pour DÉROGÉ, UE sans note exclues de la moyenne).
-                const recap = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement);
-
-                const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats);
+                const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats, typeTraitement);
 
                 if (ecueAReprendre.length > 0) {
                     etudiantsAReprendre.push({
@@ -2013,6 +2223,16 @@ exports.afficherBulletinsMultiples = async (req, res) => {
                 const decisionAffichee = semestreDemande === 1 ? recap.s1.decision
                                         : semestreDemande === 2 ? recap.s2.decision
                                         : recap.annuel.decision;
+
+                // ✅ Redoublant : basé sur la moyenne/crédits ANNUELS officiels (recap.annuel),
+                // identique à la règle utilisée par le bulletin individuel.
+                let redoublantEtudiant = 'NON';
+                const typeFEtudiant = (groupeInfo.type_filiere || '').toLowerCase();
+                if (typeFEtudiant.includes('universitaire')) {
+                    if (recap.annuel.moyenne < 10 || recap.annuel.creditsValides < 48) redoublantEtudiant = 'OUI';
+                } else {
+                    if (recap.annuel.moyenne < 10) redoublantEtudiant = 'OUI';
+                }
 
                 resultatsEtudiants.push({
                     etudiant_id: etudiant.id,
@@ -2032,14 +2252,23 @@ exports.afficherBulletinsMultiples = async (req, res) => {
                     credits_total: semestreDemande === 1 ? recap.s1.creditsTotal : semestreDemande === 2 ? recap.s2.creditsTotal : recap.annuel.creditsTotal,
                     decision: decisionAffichee,
                     decision_jury: recap.annuel.decision === 'AJOURNÉ' ? 'AJOURNÉ(E)' : recap.annuel.decision,
+                    decision_jury_class: recap.annuel.decision === 'ADMIS' ? 'admis' : recap.annuel.decision === 'DÉROGÉ' ? 'deroge' : 'ajourne',
                     ues: uesAvecResultats,
                     ecue_a_reprendre: ecueAReprendre,
                     moyenne_s1: recap.s1.moyenne,
                     credits_s1: recap.s1.creditsValides,
+                    credits_s1_total: recap.s1.creditsTotal,
+                    decision_s1: recap.s1.decision,
+                    decision_s1_class: recap.s1.decision === 'ADMIS' ? 'admis' : 'ajourne',
                     moyenne_s2: recap.s2.moyenne,
                     credits_s2: recap.s2.creditsValides,
+                    credits_s2_total: recap.s2.creditsTotal,
+                    decision_s2: recap.s2.decision,
+                    decision_s2_class: recap.s2.decision === 'ADMIS' ? 'admis' : 'ajourne',
                     moyenne_annuelle: recap.annuel.moyenne,
-                    credits_annuels: recap.annuel.creditsValides
+                    credits_annuels: recap.annuel.creditsValides,
+                    credits_annuels_total: recap.annuel.creditsTotal,
+                    redoublant: redoublantEtudiant
                 });
             }
         }

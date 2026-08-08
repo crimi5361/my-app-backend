@@ -501,7 +501,17 @@
                         %>
                         <% matieresAffichees.forEach(function(matiere) {
                             if (matiere.a_note) {
-                                const moyECUE = matiere.moyenne_affichage || matiere.moyenne || 0;
+                                // ✅ Filière professionnelle : priorité à la note repêchée BTS (voir
+                                // appliquerRepechageAnnuelBTS côté contrôleur), sinon moyenne_pro —
+                                // jamais moyenne_affichage/moyenne (calcul universitaire, non pertinent
+                                // ici). Même priorité que getMoyenneEffectiveECUE (PV.controller.js).
+                                const moyECUE = isProfessionnel
+                                    ? ((matiere.harmonisee_bts && matiere.moyenne_pro_affichage !== undefined && matiere.moyenne_pro_affichage !== null)
+                                        ? matiere.moyenne_pro_affichage
+                                        : (matiere.moyenne_pro !== null && matiere.moyenne_pro !== undefined)
+                                            ? matiere.moyenne_pro
+                                            : (matiere.moyenne_affichage !== undefined ? matiere.moyenne_affichage : (matiere.moyenne || 0)))
+                                    : (matiere.moyenne_affichage || matiere.moyenne || 0);
                         %>
                             <tr class="ecue-row">
                                 <td></td>

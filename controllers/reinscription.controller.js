@@ -251,6 +251,12 @@ exports.getDossierReinscription = async (req, res) => {
       academiqueErreur = err.message;
     }
 
+    // ✅ Moteur de décision unique (même fonction que getSituationReinscriptionPublic, portail
+    // Web) : une progression n'est jamais calculée pour un étudiant dont la décision académique
+    // ne l'autorise pas (AJOURNÉ, ou décision pas encore connue) — seul le redoublement reste
+    // possible dans ce cas. Évite de recalculer/dupliquer cette règle une seconde fois ici.
+    const { academiqueValide } = exports.evaluerEligibiliteReinscription(situationAcademique, situationFinanciere);
+
     // Niveau proposé (successeur configuré, même filière) + tarif associé.
     // ⚠️ Avec une filière préparée progressivement (certains niveaux d'une année pas encore
     // ouverts), niveau.niveau_suivant_id peut encore pointer vers un niveau de l'ANCIENNE année
@@ -261,7 +267,7 @@ exports.getDossierReinscription = async (req, res) => {
     // l'agent au lieu de résoudre en silence.
     let niveauPropose = null;
     let progressionBloqueeMessage = null;
-    if (etudiant.niveau_suivant_id) {
+    if (academiqueValide && etudiant.niveau_suivant_id) {
       const niveauProposeResult = await db.query(
         `SELECT n.id, n.libelle, n.filiere_id, n.anneeacademique_id FROM niveau n WHERE n.id = $1`,
         [etudiant.niveau_suivant_id]
@@ -298,9 +304,12 @@ exports.getDossierReinscription = async (req, res) => {
     // donc niveau_suivant_id y est légitimement absent. On utilise le libellé de niveauPropose
     // quand il existe (cas normal), sinon on déduit le libellé suivant générique à partir du
     // niveau actuel (LICENCE 2 → LICENCE 3, etc.) uniquement pour cette recherche.
+    //
+    // Pas de recherche d'orientation quand la progression n'est pas autorisée (AJOURNÉ) : il n'y
+    // a alors aucun "niveau normalement proposé" vers lequel orienter l'étudiant.
     let orientationsDisponibles = [];
     const libelleCibleOrientation = niveauPropose?.libelle || libelleNiveauSuivantGenerique(etudiant.niveau_libelle);
-    if (libelleCibleOrientation && anneeCible) {
+    if (academiqueValide && libelleCibleOrientation && anneeCible) {
       const orientations = await trouverOrientationsFiliere(
         etudiant.id_filiere, libelleCibleOrientation, anneeCible.id, etudiant.site_id
       );
@@ -332,7 +341,7 @@ exports.getDossierReinscription = async (req, res) => {
 
     // Progression suggérée : ADMIS/DÉROGÉ → niveau supérieur ; sinon redoublement
     let niveauRetenuPropose = etudiant.niveau_id;
-    if (situationAcademique && ['ADMIS', 'DÉROGÉ'].includes(situationAcademique.decision) && niveauPropose?.id) {
+    if (academiqueValide && niveauPropose?.id) {
       niveauRetenuPropose = niveauPropose.id;
     }
 
@@ -868,9 +877,13 @@ exports.afficherFicheReinscription = async (req, res) => {
     const estFiliereProfessionnelle = historique?.type_filiere === 'Professionnelles'
       && !/LICENCE/i.test(historique?.niveau_libelle || '');
 
+    // ✅ Même modèle que l'inscription (fiche_admission.ejs, sections ['fiche', 'engagement']
+    // dans un seul document PDF) : la fiche de réinscription est suivie de la fiche
+    // d'engagement dans la même page, au lieu d'ouvrir un second document séparé.
     res.render('fiche_reinscription', {
       dossier, historique, echeancier,
-      ecueEnRattrapage, uesEnRattrapage, estFiliereProfessionnelle
+      ecueEnRattrapage, uesEnRattrapage, estFiliereProfessionnelle,
+      sections: ['fiche', 'engagement']
     });
   } catch (error) {
     console.error('Erreur afficherFicheReinscription:', error);

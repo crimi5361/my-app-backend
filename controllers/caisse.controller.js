@@ -488,9 +488,15 @@ exports.getHistoriqueAnneesEtudiant = async (req, res) => {
     const etudiant = etudiantResult.rows[0];
     const annees = [];
 
+    // ✅ École/département/cursus/classe/groupe ajoutés (même chaîne de jointures que
+    // getEtudiantById, controllers/etudiant.controller.js) pour que la section "Informations
+    // Académiques" de la fiche étudiant puisse réutiliser cette même requête — une seule source
+    // de vérité pour l'historique académique, partagée avec la section financière.
     if (etudiant.scolarite_id) {
       const courant = await db.query(
-        `SELECT e.annee_academique_id, aa.annee, n.libelle AS niveau, f.nom AS filiere,
+        `SELECT e.annee_academique_id, aa.annee, n.libelle AS niveau, f.nom AS filiere, f.sigle AS filiere_sigle,
+                ec.nom AS ecole, dept.nom AS departement, cur.type_parcours AS cursus,
+                c.nom AS classe, g.nom AS groupe,
                 s.montant_scolarite, s.scolarite_verse, s.scolarite_restante,
                 s.statut_etudiant AS statut_paiement, e.statut_scolaire, NULL::text AS type_evenement
          FROM etudiant e
@@ -498,6 +504,11 @@ exports.getHistoriqueAnneesEtudiant = async (req, res) => {
          LEFT JOIN anneeacademique aa ON aa.id = e.annee_academique_id
          LEFT JOIN niveau n ON n.id = e.niveau_id
          LEFT JOIN filiere f ON f.id = e.id_filiere
+         LEFT JOIN departement dept ON dept.id = f.departement_id
+         LEFT JOIN ecole ec ON ec.id = dept.ecole_id
+         LEFT JOIN curcus cur ON cur.id = e.curcus_id
+         LEFT JOIN groupe g ON g.id = e.groupe_id
+         LEFT JOIN classe c ON c.id = g.classe_id
          WHERE e.id = $1`,
         [id]
       );
@@ -508,13 +519,20 @@ exports.getHistoriqueAnneesEtudiant = async (req, res) => {
 
     const passees = await db.query(
       `SELECT DISTINCT ON (hi.annee_academique_id)
-              hi.annee_academique_id, aa.annee, n.libelle AS niveau, f.nom AS filiere,
+              hi.annee_academique_id, aa.annee, n.libelle AS niveau, f.nom AS filiere, f.sigle AS filiere_sigle,
+              ec.nom AS ecole, dept.nom AS departement, cur.type_parcours AS cursus,
+              c.nom AS classe, g.nom AS groupe,
               hi.montant_scolarite, hi.scolarite_verse, hi.scolarite_restante,
               hi.statut_paiement, hi.statut_scolaire, hi.type_evenement
        FROM historique_inscription hi
        LEFT JOIN anneeacademique aa ON aa.id = hi.annee_academique_id
        LEFT JOIN niveau n ON n.id = hi.niveau_id
        LEFT JOIN filiere f ON f.id = hi.id_filiere
+       LEFT JOIN departement dept ON dept.id = f.departement_id
+       LEFT JOIN ecole ec ON ec.id = dept.ecole_id
+       LEFT JOIN curcus cur ON cur.id = hi.curcus_id
+       LEFT JOIN groupe g ON g.id = hi.groupe_id
+       LEFT JOIN classe c ON c.id = g.classe_id
        WHERE hi.etudiant_id = $1
          AND hi.annee_academique_id IS DISTINCT FROM $2
        ORDER BY hi.annee_academique_id, hi.created_at DESC`,
