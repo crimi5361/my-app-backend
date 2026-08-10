@@ -590,13 +590,134 @@ exports.afficherFicheEngagementSeule = async (req, res) => {
 };
 
 ///=====================================================================================================================
+// ✅ Amélioration tableaux Gestion des statuts / Liste des étudiants (2026-08-08) — construction
+// PARTAGÉE du WHERE (filtres + recherche), utilisée à l'IDENTIQUE par getEtudiantsByDepartement
+// (paginé) et exportEtudiantsByDepartement (export complet) : garantit que l'export retourne
+// toujours exactement les mêmes lignes que la liste filtrée à l'écran, jamais une logique de
+// filtrage divergente recalculée séparément (source des écarts liste/export avant ce chantier).
+// Tous les nouveaux filtres sont optionnels et combinables (AND), par identifiant (jamais par
+// libellé texte, sauf les paramètres `filiere`/`niveau` déjà existants, conservés tels quels pour
+// compatibilité ascendante).
+function _construireFiltresEtudiants(req, siteId, anneeAcademiqueId, ecoleId) {
+  const whereClauses = ['e.site_id = $1', 'e.annee_academique_id = $2'];
+  const params = [siteId, anneeAcademiqueId];
+  let paramCounter = 3;
+
+  // Filtre par standing (par défaut 'Inscrit')
+  const standingFilter = req.query.standing || 'Inscrit';
+  whereClauses.push(`e.standing = $${paramCounter}`);
+  params.push(standingFilter);
+  paramCounter++;
+
+  // École (académique) — indépendant du cloisonnement de sécurité ecoleId, appliqué plus bas.
+  if (req.query.ecole_id) {
+    whereClauses.push(`dpt.ecole_id = $${paramCounter}`);
+    params.push(req.query.ecole_id);
+    paramCounter++;
+  }
+
+  // Département académique — nom de paramètre distinct de `departement_id` (déjà utilisé
+  // ailleurs dans ce contrôleur comme site_id, ne pas réutiliser pour éviter toute confusion).
+  if (req.query.academique_departement_id) {
+    whereClauses.push(`f.departement_id = $${paramCounter}`);
+    params.push(req.query.academique_departement_id);
+    paramCounter++;
+  }
+
+  // Filière — par ID (filtre UI) ou par nom exact (paramètre historique, conservé)
+  if (req.query.filiere_id) {
+    whereClauses.push(`e.id_filiere = $${paramCounter}`);
+    params.push(req.query.filiere_id);
+    paramCounter++;
+  } else if (req.query.filiere) {
+    whereClauses.push(`f.nom = $${paramCounter}`);
+    params.push(req.query.filiere);
+    paramCounter++;
+  }
+
+  // Niveau — par ID (filtre UI) ou par libellé exact (paramètre historique, conservé)
+  if (req.query.niveau_id) {
+    whereClauses.push(`e.niveau_id = $${paramCounter}`);
+    params.push(req.query.niveau_id);
+    paramCounter++;
+  } else if (req.query.niveau) {
+    whereClauses.push(`n.libelle = $${paramCounter}`);
+    params.push(req.query.niveau);
+    paramCounter++;
+  }
+
+  if (req.query.classe_id) {
+    whereClauses.push(`g.classe_id = $${paramCounter}`);
+    params.push(req.query.classe_id);
+    paramCounter++;
+  }
+
+  if (req.query.groupe_id) {
+    whereClauses.push(`e.groupe_id = $${paramCounter}`);
+    params.push(req.query.groupe_id);
+    paramCounter++;
+  }
+
+  if (req.query.curcus_id) {
+    whereClauses.push(`e.curcus_id = $${paramCounter}`);
+    params.push(req.query.curcus_id);
+    paramCounter++;
+  }
+
+  if (req.query.sexe) {
+    whereClauses.push(`e.sexe = $${paramCounter}`);
+    params.push(req.query.sexe);
+    paramCounter++;
+  }
+
+  if (req.query.statut_scolaire) {
+    whereClauses.push(`e.statut_scolaire = $${paramCounter}`);
+    params.push(req.query.statut_scolaire);
+    paramCounter++;
+  }
+
+  // ✅ Recherche élargie — nom, prénoms, matricule MERS, matricule IIPEA, code unique,
+  // téléphone, email, ainsi que "nom prénom"/"prénom nom" concaténés (recherche combinée
+  // naturelle). Toutes les colonnes ILIKE'd disposent désormais d'un index trigram GIN (voir
+  // migrations/sql/020_etudiant_recherche_trgm.sql — nom/prénoms/matricule_iipea en avaient déjà,
+  // matricule/code_unique/telephone/email nouvellement indexés).
+  const searchTerm = req.query.search || '';
+  if (searchTerm) {
+    whereClauses.push(`(
+      e.nom ILIKE $${paramCounter} OR
+      e.prenoms ILIKE $${paramCounter} OR
+      e.matricule ILIKE $${paramCounter} OR
+      e.code_unique ILIKE $${paramCounter} OR
+      e.matricule_iipea ILIKE $${paramCounter} OR
+      e.telephone ILIKE $${paramCounter} OR
+      e.email ILIKE $${paramCounter} OR
+      f.nom ILIKE $${paramCounter} OR
+      f.sigle ILIKE $${paramCounter} OR
+      e.nationalite ILIKE $${paramCounter} OR
+      (e.nom || ' ' || e.prenoms) ILIKE $${paramCounter} OR
+      (e.prenoms || ' ' || e.nom) ILIKE $${paramCounter}
+    )`);
+    params.push(`%${searchTerm}%`);
+    paramCounter++;
+  }
+
+  // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site, appliqué uniquement
+  // si l'agent est restreint à une école (ecoleId non nul). Vue globale inchangée.
+  if (ecoleId !== null) {
+    whereClauses.push(`dpt.ecole_id = $${paramCounter}`);
+    params.push(ecoleId);
+    paramCounter++;
+  }
+
+  return { whereClause: 'WHERE ' + whereClauses.join(' AND '), params, paramCounter };
+}
+
 exports.getEtudiantsByDepartement = async (req, res) => {
   try {
     const departementId = req.query.departement_id || req.user?.departement_id;
     const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
-    const searchTerm = req.query.search || '';
-    
+
     if (!departementId) {
       return res.status(400).json({
         success: false,
@@ -635,57 +756,9 @@ exports.getEtudiantsByDepartement = async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const offset = (page - 1) * limit;
 
-    // Construction dynamique de la clause WHERE
-    let whereClauses = ['e.site_id = $1', 'e.annee_academique_id = $2'];
-    let params = [departementId, anneeAcademiqueId];
-    let paramCounter = 3;
-
-    // Filtre par standing (par défaut 'Inscrit')
-    const standingFilter = req.query.standing || 'Inscrit';
-    whereClauses.push(`e.standing = $${paramCounter}`);
-    params.push(standingFilter);
-    paramCounter++;
-
-    // Filtre par filière si fourni
-    if (req.query.filiere) {
-      whereClauses.push(`f.nom = $${paramCounter}`);
-      params.push(req.query.filiere);
-      paramCounter++;
-    }
-
-    // Filtre par niveau si fourni
-    if (req.query.niveau) {
-      whereClauses.push(`n.libelle = $${paramCounter}`);
-      params.push(req.query.niveau);
-      paramCounter++;
-    }
-
-    // Recherche textuelle si fournie
-    if (searchTerm) {
-      whereClauses.push(`(
-        e.nom ILIKE $${paramCounter} OR
-        e.prenoms ILIKE $${paramCounter} OR
-        e.matricule ILIKE $${paramCounter} OR
-        e.code_unique ILIKE $${paramCounter} OR
-        e.matricule_iipea ILIKE $${paramCounter} OR
-        f.nom ILIKE $${paramCounter} OR
-        f.sigle ILIKE $${paramCounter} OR
-        e.telephone ILIKE $${paramCounter} OR
-        e.nationalite ILIKE $${paramCounter}
-      )`);
-      params.push(`%${searchTerm}%`);
-      paramCounter++;
-    }
-
-    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site ci-dessus, appliqué
-    // uniquement si l'agent est restreint à une école (ecoleId non nul). Vue globale inchangée.
-    if (ecoleId !== null) {
-      whereClauses.push(`dpt.ecole_id = $${paramCounter}`);
-      params.push(ecoleId);
-      paramCounter++;
-    }
-
-    const whereClause = whereClauses.length > 0 ? 'WHERE ' + whereClauses.join(' AND ') : '';
+    // ✅ Filtres + recherche — construction partagée avec exportEtudiantsByDepartement, voir
+    // _construireFiltresEtudiants ci-dessus.
+    const { whereClause, params, paramCounter } = _construireFiltresEtudiants(req, departementId, anneeAcademiqueId, ecoleId);
 
     // Requête principale avec toutes les jointures
     const dataQuery = `
@@ -735,9 +808,10 @@ exports.getEtudiantsByDepartement = async (req, res) => {
         doc.dernier_diplome,
         doc.fiche_orientation,
 
-        -- Informations de groupe
+        -- Informations de groupe/classe
         g.nom as groupe_nom,
         g.est_primaire as groupe_est_primaire,
+        cl.nom as classe_nom,
 
         -- Informations de scolarité — sourcées depuis vue_position_academique (montants déjà
         -- corrects par branche, live pour l'année courante, figés depuis historique_inscription
@@ -765,6 +839,7 @@ exports.getEtudiantsByDepartement = async (req, res) => {
       LEFT JOIN document doc ON e.document_id = doc.id
       LEFT JOIN scolarite s ON e.scolarite_id = s.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
+      LEFT JOIN classe cl ON g.classe_id = cl.id
       LEFT JOIN curcus c ON e.curcus_id = c.id
       ${whereClause}
       ORDER BY e.nom ASC, e.prenoms ASC
@@ -831,8 +906,7 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
     const departementId = req.query.departement_id || req.user?.departement_id;
     const ecoleId = getEcoleScopeFromUser(req);
     const { anneeAcademiqueId } = req.query;
-    const searchTerm = req.query.search || '';
-    
+
     if (!departementId) {
       return res.status(400).json({
         success: false,
@@ -867,57 +941,10 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
       });
     }
 
-    // Construction dynamique de la clause WHERE (mêmes filtres que getEtudiantsByDepartement)
-    let whereClauses = ['e.site_id = $1', 'e.annee_academique_id = $2'];
-    let params = [departementId, anneeAcademiqueId];
-    let paramCounter = 3;
-
-    // Filtre par standing (par défaut 'Inscrit')
-    const standingFilter = req.query.standing || 'Inscrit';
-    whereClauses.push(`e.standing = $${paramCounter}`);
-    params.push(standingFilter);
-    paramCounter++;
-
-    // Filtre par filière si fourni
-    if (req.query.filiere) {
-      whereClauses.push(`f.nom = $${paramCounter}`);
-      params.push(req.query.filiere);
-      paramCounter++;
-    }
-
-    // Filtre par niveau si fourni
-    if (req.query.niveau) {
-      whereClauses.push(`n.libelle = $${paramCounter}`);
-      params.push(req.query.niveau);
-      paramCounter++;
-    }
-
-    // Recherche textuelle si fournie
-    if (searchTerm) {
-      whereClauses.push(`(
-        e.nom ILIKE $${paramCounter} OR
-        e.prenoms ILIKE $${paramCounter} OR
-        e.matricule ILIKE $${paramCounter} OR
-        e.code_unique ILIKE $${paramCounter} OR
-        e.matricule_iipea ILIKE $${paramCounter} OR
-        f.nom ILIKE $${paramCounter} OR
-        f.sigle ILIKE $${paramCounter} OR
-        e.telephone ILIKE $${paramCounter} OR
-        e.nationalite ILIKE $${paramCounter}
-      )`);
-      params.push(`%${searchTerm}%`);
-      paramCounter++;
-    }
-
-    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site, appliqué uniquement
-    // si l'agent est restreint (ecoleId non nul).
-    if (ecoleId !== null) {
-      whereClauses.push(`dpt.ecole_id = $${paramCounter}`);
-      params.push(ecoleId);
-      paramCounter++;
-    }
-
-    const whereClause = whereClauses.length > 0 ? 'WHERE ' + whereClauses.join(' AND ') : '';
+    // ✅ Filtres + recherche — EXACTEMENT la même construction que getEtudiantsByDepartement
+    // (_construireFiltresEtudiants), pour garantir que l'export contient toujours 100% des lignes
+    // correspondant aux filtres appliqués à l'écran, jamais une logique divergente.
+    const { whereClause, params } = _construireFiltresEtudiants(req, departementId, anneeAcademiqueId, ecoleId);
 
     // Requête d'exportation simplifiée (sans les champs de documents pour éviter les doublons)
     const exportQuery = `
@@ -950,9 +977,10 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
         aas.etat AS etat_annee,
 
         c.type_parcours,
-        
+
         g.nom AS groupe_nom,
         g.est_primaire AS groupe_est_primaire,
+        cl.nom AS classe_nom,
 
         COALESCE(e.montant_scolarite, 0) AS montant_total_scolarite,
         COALESCE(e.scolarite_verse, 0) AS montant_paye,
@@ -972,6 +1000,7 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
       JOIN anneeacademique a ON e.annee_academique_id = a.id
       LEFT JOIN anneeacademique_site aas ON aas.anneeacademique_id = a.id AND aas.site_id = e.site_id
       LEFT JOIN groupe g ON e.groupe_id = g.id
+      LEFT JOIN classe cl ON g.classe_id = cl.id
       LEFT JOIN curcus c ON e.curcus_id = c.id
       ${whereClause}
       ORDER BY e.nom ASC, e.prenoms ASC

@@ -84,7 +84,37 @@ const uploadAdmissionFiles = () => {
   });
 };
 
+// Upload multi-champs pour le module Équivalence : uniquement des pièces (`doc_<CODE>`,
+// aucune photo) — mêmes formats/taille que uploadAdmissionFiles (PDF ou image scannée),
+// écriture initiale à plat dans uploads/documents, puis déplacées dans leur arborescence
+// définitive par services/documentStorage.service.js::saveDocument.
+const uploadEquivalenceFiles = () => {
+  return multer({
+    storage: multer.diskStorage({
+      destination: (req, file, cb) => {
+        const dir = path.join(__dirname, '../uploads/documents');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, 'doc_' + uniqueSuffix + path.extname(file.originalname));
+      }
+    }),
+    limits: {
+      fileSize: 8 * 1024 * 1024 // 8MB — aligné sur uploadAdmissionFiles
+    },
+    fileFilter: (req, file, cb) => {
+      const allowedDocs = ['image/jpeg', 'image/jpg', 'image/png', 'application/pdf'];
+      return allowedDocs.includes(file.mimetype)
+        ? cb(null, true)
+        : cb(new Error('Format de pièce invalide. Formats acceptés: JPG, JPEG, PNG, PDF'), false);
+    }
+  });
+};
+
 module.exports = {
   uploadStudentFiles,
-  uploadAdmissionFiles
+  uploadAdmissionFiles,
+  uploadEquivalenceFiles
 };

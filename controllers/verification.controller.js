@@ -120,11 +120,18 @@ exports.getDossierVerification = async (req, res) => {
       `SELECT id, type_parcours FROM curcus WHERE type_parcours != 'Universitaire' ORDER BY type_parcours`
     );
 
+    // Documents admission : toujours affichés (LEFT JOIN, comme avant). Documents équivalence
+    // (contexte='equivalence', codes préfixés EQ_) : affichés UNIQUEMENT si ce candidat en a
+    // réellement une ligne document_etudiant — copiée à la validation pour son niveau précis
+    // (equivalence.controller.js::validerDemande). Sans cette restriction, les 14 documents
+    // équivalence possibles (tous niveaux confondus) s'afficheraient pour chaque dossier,
+    // y compris les pièces d'un tout autre niveau que le sien.
     const documentsResult = await db.query(
       `SELECT td.code, td.libelle, td.obligatoire, de.fourni, de.declare_par_etudiant, de.fichier_path
        FROM type_document td
        LEFT JOIN document_etudiant de ON de.type_document_id = td.id AND de.etudiant_id = $1
-       WHERE td.contexte = 'admission' AND td.code != 'PHOTO'
+       WHERE (td.contexte = 'admission' AND td.code != 'PHOTO')
+          OR (td.contexte = 'equivalence' AND de.id IS NOT NULL)
        ORDER BY td.id`,
       [id]
     );
@@ -258,8 +265,15 @@ exports.confirmerVerification = async (req, res) => {
     }
 
     // ── Étape 3 : cases "fourni" par document, jamais declare_par_etudiant ──
+    // Même principe de restriction que le SELECT d'affichage (ligne ~130) : les documents
+    // équivalence ne sont proposés que si ce candidat en a réellement une ligne.
     const typeDocResult = await client.query(
-      `SELECT id, code FROM type_document WHERE contexte = 'admission' AND code != 'PHOTO'`
+      `SELECT td.id, td.code FROM type_document td
+       WHERE (td.contexte = 'admission' AND td.code != 'PHOTO')
+          OR (td.contexte = 'equivalence' AND EXISTS (
+                SELECT 1 FROM document_etudiant de WHERE de.etudiant_id = $1 AND de.type_document_id = td.id
+              ))`,
+      [id]
     );
     for (const typeDoc of typeDocResult.rows) {
       if (!(typeDoc.code in fourni)) continue;

@@ -166,6 +166,7 @@ const apiRoutes = [
   { path: '/api/donneeespaceetudiant',    route: require('./routes/donneeespaceetudiant.routes') },
   { path: '/api/detailaffichageMaquette', route: require('./routes/DetailAffichageMaquette.routes') },
   { path: '/api/memoire',                 route: require('./routes/memoire.routes') },
+  { path: '/api/equivalence',             route: require('./routes/equivalence.routes') },
 
   // Emploi du temps & divers
   { path: '/api/emploiDuTemps',   route: require('./routes/EDT.routes') },
