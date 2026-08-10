@@ -28,8 +28,8 @@ exports.getStudentProfile = async (req, res) => {
         g.nom as groupe_nom,
         g.est_primaire as groupe_est_primaire,
         g.capacite_max,
-        cl.nom as classe_nom,
-        cl.description as classe_description,
+        COALESCE(cl_groupe.nom, cl_criteres.nom) as classe_nom,
+        COALESCE(cl_groupe.description, cl_criteres.description) as classe_description,
         s.montant_scolarite,
         s.scolarite_verse,
         s.statut_etudiant as statut_scolarite,
@@ -44,11 +44,15 @@ exports.getStudentProfile = async (req, res) => {
       LEFT JOIN document d ON e.document_id = d.id
       LEFT JOIN curcus c ON e.curcus_id = c.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
-      -- Chantier 6 : classe résolue via les critères d'affectation de l'étudiant, pas via le
-      -- groupe (absent tant qu'aucun découpage manuel n'a eu lieu) — même clé que
-      -- classeGroupe.service.js / getRecuData / fiche d'admission.
-      LEFT JOIN classe cl ON cl.filiere_id = e.id_filiere AND cl.niveau_id = e.niveau_id
-        AND cl.annee_academique_id = e.annee_academique_id AND cl.curcus_id IS NOT DISTINCT FROM e.curcus_id
+      -- Chantier 6 (corrigé) : classe résolue en priorité via le groupe de l'étudiant —
+      -- fiable pour 7193/7200 étudiants "Inscrit" (vérifié), contre un repli
+      -- filière/niveau/curcus/année qui échouait pour la quasi-totalité d'entre eux car
+      -- classe.curcus_id n'est en pratique jamais renseigné (0/153 lignes). Le repli reste
+      -- en place pour les rares étudiants sans groupe assigné (découpage manuel pas encore
+      -- fait) — même clé que classeGroupe.service.js / getRecuData / fiche d'admission.
+      LEFT JOIN classe cl_groupe ON cl_groupe.id = g.classe_id
+      LEFT JOIN classe cl_criteres ON cl_criteres.filiere_id = e.id_filiere AND cl_criteres.niveau_id = e.niveau_id
+        AND cl_criteres.annee_academique_id = e.annee_academique_id AND cl_criteres.curcus_id IS NOT DISTINCT FROM e.curcus_id
       LEFT JOIN scolarite s ON e.scolarite_id = s.id
       WHERE e.id = $1
     `;
