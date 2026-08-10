@@ -688,11 +688,22 @@
                              Décision par ECUE : Note >= 10 => ADMIS, sinon AJOURNÉ (aucun crédit,
                              aucune compensation, aucune validation d'UE n'intervient ici). -->
                         <%
+                        // ✅ ECUE à choix (Espagnol/Allemand, etc.) non suivie : jamais affichée sur
+                        // le bulletin, même règle que Bulletin.ejs (bulletin individuel) et même
+                        // source (matiere.non_classe, calculée par calculerResultatsUEAvecDetailsFonction
+                        // — voir PV.controller.js). Cas exceptionnel des deux membres à 0 : une seule
+                        // ligne conservée, de façon déterministe (ordre alphabétique).
                         const ecuesAffichees = [];
                         uesTableau.forEach(function(ue) {
-                            (ue.matieres || []).filter(m => m.a_note).forEach(function(matiere) {
-                                ecuesAffichees.push(matiere);
-                            });
+                            const nonClasseUE = (ue.matieres || []).filter(m => m.non_classe);
+                            const nonClasseAGarder = nonClasseUE.length > 1
+                                ? [...nonClasseUE].sort((a, b) => (a.nom || '').localeCompare(b.nom || ''))[0]
+                                : null;
+                            (ue.matieres || [])
+                                .filter(m => m.a_note && (!m.non_classe || (nonClasseUE.length > 1 && m === nonClasseAGarder)))
+                                .forEach(function(matiere) {
+                                    ecuesAffichees.push(matiere);
+                                });
                         });
                         %>
                         <% if (ecuesAffichees.length > 0) {
@@ -717,7 +728,17 @@
                     <% } else if (uesTableau.length > 0) {
                         uesTableau.forEach(function(ue) {
                             const moyUE = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
-                            const ecuesAvecNote = ue.matieres ? ue.matieres.filter(m => m.a_note) : [];
+                            // ✅ ECUE à choix (Espagnol/Allemand, etc.) non suivie : jamais affichée,
+                            // même règle que Bulletin.ejs (bulletin individuel) et même source
+                            // (matiere.non_classe). Cas exceptionnel des deux membres à 0 : une seule
+                            // ligne conservée, de façon déterministe (ordre alphabétique).
+                            const nonClasseUE = ue.matieres ? ue.matieres.filter(m => m.non_classe) : [];
+                            const nonClasseAGarder = nonClasseUE.length > 1
+                                ? [...nonClasseUE].sort((a, b) => (a.nom || '').localeCompare(b.nom || ''))[0]
+                                : null;
+                            const ecuesAvecNote = ue.matieres
+                                ? ue.matieres.filter(m => m.a_note && (!m.non_classe || (nonClasseUE.length > 1 && m === nonClasseAGarder)))
+                                : [];
                             const rowspan = ecuesAvecNote.length > 0 ? ecuesAvecNote.length : 1;
 
                             let mentionUE = '';
