@@ -1465,7 +1465,7 @@ exports.updateInformationsPersonnelles = async (req, res) => {
     }
     const etudiantActuel = etudiantResult.rows[0];
 
-    const champsRequis = ['nom', 'prenoms', 'date_naissance', 'sexe', 'nationalite', 'telephone', 'email_personnel', 'contact_parent'];
+    const champsRequis = ['nom', 'prenoms', 'date_naissance', 'sexe', 'nationalite'];
     const manquants = champsRequis.filter(f => !identite[f]);
     if (manquants.length > 0) {
       return res.status(400).json({ success: false, message: 'Champs obligatoires manquants.', missingFields: manquants, code: 'MISSING_FIELDS' });
@@ -1491,8 +1491,8 @@ exports.updateInformationsPersonnelles = async (req, res) => {
       [
         identite.nom.toUpperCase(), identite.prenoms.toUpperCase(),
         moment(identite.date_naissance).format('YYYY-MM-DD'),
-        identite.sexe, identite.nationalite, identite.telephone, identite.email_personnel,
-        identite.contact_parent, identite.contact_parent_2 || null,
+        identite.sexe, identite.nationalite, identite.telephone || null, identite.email_personnel || null,
+        identite.contact_parent || null, identite.contact_parent_2 || null,
         identite.lieu_naissance || null, identite.pays_naissance || null, identite.lieu_residence || null,
         identite.nom_parent_1 || null, identite.nom_parent_2 || null,
         identite.adresse_parent_1 || null, identite.adresse_parent_2 || null,
