@@ -9,10 +9,14 @@ config/secrets/
 CLAUDE.md
 .claude/
 
-# Documentation interne et scripts de migration — usage exclusif équipe de développement,
-# jamais publiés sur le dépôt distant (voir README.md, section Déploiement).
+# Documentation interne — usage exclusif équipe de développement, jamais publiée
+# sur le dépôt distant (voir README.md, section Déploiement).
 docs/
 documentation/
 analyse/
 notes/
-migrations/
+
+# migrations/ n'est plus ignoré : sans les scripts de schéma, une copie du dépôt
+# ne peut pas être mise en service ni testée. Aucun secret n'y figure — le mot de
+# passe du rôle de lecture est généré à l'exécution par setup-role-assistant.js
+# et affiché une seule fois, jamais écrit dans un fichier.
