@@ -13,6 +13,8 @@ const { repondreQuestion } = require('../services/assistantAnalyste.service');
 const { verifierBudget, getConsommationMois } = require('../services/assistantBudget.service');
 const { resoudre } = require('../services/assistantFichiers.service');
 const google = require('../services/assistantGoogle.service');
+const { getReglages, majReglages } = require('../services/assistantReglages.service');
+const { pointDuJour } = require('../services/assistantPointDuJour.service');
 
 exports.chat = async (req, res) => {
   try {
@@ -204,5 +206,57 @@ exports.googleDeconnexion = async (req, res) => {
   } catch (error) {
     console.error('Erreur assistant.googleDeconnexion:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+/** Réglages du site : prénom de l'assistante, mode d'ouverture du vocal. */
+exports.reglages = async (req, res) => {
+  try {
+    res.status(200).json({
+      success: true,
+      reglages: await getReglages(req.user.departement_id),
+    });
+  } catch (error) {
+    console.error('Erreur assistant.reglages:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+exports.majReglages = async (req, res) => {
+  try {
+    const siteId = req.user.departement_id;
+    if (!siteId) return res.status(400).json({ success: false, message: 'Site introuvable.' });
+
+    const reglages = await majReglages(siteId, req.user.id, req.body || {});
+
+    // Le prénom est refusé s'il ne ressemble pas à un prénom (plus de deux mots,
+    // caractères interdits). On le dit plutôt que d'enregistrer en silence.
+    const nomRefuse = Object.prototype.hasOwnProperty.call(req.body || {}, 'nom_assistant')
+      && String(req.body.nom_assistant || '').trim() !== ''
+      && reglages.nom_assistant === null;
+
+    res.status(200).json({
+      success: true,
+      reglages,
+      message: nomRefuse
+        ? "Ce nom n'a pas été retenu : un prénom, deux mots au maximum."
+        : undefined,
+    });
+  } catch (error) {
+    console.error('Erreur assistant.majReglages:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+/** Point du jour — affiché à l'ouverture, sans que le fondateur ait à demander. */
+exports.pointDuJour = async (req, res) => {
+  try {
+    const siteId = req.user.departement_id;
+    if (!siteId) return res.status(400).json({ success: false, message: 'Site introuvable.' });
+    res.status(200).json({ success: true, point: await pointDuJour({ siteId, ecoleId: getEcoleScopeFromUser(req) }) });
+  } catch (error) {
+    console.error('Erreur assistant.pointDuJour:', error);
+    // Un point du jour indisponible ne doit pas empêcher d'ouvrir l'assistante.
+    res.status(200).json({ success: true, point: { ok: false, phrases: [], alertes: [] } });
   }
 };

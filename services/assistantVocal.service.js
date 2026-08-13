@@ -19,8 +19,11 @@ const { GoogleGenAI, Modality, Type } = require('@google/genai');
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { verifierBudget, enregistrer, extraireUsage, getConsommationMois } = require('./assistantBudget.service');
 const {
-  BLOC_IDENTITE, BLOC_CAPACITES, BLOC_PRUDENCE, DECLARATIONS, DECLARATION_GRAPHIQUE, executerOutil,
+  construireIdentite, BLOC_CAPACITES, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATION_GRAPHIQUE, executerOutil,
 } = require('./assistantOutils.service');
+const { formePour } = require('./assistantFormes.service');
+const { getReglages } = require('./assistantReglages.service');
+const { getVocabulaire } = require('./assistantVocabulaire.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -31,11 +34,26 @@ const MODELE_VOCAL_REPLI = 'gemini-2.5-flash-native-audio-latest';
 
 const ROLES_AUTORISES = new Set(['admin', 'fondateur']);
 
+/**
+ * Sessions vocales ouvertes, par utilisateur.
+ *
+ * Sans ce registre, ouvrir cinq onglets ouvrait cinq sessions Live simultanees,
+ * chacune facturant son audio en continu : le plafond mensuel pouvait etre
+ * consomme en une heure sans que personne s'en apercoive. La session la plus
+ * ancienne est fermee au profit de la nouvelle, ce qui correspond a l'intention
+ * du fondateur quand il rouvre l'ecran ailleurs.
+ */
+const sessionsOuvertes = new Map();
+
 // Memes outils que le canal ecrit, plus le graphique : une capacite qui existerait
 // au clavier et pas a l'oral serait incomprehensible pour le fondateur.
-const OUTILS = [{ functionDeclarations: [...DECLARATIONS, DECLARATION_GRAPHIQUE] }];
+const outilsPour = (reglages) => [{
+  functionDeclarations: reglages?.recherche_web
+    ? [...DECLARATIONS, DECLARATION_GRAPHIQUE, DECLARATION_WEB]
+    : [...DECLARATIONS, DECLARATION_GRAPHIQUE],
+}];
 
-function construireInstruction(dictionnaire, annees, aujourdhui) {
+function construireInstruction(dictionnaire, annees, aujourdhui, reglages) {
   const catalogue = dictionnaire
     .map((v) => `### ${v.vue}\n${v.description || ''}\nColonnes : ${v.colonnes.join(', ')}`)
     .join('\n\n');
@@ -43,9 +61,15 @@ function construireInstruction(dictionnaire, annees, aujourdhui) {
     ? annees.map((a) => `- id ${a.annee_academique_id} : ${a.annee} (état : ${a.etat || 'non renseigné'})`).join('\n')
     : '- (aucune année académique enregistrée)';
 
-  return `${BLOC_IDENTITE}
+  return `${construireIdentite(reglages.nom_assistant)}
 
 ${BLOC_CAPACITES}
+
+${BLOC_RECHERCHE}
+
+${BLOC_EXPERTISE}
+
+${BLOC_AUDIT}
 
 ${BLOC_PRUDENCE}
 
@@ -131,6 +155,15 @@ function monterPasserelleVocale(serveurHttp) {
     }
 
     wss.handleUpgrade(requete, socket, tete, (ws) => {
+      const precedente = sessionsOuvertes.get(utilisateur.id);
+      if (precedente && precedente.readyState <= precedente.OPEN) {
+        try { precedente.close(1000, 'session reprise ailleurs'); } catch { /* deja fermee */ }
+      }
+      sessionsOuvertes.set(utilisateur.id, ws);
+      ws.on('close', () => {
+        if (sessionsOuvertes.get(utilisateur.id) === ws) sessionsOuvertes.delete(utilisateur.id);
+      });
+
       demarrerSession(ws, {
         siteId: utilisateur.departement_id,
         ecoleId: utilisateur.ecole_id ?? null,
@@ -170,29 +203,45 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       return fermer('budget dépassé');
     }
 
-    const [dictionnaire, calendrier] = await Promise.all([
+    const [dictionnaire, calendrier, reglages, vocabulaire] = await Promise.all([
       getDictionnaire({ siteId, ecoleId }),
       executerRequete(
         'SELECT annee_academique_id, annee, etat FROM assistant.v_annees_academiques ORDER BY annee DESC',
         { siteId, ecoleId }
       ),
+      getReglages(siteId),
+      getVocabulaire({ siteId, ecoleId }),
     ]);
     const aujourdhui = new Date().toLocaleDateString('fr-FR', {
       weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
     });
     const instruction = construireInstruction(
-      dictionnaire, calendrier.ok ? calendrier.lignes : [], aujourdhui
+      dictionnaire, calendrier.ok ? calendrier.lignes : [], aujourdhui, reglages
     );
 
     const config = {
       responseModalities: [Modality.AUDIO],
       // Les transcriptions servent à afficher le fil de la conversation à l'écran
       // et à journaliser ce qui a été dit — l'audio seul n'est pas vérifiable.
-      inputAudioTranscription: {},
-      outputAudioTranscription: {},
-      speechConfig: { languageCode: 'fr-FR' },
+      // La langue est DECLAREE des deux cotes. Un objet vide laissait la
+      // detection automatique trancher, et sur du francais parle avec des noms
+      // ivoiriens elle produisait « Commentaire puis-je vous athlete » pour
+      // « Comment puis-je vous aider ».
+      //
+      // Le vocabulaire, lui, est construit depuis la base : noms des agents,
+      // ecoles et filieres. Ce sont exactement les mots qu'un modele acoustique
+      // generique n'a jamais rencontres, et ceux que le fondateur prononce le
+      // plus souvent.
+      inputAudioTranscription: { languageCodes: ['fr-FR'], customVocabulary: vocabulaire },
+      outputAudioTranscription: { languageCodes: ['fr-FR'], customVocabulary: vocabulaire },
+      speechConfig: {
+        languageCode: 'fr-FR',
+        // Le nom vient des reglages du site, borne par assistantReglages :
+        // une valeur inconnue ferait echouer l'ouverture de la session.
+        voiceConfig: { prebuiltVoiceConfig: { voiceName: reglages.voix } },
+      },
       systemInstruction: instruction,
-      tools: OUTILS,
+      tools: outilsPour(reglages),
     };
 
     // L'écouteur navigateur est branché AVANT d'annoncer 'pret' (plus bas) : le
@@ -256,6 +305,10 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
         const reponses = [];
 
         for (const appel of msg.toolCall.functionCalls) {
+          // La forme 3D suit ce que l'assistante FAIT, pas ce qui a ete dit :
+          // elle est deduite de l'outil appele et de la vue interrogee.
+          envoyer('forme', { forme: formePour(appel.name) });
+
           // Le graphique est le seul outil propre au canal vocal : il a besoin du
           // dernier resultat SQL, que seul ce service conserve.
           if (appel.name === 'afficher_graphique') {
@@ -308,7 +361,10 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       // sinon on entend la fin d'une phrase que le modèle a abandonnée.
       if (msg.serverContent?.interrupted) envoyer('interrompu');
 
-      if (msg.serverContent?.turnComplete) envoyer('tour_termine');
+      if (msg.serverContent?.turnComplete) {
+        envoyer('forme', { forme: 'sphere' });
+        envoyer('tour_termine');
+      }
 
       // ── Comptabilisation ─────────────────────────────────────────────────
       if (msg.usageMetadata) {

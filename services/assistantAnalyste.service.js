@@ -12,8 +12,9 @@
 const { GoogleGenAI, Type } = require('@google/genai');
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { enregistrer, extraireUsage } = require('./assistantBudget.service');
+const { getReglages } = require('./assistantReglages.service');
 const {
-  BLOC_IDENTITE, BLOC_CAPACITES, BLOC_PRUDENCE, DECLARATIONS, executerOutil,
+  construireIdentite, BLOC_CAPACITES, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, executerOutil,
 } = require('./assistantOutils.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -27,7 +28,14 @@ const MAX_OUTILS = 8;
 
 // Declares une seule fois dans assistantOutils.service.js : le canal vocal utilise
 // exactement les memes, sans quoi une capacite existerait au clavier et pas a l'oral.
-const OUTILS = [{ functionDeclarations: DECLARATIONS }];
+// La recherche web n'est proposee au modele que si le fondateur l'a activee :
+// un outil absent de la liste ne peut pas etre appele, ce qui est plus sur que
+// de compter sur une consigne pour l'en dissuader.
+const outilsPour = (reglages) => [{
+  functionDeclarations: reglages?.recherche_web
+    ? [...DECLARATIONS, DECLARATION_WEB]
+    : DECLARATIONS,
+}];
 
 // Un tour peut desormais enchainer requetes ET production de fichier : le plafond
 // monte de 4 a 8, sinon un rapport d'audit en trois sections n'aboutit jamais.
@@ -72,7 +80,7 @@ const SCHEMA_REPONSE = {
   required: ['message'],
 };
 
-function construireInstruction(dictionnaire, aujourdhui, annees) {
+function construireInstruction(dictionnaire, aujourdhui, annees, reglages) {
   const catalogue = dictionnaire
     .map((v) => `### ${v.vue}\n${v.description || ''}\nColonnes : ${v.colonnes.join(', ')}`)
     .join('\n\n');
@@ -83,9 +91,15 @@ function construireInstruction(dictionnaire, aujourdhui, annees) {
     ? annees.map((a) => `- id ${a.annee_academique_id} : ${a.annee} (état : ${a.etat || 'non renseigné'})`).join('\n')
     : '- (aucune année académique enregistrée pour ce site)';
 
-  return `${BLOC_IDENTITE}
+  return `${construireIdentite(reglages.nom_assistant)}
 
 ${BLOC_CAPACITES}
+
+${BLOC_RECHERCHE}
+
+${BLOC_EXPERTISE}
+
+${BLOC_AUDIT}
 
 ${BLOC_PRUDENCE}
 
@@ -150,12 +164,13 @@ Ta réponse sera LUE À VOIX HAUTE. Donc :
  * @returns {Promise<{message, visualisation, donnees, colonnes, requetes, historique}>}
  */
 async function repondreQuestion({ question, historique = [], siteId, ecoleId = null, utilisateurId = null }) {
-  const [dictionnaire, calendrier] = await Promise.all([
+  const [dictionnaire, calendrier, reglages] = await Promise.all([
     getDictionnaire({ siteId, ecoleId }),
     executerRequete(
       'SELECT annee_academique_id, annee, etat FROM assistant.v_annees_academiques ORDER BY annee DESC',
       { siteId, ecoleId }
     ),
+    getReglages(siteId),
   ]);
   const aujourdhui = new Date().toLocaleDateString('fr-FR', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
@@ -165,9 +180,9 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
     model: MODELE_ANALYSTE,
     config: {
       systemInstruction: construireInstruction(
-        dictionnaire, aujourdhui, calendrier.ok ? calendrier.lignes : []
+        dictionnaire, aujourdhui, calendrier.ok ? calendrier.lignes : [], reglages
       ),
-      tools: OUTILS,
+      tools: outilsPour(reglages),
       // tools + responseSchema dans le même appel : le modèle boucle sur ses outils
       // puis émet directement le JSON final, sans appel de mise en forme séparé.
       responseMimeType: 'application/json',

@@ -25,6 +25,11 @@ node migrations/run.js 2026-08-11_module_enseignants.sql
 | `2026-08-12c_assistant_consommation.sql` | Table de comptabilisation de la consommation du modèle. |
 | `2026-08-12d_assistant_audit_utilisateurs.sql` | Vues d'audit de l'activité des agents, et table des agents exclus du périmètre. |
 | `2026-08-12e_assistant_google.sql` | Rattachement OAuth du compte Google (agenda, visioconférence, messagerie). |
+| `2026-08-13_assistant_recherche_personnes.sql` | Annuaire unifié `v_personnes`, exposition du nom des étudiants, extension `unaccent`. |
+| `2026-08-13b_assistant_priorite_personnes.sql` | Rang de priorité (agent avant étudiant) et resserrement de l'exclusion de l'administrateur sur les seules vues d'audit. |
+| `2026-08-13c_assistant_recherche_par_mots.sql` | Recherche par mots entiers dans un ordre libre (`assistant.correspond`), avec ses index. |
+| `2026-08-13d_assistant_reglages.sql` | Réglages par site : prénom de l'assistante, recherche web. |
+| `2026-08-13e_assistant_voix.sql` | Voix de synthèse retenue pour la session vocale. |
 
 ## Rôle de lecture de l'assistant
 

@@ -27,6 +27,27 @@ router.get(
   assistantController.telecharger
 );
 
+router.get(
+  '/point-du-jour',
+  authenticateToken,
+  authorizeRoles('admin', 'fondateur'),
+  assistantController.pointDuJour
+);
+
+// --- Réglages de l'assistante (prénom, ouverture du mode vocal) ------------
+router.get(
+  '/reglages',
+  authenticateToken,
+  authorizeRoles('admin', 'fondateur'),
+  assistantController.reglages
+);
+router.put(
+  '/reglages',
+  authenticateToken,
+  authorizeRoles('admin', 'fondateur'),
+  assistantController.majReglages
+);
+
 // --- Rattachement du compte Google (agenda, Meet, messagerie) ---------------
 router.get(
   '/google/statut',
