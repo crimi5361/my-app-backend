@@ -84,7 +84,40 @@ const uploadAdmissionFiles = () => {
   });
 };
 
+// Candidature enseignant (module Gestion des Enseignants, 2026-08-11) — déposée depuis
+// le site institutionnel, donc sans authentification : le filtre de type et la limite de
+// taille sont ici la seule barrière contre l'envoi de fichiers arbitraires.
+// Répertoire dédié (uploads/candidatures) pour ne pas mélanger ces pièces avec les
+// dossiers étudiants, dont le cycle de vie et la confidentialité sont différents.
+const uploadCandidatureFiles = () => {
+  return multer({
+    storage: multer.diskStorage({
+      destination: (req, file, cb) => {
+        const dir = path.join(__dirname, '../uploads/candidatures');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        const prefix = file.fieldname === 'cv' ? 'cv_' : 'diplome_';
+        cb(null, prefix + uniqueSuffix + path.extname(file.originalname));
+      }
+    }),
+    limits: {
+      fileSize: 5 * 1024 * 1024, // 5MB
+      files: 11                  // 1 CV + 10 diplômes au maximum
+    },
+    fileFilter: (req, file, cb) => {
+      const allowed = ['application/pdf', 'image/jpeg', 'image/jpg', 'image/png'];
+      return allowed.includes(file.mimetype)
+        ? cb(null, true)
+        : cb(new Error('Format de fichier invalide. Formats acceptés : PDF, JPG, JPEG, PNG'), false);
+    }
+  });
+};
+
 module.exports = {
   uploadStudentFiles,
-  uploadAdmissionFiles
+  uploadAdmissionFiles,
+  uploadCandidatureFiles
 };

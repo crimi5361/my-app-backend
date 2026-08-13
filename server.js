@@ -154,6 +154,7 @@ const apiRoutes = [
   { path: '/api/dashboard/comptabilite', route: require('./routes/dashboardComptabilite.routes') },
   { path: '/api/dashboard/administrateur', route: require('./routes/dashboardAdministrateur.routes') },
   { path: '/api/dashboard/fondateur', route: require('./routes/dashboardFondateur.routes') },
+  { path: '/api/assistant',       route: require('./routes/assistant.routes') },
   { path: '/api/dashboard/moyens-generaux', route: require('./routes/dashboardMoyensGeneraux.routes') },
   { path: '/api/moyens-generaux/accessoires', route: require('./routes/accessoire.routes') },
   { path: '/api/moyens-generaux/fournisseurs', route: require('./routes/fournisseur.routes') },
@@ -167,7 +168,15 @@ const apiRoutes = [
   { path: '/api/detailaffichageMaquette', route: require('./routes/DetailAffichageMaquette.routes') },
   { path: '/api/memoire',                 route: require('./routes/memoire.routes') },
 
+  // Module Gestion des Enseignants (2026-08-11)
+  { path: '/api/salles',              route: require('./routes/salle.routes') },
+  { path: '/api/charge-pedagogique',  route: require('./routes/chargePedagogique.routes') },
+  { path: '/api/rh',                  route: require('./routes/rh.routes') },
+  { path: '/api/edt-planification',   route: require('./routes/edtPlanification.routes') },
+
   // Emploi du temps & divers
+  // /api/emploiDuTemps = upload d'un PDF d'EDT par groupe (historique) ; à ne pas
+  // confondre avec /api/edt-planification, l'emploi du temps structuré ci-dessus.
   { path: '/api/emploiDuTemps',   route: require('./routes/EDT.routes') },
   { path: '/api/public',          route: require('./routes/public.routes') },
   { path: '/api/change_Password', route: require('./routes/changePassWord.routes') },
@@ -249,8 +258,18 @@ app.use((err, req, res, next) => {
 // ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`🚀 Serveur démarré  → http://localhost:${PORT}`);
+// app.listen() crée le serveur HTTP en interne ; on le crée nous-mêmes pour pouvoir
+// y greffer la passerelle WebSocket de l'assistant vocal (elle a besoin de traiter
+// l'événement 'upgrade' avant la poignée de main).
+const http = require('http');
+const serveur = http.createServer(app);
+
+console.log('\n🔌 WebSockets :');
+const { monterPasserelleVocale } = require('./services/assistantVocal.service');
+monterPasserelleVocale(serveur);
+
+serveur.listen(PORT, () => {
+  console.log(`\n🚀 Serveur démarré  → http://localhost:${PORT}`);
   console.log(`📖 Swagger UI       → http://localhost:${PORT}/api-docs`);
   console.log(`🌐 Production       → ${process.env.API_URL || 'https://myiipea.ci'}/api-docs`);
 });
