@@ -57,6 +57,7 @@ exports.getPECEnAttente = async (req, res) => {
       SELECT
         p.id as pec_id,
         p.type_pec,
+        p.nature_pec,
         p.pourcentage_reduction,
         p.reference,
         p.date_demande,
@@ -80,7 +81,7 @@ exports.getPECEnAttente = async (req, res) => {
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
       JOIN scolarite s ON e.scolarite_id = s.id
-      WHERE p.statut = 'en_attente'
+      WHERE p.statut IN ('en_attente', 'initiee')
         AND p.annee_academique_id = $1
         AND e.site_id = $2
         ${ecoleCond}
@@ -131,6 +132,7 @@ exports.getPECTraitees = async (req, res) => {
       SELECT
         p.id as pec_id,
         p.type_pec,
+        p.nature_pec,
         p.pourcentage_reduction,
         p.montant_reduction,
         p.reference,

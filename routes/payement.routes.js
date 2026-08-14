@@ -1,7 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
+const authorizeRoles = require('../middleware/authorize.middleware');
 const paiementController = require('../controllers/paiyement.controller');
+
+// Chantier 2 : la décision Fondateur (valider/refuser une PEC, désormais capable de modifier un
+// pourcentage pour la PEC institutionnelle) est sensible — même pattern authorizeRoles('admin',
+// 'fondateur') déjà utilisé par dashboardFondateur.routes.js, pas une nouvelle convention.
+const fondateurOnly = authorizeRoles('admin', 'fondateur');
 
 /**
  * @swagger
@@ -375,7 +381,7 @@ router.get('/etudiant/:id/count', authenticateToken, paiementController.getPaiem
  *       500:
  *         description: Erreur serveur
  */
-router.post('/valider-pec', authenticateToken, paiementController.validerPEC);
+router.post('/valider-pec', authenticateToken, fondateurOnly, paiementController.validerPEC);
 
 /**
  * @swagger

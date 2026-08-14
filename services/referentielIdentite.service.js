@@ -23,8 +23,15 @@ exports.validerReferentielsIdentite = async (identite, valeursActuelles = {}) =>
   if (estNouvelleValeur('sexe') && !SEXES_VALIDES.includes(identite.sexe)) {
     invalides.push('sexe');
   }
+  // ✅ Correctif (2026-08-14) : le Select frontend (DetailEtudiant.tsx, EffectuerPayement.tsx,
+  // etc.) envoie pays.code_iso comme valeur de nationalité (ex. "CI", "BF") — cohérent avec ce qui
+  // est stocké en base pour l'immense majorité du parc existant (etudiant.nationalite = code ISO).
+  // Cette validation comparait à tort contre pays.nationalite (l'adjectif, ex. "Ivoirien(ne)"),
+  // qui ne correspond jamais à un code ISO — la mise à jour échouait donc pour TOUTE nationalité
+  // réellement changée, sauf quand elle ne changeait pas vraiment (auquel cas estNouvelleValeur
+  // renvoie false et la validation est court-circuitée, masquant le bug pour la Côte d'Ivoire).
   if (estNouvelleValeur('nationalite')) {
-    const r = await db.query('SELECT 1 FROM pays WHERE nationalite = $1 LIMIT 1', [identite.nationalite]);
+    const r = await db.query('SELECT 1 FROM pays WHERE code_iso = $1 LIMIT 1', [identite.nationalite]);
     if (r.rows.length === 0) invalides.push('nationalite');
   }
   if (estNouvelleValeur('pays_naissance')) {

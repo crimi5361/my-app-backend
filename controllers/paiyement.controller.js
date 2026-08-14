@@ -386,7 +386,7 @@ exports.validerPEC = async (req, res) => {
   
   try {
     await client.query('BEGIN');
-    const { pec_id, action, motif_refus } = req.body;
+    const { pec_id, action, motif_refus, pourcentage_accorde } = req.body;
     const adminId = req.user.id;
 
     if (!pec_id || !action) {
@@ -395,20 +395,21 @@ exports.validerPEC = async (req, res) => {
 
     // Récupérer la PEC avec les informations complètes
     const pecResult = await client.query(
-      `SELECT 
+      `SELECT
          p.id,
          p.etudiant_id,
          p.type_pec,
+         p.nature_pec,
          p.pourcentage_reduction,
          p.montant_reduction,
          p.statut,
          p.reference,
          p.date_demande,
-         s.montant_scolarite, 
-         s.scolarite_verse, 
+         s.montant_scolarite,
+         s.scolarite_verse,
          s.scolarite_restante,
          s.id as scolarite_id,
-         s.statut_etudiant, 
+         s.statut_etudiant,
          s.prise_en_charge_id
        FROM prise_en_charge p
        JOIN etudiant e ON p.etudiant_id = e.id
@@ -423,9 +424,14 @@ exports.validerPEC = async (req, res) => {
 
     const pec = pecResult.rows[0];
 
-    if (pec.statut !== 'en_attente') {
+    // "initiee" (Chantier 2) : PEC institutionnelle créée à la Caisse, effet immédiat sur la
+    // scolarité, décision Fondateur encore ouverte — même statut "à trancher" que "en_attente"
+    // du point de vue de cet écran.
+    if (!['en_attente', 'initiee'].includes(pec.statut)) {
       throw new Error('Cette prise en charge a déjà été traitée');
     }
+
+    const estInstitutionnelle = pec.nature_pec === 'institutionnelle';
 
     let reduction = 0;
     let nouveauVerse = 0;
@@ -433,18 +439,29 @@ exports.validerPEC = async (req, res) => {
     let nouveauStatutEtudiant = 'NON_SOLDE';
 
     if (action === 'valider') {
-      // UTILISER le montant_reduction stocké dans la table
-      reduction = parseFloat(pec.montant_reduction) || 0;
       const scolariteVerse = parseFloat(pec.scolarite_verse) || 0;
       const montantScolarite = parseFloat(pec.montant_scolarite) || 0;
-      
+      // Pourcentage définitivement accordé : réutilise pourcentage_reduction (fixé à la demande)
+      // pour une PEC classique (jamais modifiable ici, comportement inchangé) ; pour une PEC
+      // institutionnelle (Chantier 2), le Fondateur peut le ramener de 100 % à une valeur
+      // inférieure (ex. 80 %) — pourcentage_accorde n'est pris en compte QUE dans ce cas.
+      let pourcentageFinal = parseFloat(pec.pourcentage_reduction) || 0;
+      if (estInstitutionnelle && pourcentage_accorde !== undefined && pourcentage_accorde !== null) {
+        const p = parseFloat(pourcentage_accorde);
+        if (isNaN(p) || p < 0 || p > 100) {
+          throw new Error('Le pourcentage accordé doit être un nombre entre 0 et 100');
+        }
+        pourcentageFinal = p;
+      }
+      reduction = estInstitutionnelle ? (montantScolarite * pourcentageFinal / 100) : (parseFloat(pec.montant_reduction) || 0);
+
       // LOGIQUE CORRECTE: La réduction s'ajoute VIRTUELLEMENT au montant versé
       // pour le calcul du restant, mais on ne modifie PAS scolarite_verse
       const totalVerseVirtuel = scolariteVerse + reduction;
-      
+
       // Calcul du nouveau restant selon votre logique
       nouveauRestant = montantScolarite - totalVerseVirtuel;
-      
+
       if (nouveauRestant < 0) {
         throw new Error('La réduction dépasse le montant total de la scolarité');
       }
@@ -457,22 +474,26 @@ exports.validerPEC = async (req, res) => {
       // Mettre à jour la scolarité - NE PAS modifier scolarite_verse
       // Seulement mettre à jour scolarite_restante et le statut
       await client.query(
-        `UPDATE scolarite 
-         SET scolarite_restante = $1, 
-             statut_etudiant = $2, 
+        `UPDATE scolarite
+         SET scolarite_restante = $1,
+             statut_etudiant = $2,
              prise_en_charge_id = $3
          WHERE id = $4`,
         [nouveauRestant, nouveauStatutEtudiant, pec_id, pec.scolarite_id]
       );
 
-      // Marquer la PEC comme validée
+      // Marquer la PEC comme validée — pourcentage_reduction/montant_reduction ne sont réécrits
+      // que pour une PEC institutionnelle (le Fondateur vient de les fixer définitivement) ;
+      // pour une PEC classique, le CASE les laisse strictement inchangés.
       await client.query(
-        `UPDATE prise_en_charge 
-         SET statut = 'valide', 
-             date_validation = $1, 
-             valide_par = $2
+        `UPDATE prise_en_charge
+         SET statut = 'valide',
+             date_validation = $1,
+             valide_par = $2,
+             pourcentage_reduction = CASE WHEN nature_pec = 'institutionnelle' THEN $4 ELSE pourcentage_reduction END,
+             montant_reduction = CASE WHEN nature_pec = 'institutionnelle' THEN $5 ELSE montant_reduction END
          WHERE id = $3`,
-        [new Date(), adminId, pec_id]
+        [new Date(), adminId, pec_id, pourcentageFinal, reduction]
       );
 
       // Pour la réponse, on garde les valeurs calculées
@@ -482,13 +503,34 @@ exports.validerPEC = async (req, res) => {
 } else if (action === 'refuser') {
   // Utiliser le motif fourni ou un motif par défaut
   const motifFinal = motif_refus || "Plus de prise en charge disponible";
-  
+
+  if (estInstitutionnelle) {
+    // Chantier 2, point 4 : une PEC institutionnelle refusée après avoir déjà zéroté
+    // l'obligation de payer à la Caisse doit, contrairement au refus classique ci-dessous,
+    // remettre la scolarité dans son état réel — même formule que la branche "valider"
+    // ci-dessus, avec une réduction ramenée à 0.
+    const scolariteVerse = parseFloat(pec.scolarite_verse) || 0;
+    const montantScolarite = parseFloat(pec.montant_scolarite) || 0;
+    const nouveauRestantRefus = montantScolarite - scolariteVerse;
+    const nouveauStatutRefus = Math.abs(nouveauRestantRefus) < 0.01 ? 'SOLDE' : 'NON_SOLDE';
+
+    await client.query(
+      `UPDATE scolarite
+       SET scolarite_restante = $1,
+           statut_etudiant = $2
+       WHERE id = $3`,
+      [nouveauRestantRefus, nouveauStatutRefus, pec.scolarite_id]
+    );
+  }
+
   await client.query(
-    `UPDATE prise_en_charge 
-     SET statut = 'refuse', 
-         date_validation = $1, 
-         valide_par = $2, 
-         motif_refus = $3
+    `UPDATE prise_en_charge
+     SET statut = 'refuse',
+         date_validation = $1,
+         valide_par = $2,
+         motif_refus = $3,
+         pourcentage_reduction = CASE WHEN nature_pec = 'institutionnelle' THEN 0 ELSE pourcentage_reduction END,
+         montant_reduction = CASE WHEN nature_pec = 'institutionnelle' THEN 0 ELSE montant_reduction END
      WHERE id = $4`,
     [new Date(), adminId, motifFinal, pec_id]
   );

@@ -4,6 +4,31 @@ const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 const METHODES_VALIDES = ['Espèces', 'Mobile Money', 'Orange Money', 'Wave'];
 
+// ─── PEC institutionnelle 100 % initiée à la Caisse (Chantier 2) ───────────
+// Réutilise entièrement prise_en_charge (aucune nouvelle table). Garde-fou "une seule PEC
+// active/en attente à la fois par étudiant" — même règle que demanderPECSeule
+// (paiyement.controller.js), pas une nouvelle règle. pourcentage_reduction est toujours 100 à
+// l'initiation (seule option proposée au caissier) ; seul le Fondateur peut ensuite l'ajuster
+// (validerPEC, même fichier que demanderPECSeule).
+const creerPecInstitutionnelle = async (client, { etudiantId, montantScolarite, referencePec, userId, caisseId, anneeAcademiqueId }) => {
+  const existante = await client.query(
+    `SELECT 1 FROM prise_en_charge WHERE etudiant_id = $1 AND statut IN ('en_attente', 'initiee', 'valide')`,
+    [etudiantId]
+  );
+  if (existante.rows.length > 0) {
+    const err = new Error('Une prise en charge est déjà active ou en attente pour cet étudiant.');
+    err.code = 'PEC_DEJA_EXISTANTE';
+    throw err;
+  }
+  await client.query(
+    `INSERT INTO prise_en_charge
+       (etudiant_id, type_pec, nature_pec, pourcentage_reduction, montant_reduction, reference,
+        statut, date_demande, initie_par, caisse_id, date_initiation, annee_academique_id)
+     VALUES ($1, 'institution', 'institutionnelle', 100, $2, $3, 'initiee', now(), $4, $5, now(), $6)`,
+    [etudiantId, montantScolarite, referencePec, userId, caisseId, anneeAcademiqueId]
+  );
+};
+
 // Résout la caisse du site du caissier connecté, et sa session ouverte (s'il y en a une).
 const getSessionOuverte = async (dbClient, userId, siteId) => {
   const result = await dbClient.query(
@@ -64,7 +89,7 @@ exports.fermerSession = async (req, res) => {
   const client = await db.connect();
   try {
     const { id } = req.params;
-    const { montant_compte } = req.body;
+    const { montant_compte, observations } = req.body;
     if (montant_compte === undefined || isNaN(parseFloat(montant_compte)) || parseFloat(montant_compte) < 0) {
       return res.status(400).json({ success: false, message: 'Montant compté invalide.' });
     }
@@ -86,8 +111,8 @@ exports.fermerSession = async (req, res) => {
     }
 
     await client.query(
-      `UPDATE session_caisse SET date_fermeture = now(), montant_fermeture = $1, statut = 'FERMEE' WHERE id = $2`,
-      [montant_compte, id]
+      `UPDATE session_caisse SET date_fermeture = now(), montant_fermeture = $1, statut = 'FERMEE', observations = $2 WHERE id = $3`,
+      [montant_compte, observations || null, id]
     );
 
     await client.query('COMMIT');
@@ -103,7 +128,11 @@ exports.fermerSession = async (req, res) => {
   }
 };
 
-// Construit le rapport de clôture (totaux + répartition par méthode) d'une session donnée.
+// Construit le rapport de clôture d'une session donnée (Chantier 2 BIS, 2026-08-14) : totaux,
+// répartition par méthode (existant, inchangé), + répartition par type de frais/année
+// académique, sorties (dépenses validées), détail ligne par ligne, écart et montant théorique
+// désormais calculés ici (plus seulement dans le template EJS), observations de fermeture.
+// Aucune règle de calcul existante n'est modifiée : uniquement des blocs supplémentaires.
 const buildRapportSession = async (sessionId) => {
   const sessionResult = await db.query(
     `SELECT sc.*, c.libelle AS caisse_libelle, u.nom AS caissier_nom, u.code AS caissier_code
@@ -116,22 +145,97 @@ const buildRapportSession = async (sessionId) => {
   if (sessionResult.rows.length === 0) return null;
   const session = sessionResult.rows[0];
 
-  const totauxResult = await db.query(
-    `SELECT COUNT(*) AS nb_paiements, COALESCE(SUM(montant), 0) AS total_encaisse
-     FROM paiement WHERE session_caisse_id = $1`,
-    [sessionId]
-  );
-  const parMethodeResult = await db.query(
-    `SELECT methode, COUNT(*) AS nb, COALESCE(SUM(montant), 0) AS total
-     FROM paiement WHERE session_caisse_id = $1 GROUP BY methode ORDER BY methode`,
-    [sessionId]
-  );
+  const [
+    totauxResult,
+    parMethodeResult,
+    parTypeFraisResult,
+    parAnneeResult,
+    sortiesResult,
+    detailResult,
+  ] = await Promise.all([
+    db.query(
+      `SELECT COUNT(*) AS nb_paiements, COALESCE(SUM(montant), 0) AS total_encaisse
+       FROM paiement WHERE session_caisse_id = $1`,
+      [sessionId]
+    ),
+    db.query(
+      `SELECT methode, COUNT(*) AS nb, COALESCE(SUM(montant), 0) AS total
+       FROM paiement WHERE session_caisse_id = $1 GROUP BY methode ORDER BY methode`,
+      [sessionId]
+    ),
+    // ✅ Même mécanisme que Supervision des caisses / Bilan des dépenses (Chantier 1) : NULL =
+    // scolarité classique (valeur historique). Couvre automatiquement scolarité, PEC
+    // institutionnelle (Chantier 2) et toute autre nature de paiement future.
+    db.query(
+      `SELECT COALESCE(NULLIF(p.type_frais, ''), 'scolarite') AS type_frais,
+              COUNT(*) AS nb, COALESCE(SUM(p.montant), 0) AS total
+       FROM paiement p WHERE p.session_caisse_id = $1
+       GROUP BY COALESCE(NULLIF(p.type_frais, ''), 'scolarite')
+       ORDER BY total DESC`,
+      [sessionId]
+    ),
+    db.query(
+      `SELECT a.id AS annee_id, a.annee, COUNT(*) AS nb, COALESCE(SUM(p.montant), 0) AS total
+       FROM paiement p JOIN anneeacademique a ON a.id = p.annee_academique_id
+       WHERE p.session_caisse_id = $1
+       GROUP BY a.id, a.annee ORDER BY a.annee DESC`,
+      [sessionId]
+    ),
+    // Sorties : dépenses VALIDEES uniquement (règle Chantier 1, jamais une dépense annulée dans
+    // un bilan), de la caisse concernée, sur la période couverte par la session. La table
+    // depense n'a pas de lien direct à une session_caisse (seulement à une caisse) — on scope
+    // donc par date_depense entre l'ouverture et la fermeture (now() si encore ouverte).
+    db.query(
+      `SELECT d.id, d.date_depense, d.montant, d.motif, d.beneficiaire, d.mode_paiement,
+              d.reference_justificatif, cd.libelle AS categorie_libelle
+       FROM depense d
+       LEFT JOIN categorie_depense cd ON cd.id = d.categorie_id
+       WHERE d.caisse_id = $1 AND d.statut = 'VALIDEE'
+         AND d.date_depense >= $2 AND d.date_depense <= COALESCE($3, now())
+       ORDER BY d.date_depense`,
+      [session.caisse_id, session.date_ouverture, session.date_fermeture]
+    ),
+    db.query(
+      `SELECT p.id, p.date_paiement, p.montant, p.methode,
+              COALESCE(NULLIF(p.type_frais, ''), 'scolarite') AS type_frais,
+              r.numero_recu, e.nom AS etudiant_nom, e.prenoms AS etudiant_prenoms,
+              e.matricule_iipea
+       FROM paiement p
+       LEFT JOIN recu r ON r.id = p.recu_id
+       LEFT JOIN etudiant e ON e.id = p.etudiant_id
+       WHERE p.session_caisse_id = $1
+       ORDER BY p.date_paiement`,
+      [sessionId]
+    ),
+  ]);
+
+  const totalEncaisse = parseFloat(totauxResult.rows[0].total_encaisse);
+  const totalSorties = sortiesResult.rows.reduce((s, d) => s + parseFloat(d.montant), 0);
+  const montantTheorique = parseFloat(session.montant_ouverture) + totalEncaisse;
+  const ecart = session.montant_fermeture !== null
+    ? parseFloat(session.montant_fermeture) - montantTheorique
+    : null;
 
   return {
     session,
     nb_paiements: parseInt(totauxResult.rows[0].nb_paiements, 10),
-    total_encaisse: parseFloat(totauxResult.rows[0].total_encaisse),
+    total_encaisse: totalEncaisse,
     repartition_methode: parMethodeResult.rows.map(r => ({ methode: r.methode, nb: parseInt(r.nb, 10), total: parseFloat(r.total) })),
+    repartition_type_frais: parTypeFraisResult.rows.map(r => ({ type_frais: r.type_frais, nb: parseInt(r.nb, 10), total: parseFloat(r.total) })),
+    repartition_annee_academique: parAnneeResult.rows.map(r => ({ annee_id: r.annee_id, annee: r.annee, nb: parseInt(r.nb, 10), total: parseFloat(r.total) })),
+    sorties: sortiesResult.rows.map(d => ({
+      id: d.id, date_depense: d.date_depense, montant: parseFloat(d.montant), motif: d.motif,
+      beneficiaire: d.beneficiaire, mode_paiement: d.mode_paiement,
+      reference_justificatif: d.reference_justificatif, categorie_libelle: d.categorie_libelle,
+    })),
+    total_sorties: totalSorties,
+    details_operations: detailResult.rows.map(p => ({
+      id: p.id, date_paiement: p.date_paiement, montant: parseFloat(p.montant), methode: p.methode,
+      type_frais: p.type_frais, numero_recu: p.numero_recu,
+      etudiant_nom: p.etudiant_nom, etudiant_prenoms: p.etudiant_prenoms, matricule_iipea: p.matricule_iipea,
+    })),
+    montant_theorique: montantTheorique,
+    ecart,
   };
 };
 
@@ -217,13 +321,17 @@ exports.validerPaiementReinscription = async (req, res) => {
   const client = await db.connect();
   try {
     const { code } = req.params;
-    const { montant, methode } = req.body;
+    const { montant, methode, pec_institutionnelle, reference_pec } = req.body;
 
-    if (!montant || isNaN(parseFloat(montant)) || parseFloat(montant) <= 0) {
-      return res.status(400).json({ success: false, message: 'Montant du paiement invalide.' });
-    }
-    if (!methode || !METHODES_VALIDES.includes(methode)) {
-      return res.status(400).json({ success: false, message: `Méthode de paiement invalide. Valeurs acceptées : ${METHODES_VALIDES.join(', ')}.` });
+    if (!pec_institutionnelle) {
+      if (!montant || isNaN(parseFloat(montant)) || parseFloat(montant) <= 0) {
+        return res.status(400).json({ success: false, message: 'Montant du paiement invalide.' });
+      }
+      if (!methode || !METHODES_VALIDES.includes(methode)) {
+        return res.status(400).json({ success: false, message: `Méthode de paiement invalide. Valeurs acceptées : ${METHODES_VALIDES.join(', ')}.` });
+      }
+    } else if (!reference_pec || !reference_pec.trim()) {
+      return res.status(400).json({ success: false, message: 'La référence de la prise en charge institutionnelle est obligatoire.' });
     }
 
     await client.query('BEGIN');
@@ -312,8 +420,32 @@ exports.validerPaiementReinscription = async (req, res) => {
     // Montant : le paiement caisse peut être un versement partiel, pas nécessairement le solde
     // complet — même principe que le premier paiement d'une nouvelle admission.
     const montantScolarite = parseFloat(dossier.montant_annuel_nouveau);
-    const montantPaye = parseFloat(montant);
-    const scolariteRestante = montantScolarite - montantPaye;
+
+    if (pec_institutionnelle) {
+      try {
+        await creerPecInstitutionnelle(client, {
+          etudiantId: dossier.etudiant_id,
+          montantScolarite,
+          referencePec: reference_pec.trim(),
+          userId: req.user.id,
+          caisseId: session.caisse_id,
+          anneeAcademiqueId: dossier.anneeacademique_id,
+        });
+      } catch (pecErr) {
+        await client.query('ROLLBACK');
+        if (pecErr.code === 'PEC_DEJA_EXISTANTE') {
+          return res.status(409).json({ success: false, code: pecErr.code, message: pecErr.message });
+        }
+        throw pecErr;
+      }
+    }
+
+    const montantPaye = pec_institutionnelle ? 0 : parseFloat(montant);
+    // PEC institutionnelle 100 % : l'étudiant est traité comme devant 0 F dès l'initiation
+    // (pas seulement "rien versé pour l'instant" — la formule generale montantScolarite -
+    // montantPaye donnerait ici le montant total, ce qui serait faux). scolarite_restante ne
+    // redevient positif qu'après la décision du Fondateur (validerPEC, cf. Chantier 2).
+    const scolariteRestante = pec_institutionnelle ? 0 : (montantScolarite - montantPaye);
     if (scolariteRestante < 0) {
       throw new Error('Le montant payé ne peut pas dépasser le montant total de la scolarité.');
     }
@@ -379,13 +511,15 @@ exports.validerPaiementReinscription = async (req, res) => {
     const numeroRecu = `RECU-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const recuResult = await client.query(
       `INSERT INTO recu (numero_recu, date_emission, montant, emetteur) VALUES ($1, $2, $3, $4) RETURNING id`,
-      [numeroRecu, datePaiement, montant, req.user?.code || null]
+      [numeroRecu, datePaiement, montantPaye, req.user?.code || null]
     );
 
+    // Trace de l'opération à la Caisse même à 0 FCFA (PEC institutionnelle) — voir le même choix
+    // dans validerPaiementAdmission ci-dessus.
     const paiementResult = await client.query(
-      `INSERT INTO paiement (montant, date_paiement, methode, effectue_par, etudiant_id, recu_id, annee_academique_id, session_caisse_id, caisse_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-      [montant, datePaiement, methode, req.user?.id || null, dossier.etudiant_id, recuResult.rows[0].id, dossier.anneeacademique_id, session.id, session.caisse_id]
+      `INSERT INTO paiement (montant, date_paiement, methode, effectue_par, etudiant_id, recu_id, annee_academique_id, session_caisse_id, caisse_id, type_frais)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+      [montantPaye, datePaiement, pec_institutionnelle ? 'Prise en charge institutionnelle' : methode, req.user?.id || null, dossier.etudiant_id, recuResult.rows[0].id, dossier.anneeacademique_id, session.id, session.caisse_id, pec_institutionnelle ? 'pec_institutionnelle' : null]
     );
 
     await client.query(
@@ -397,7 +531,9 @@ exports.validerPaiementReinscription = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Paiement validé : réinscription finalisée.',
+      message: pec_institutionnelle
+        ? 'Prise en charge institutionnelle initiée : réinscription finalisée, en attente de confirmation du Fondateur.'
+        : 'Paiement validé : réinscription finalisée.',
       data: {
         etudiant_id: dossier.etudiant_id,
         paiement_id: paiementResult.rows[0].id,
@@ -405,7 +541,9 @@ exports.validerPaiementReinscription = async (req, res) => {
         numero_recu: numeroRecu,
         scolarite_verse: montantPaye,
         scolarite_restante: scolariteRestante,
-        statut_etudiant: statutEtudiantScolarite
+        statut_etudiant: statutEtudiantScolarite,
+        pec_institutionnelle: !!pec_institutionnelle,
+        reference_pec: pec_institutionnelle ? reference_pec.trim() : undefined
       }
     });
   } catch (error) {
@@ -843,7 +981,7 @@ exports.getDashboardStats = async (req, res) => {
     const kitPecJourResult = await db.query(
       `SELECT
          (SELECT COUNT(*) FROM kit WHERE deposer = true AND date_enregistrement::date = CURRENT_DATE) AS kits_deposes,
-         (SELECT COUNT(*) FROM prise_en_charge WHERE statut = 'en_attente') AS pec_en_attente`
+         (SELECT COUNT(*) FROM prise_en_charge WHERE statut IN ('en_attente', 'initiee')) AS pec_en_attente`
     );
 
     res.status(200).json({
@@ -870,6 +1008,112 @@ exports.getDashboardStats = async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur getDashboardStats:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// ─── GET liste des caisses du site (pour le sélecteur de supervision) ──────
+exports.listerCaissesSite = async (req, res) => {
+  try {
+    const siteId = req.user.departement_id;
+    const result = await db.query(
+      'SELECT id, code, libelle, statut FROM caisse WHERE site_id = $1 ORDER BY libelle',
+      [siteId]
+    );
+    res.status(200).json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error('Erreur listerCaissesSite:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// ─── GET supervision d'une caisse (Chantier Comptabilité, priorité 1, point 2) ──────────────
+// Vue agrégée TOUTES sessions/caissiers confondus (à la différence de getRapportSession, scopé à
+// une session précise, et de getDashboardStats, scopé à l'activité du jour du caissier connecté).
+// Objectif explicite du chantier : "expliquer précisément d'où vient l'argent encaissé et à
+// quelle année/activité il correspond" — répartition par année académique, par type de paiement
+// et par caissier, sans aucune nouvelle table (paiement.annee_academique_id/type_frais existent
+// déjà, migration 021bis).
+exports.getSupervisionCaisse = async (req, res) => {
+  try {
+    const { caisseId } = req.params;
+    const siteId = req.user.departement_id;
+
+    const caisseResult = await db.query(
+      'SELECT id, code, libelle, statut, site_id FROM caisse WHERE id = $1',
+      [caisseId]
+    );
+    if (caisseResult.rows.length === 0 || caisseResult.rows[0].site_id !== siteId) {
+      return res.status(404).json({ success: false, message: 'Caisse introuvable.' });
+    }
+    const caisse = caisseResult.rows[0];
+
+    const [totalResult, parAnneeResult, parTypeResult, parCaissierResult, evolutionResult] = await Promise.all([
+      db.query(
+        `SELECT COUNT(*) AS nb, COALESCE(SUM(montant), 0) AS total FROM paiement WHERE caisse_id = $1`,
+        [caisseId]
+      ),
+
+      db.query(
+        `SELECT a.id AS annee_id, a.annee, COUNT(*) AS nb, COALESCE(SUM(p.montant), 0) AS total
+         FROM paiement p JOIN anneeacademique a ON a.id = p.annee_academique_id
+         WHERE p.caisse_id = $1
+         GROUP BY a.id, a.annee ORDER BY a.annee DESC`,
+        [caisseId]
+      ),
+
+      // ✅ type_frais NULL = paiement de scolarité classique (valeur historique, avant l'ajout de
+      // cette colonne) — même hypothèse que le reste de l'application, pas une nouvelle règle.
+      db.query(
+        `SELECT COALESCE(NULLIF(p.type_frais, ''), 'scolarite') AS type_frais,
+                COUNT(*) AS nb, COALESCE(SUM(p.montant), 0) AS total
+         FROM paiement p WHERE p.caisse_id = $1
+         GROUP BY COALESCE(NULLIF(p.type_frais, ''), 'scolarite')
+         ORDER BY total DESC`,
+        [caisseId]
+      ),
+
+      // ✅ Même jointure effectue_par::integer = utilisateur.id que paiyement.controller.js
+      // (historique paiements) — pas une nouvelle convention.
+      db.query(
+        `SELECT u.id AS caissier_id, u.nom AS caissier_nom,
+                COUNT(*) AS nb, COALESCE(SUM(p.montant), 0) AS total,
+                MIN(p.date_paiement) AS premiere_operation, MAX(p.date_paiement) AS derniere_operation
+         FROM paiement p LEFT JOIN utilisateur u ON p.effectue_par::integer = u.id
+         WHERE p.caisse_id = $1
+         GROUP BY u.id, u.nom ORDER BY total DESC`,
+        [caisseId]
+      ),
+
+      db.query(
+        `SELECT date_trunc('month', p.date_paiement) AS mois, COALESCE(SUM(p.montant), 0) AS total
+         FROM paiement p WHERE p.caisse_id = $1
+         GROUP BY date_trunc('month', p.date_paiement) ORDER BY mois`,
+        [caisseId]
+      ),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        caisse,
+        total_encaisse: parseFloat(totalResult.rows[0].total),
+        nb_operations: parseInt(totalResult.rows[0].nb, 10),
+        par_annee_academique: parAnneeResult.rows.map((r) => ({
+          annee_id: r.annee_id, annee: r.annee, nb: parseInt(r.nb, 10), total: parseFloat(r.total),
+        })),
+        par_type: parTypeResult.rows.map((r) => ({
+          type_frais: r.type_frais, nb: parseInt(r.nb, 10), total: parseFloat(r.total),
+        })),
+        par_caissier: parCaissierResult.rows.map((r) => ({
+          caissier_id: r.caissier_id, caissier_nom: r.caissier_nom, nb: parseInt(r.nb, 10),
+          total: parseFloat(r.total), premiere_operation: r.premiere_operation, derniere_operation: r.derniere_operation,
+        })),
+        evolution_mensuelle: evolutionResult.rows.map((r) => ({ mois: r.mois, total: parseFloat(r.total) })),
+      },
+    });
+  } catch (error) {
+    console.error('Erreur getSupervisionCaisse:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.' });
   }
 };
@@ -994,13 +1238,17 @@ exports.validerPaiementAdmission = async (req, res) => {
   const client = await db.connect();
   try {
     const { code } = req.params;
-    const { montant, methode } = req.body;
+    const { montant, methode, pec_institutionnelle, reference_pec } = req.body;
 
-    if (!montant || isNaN(parseFloat(montant)) || parseFloat(montant) <= 0) {
-      return res.status(400).json({ success: false, message: 'Montant du paiement invalide.' });
-    }
-    if (!methode || !METHODES_VALIDES.includes(methode)) {
-      return res.status(400).json({ success: false, message: `Méthode de paiement invalide. Valeurs acceptées : ${METHODES_VALIDES.join(', ')}.` });
+    if (!pec_institutionnelle) {
+      if (!montant || isNaN(parseFloat(montant)) || parseFloat(montant) <= 0) {
+        return res.status(400).json({ success: false, message: 'Montant du paiement invalide.' });
+      }
+      if (!methode || !METHODES_VALIDES.includes(methode)) {
+        return res.status(400).json({ success: false, message: `Méthode de paiement invalide. Valeurs acceptées : ${METHODES_VALIDES.join(', ')}.` });
+      }
+    } else if (!reference_pec || !reference_pec.trim()) {
+      return res.status(400).json({ success: false, message: 'La référence de la prise en charge institutionnelle est obligatoire.' });
     }
 
     await client.query('BEGIN');
@@ -1039,8 +1287,32 @@ exports.validerPaiementAdmission = async (req, res) => {
     }
 
     const montantScolarite = parseFloat(etudiant.montant_scolarite || 0);
-    const montantPaye = parseFloat(montant);
-    const scolariteRestante = montantScolarite - montantPaye;
+
+    if (pec_institutionnelle) {
+      try {
+        await creerPecInstitutionnelle(client, {
+          etudiantId: etudiant.id,
+          montantScolarite,
+          referencePec: reference_pec.trim(),
+          userId: req.user.id,
+          caisseId: session.caisse_id,
+          anneeAcademiqueId: etudiant.annee_academique_id,
+        });
+      } catch (pecErr) {
+        await client.query('ROLLBACK');
+        if (pecErr.code === 'PEC_DEJA_EXISTANTE') {
+          return res.status(409).json({ success: false, code: pecErr.code, message: pecErr.message });
+        }
+        throw pecErr;
+      }
+    }
+
+    const montantPaye = pec_institutionnelle ? 0 : parseFloat(montant);
+    // PEC institutionnelle 100 % : l'étudiant est traité comme devant 0 F dès l'initiation
+    // (pas seulement "rien versé pour l'instant" — la formule generale montantScolarite -
+    // montantPaye donnerait ici le montant total, ce qui serait faux). scolarite_restante ne
+    // redevient positif qu'après la décision du Fondateur (validerPEC, cf. Chantier 2).
+    const scolariteRestante = pec_institutionnelle ? 0 : (montantScolarite - montantPaye);
     if (scolariteRestante < 0) {
       throw new Error('Le montant payé ne peut pas dépasser le montant total de la scolarité.');
     }
@@ -1089,13 +1361,17 @@ exports.validerPaiementAdmission = async (req, res) => {
     const numeroRecu = `RECU-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
     const recuResult = await client.query(
       `INSERT INTO recu (numero_recu, date_emission, montant, emetteur) VALUES ($1, $2, $3, $4) RETURNING id`,
-      [numeroRecu, datePaiement, montant, req.user?.code || null]
+      [numeroRecu, datePaiement, montantPaye, req.user?.code || null]
     );
 
+    // Trace de l'opération à la Caisse même à 0 FCFA (PEC institutionnelle) : type_frais dédié
+    // ('pec_institutionnelle') réutilisant le mécanisme déjà existant (Supervision des caisses,
+    // Bilan des dépenses regroupent déjà dynamiquement par type_frais) — un montant à 0 n'inflate
+    // jamais un total encaissé, cette opération n'est donc jamais comptabilisée comme une recette.
     const paiementResult = await client.query(
-      `INSERT INTO paiement (montant, date_paiement, methode, effectue_par, etudiant_id, recu_id, annee_academique_id, session_caisse_id, caisse_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-      [montant, datePaiement, methode, req.user?.id || null, etudiant.id, recuResult.rows[0].id, etudiant.annee_academique_id, session.id, session.caisse_id]
+      `INSERT INTO paiement (montant, date_paiement, methode, effectue_par, etudiant_id, recu_id, annee_academique_id, session_caisse_id, caisse_id, type_frais)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
+      [montantPaye, datePaiement, pec_institutionnelle ? 'Prise en charge institutionnelle' : methode, req.user?.id || null, etudiant.id, recuResult.rows[0].id, etudiant.annee_academique_id, session.id, session.caisse_id, pec_institutionnelle ? 'pec_institutionnelle' : null]
     );
 
     // Une seule entrée kit par étudiant (comme dans createPaiement) — non déposé par défaut,
@@ -1114,7 +1390,9 @@ exports.validerPaiementAdmission = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Paiement validé : inscription finalisée.',
+      message: pec_institutionnelle
+        ? 'Prise en charge institutionnelle initiée : inscription finalisée, en attente de confirmation du Fondateur.'
+        : 'Paiement validé : inscription finalisée.',
       data: {
         etudiant_id: etudiant.id,
         paiement_id: paiementResult.rows[0].id,
@@ -1122,7 +1400,9 @@ exports.validerPaiementAdmission = async (req, res) => {
         numero_recu: numeroRecu,
         scolarite_verse: montantPaye,
         scolarite_restante: scolariteRestante,
-        statut_etudiant: statutEtudiantScolarite
+        statut_etudiant: statutEtudiantScolarite,
+        pec_institutionnelle: !!pec_institutionnelle,
+        reference_pec: pec_institutionnelle ? reference_pec.trim() : undefined
       }
     });
   } catch (error) {

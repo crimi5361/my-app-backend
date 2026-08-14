@@ -32,7 +32,11 @@ exports.getAllCertificat = async (req, res) => {
         e.photo_url,
         e.date_inscription,
         e.statut_scolaire,
-        e.nationalite,
+        -- Correctif (2026-08-14) : etudiant.nationalite stocke un code ISO (ex. "CI", parfois un
+        -- nom de pays hérité pour d'anciens dossiers) — jamais l'adjectif attendu sur le
+        -- certificat ("Ivoirienne"). Résolu via pays (code_iso OU nom, pour couvrir les deux
+        -- formats déjà présents en base), avec repli sur la valeur brute si aucune correspondance.
+        COALESCE(p_nat.nationalite, e.nationalite) AS nationalite,
         e.sexe,
         e.contact_etudiant,
         e.contact_parent_2,
@@ -78,8 +82,9 @@ exports.getAllCertificat = async (req, res) => {
         s.scolarite_restante
         
       FROM etudiant e
-      
+
       -- Jointures obligatoires
+      LEFT JOIN pays p_nat ON p_nat.code_iso = e.nationalite OR p_nat.nom = e.nationalite
       LEFT JOIN filiere f ON e.id_filiere = f.id
       LEFT JOIN niveau n ON e.niveau_id = n.id
       LEFT JOIN anneeacademique a ON e.annee_academique_id = a.id

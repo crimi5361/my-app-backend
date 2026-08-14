@@ -132,6 +132,7 @@ const apiRoutes = [
   // Paiements
   { path: '/api/paiements',                 route: require('./routes/payement.routes') },
   { path: '/api/priseEnCharge',             route: require('./routes/priseEnCharge.routes') },
+  { path: '/api/depenses',                  route: require('./routes/depense.routes') },
   { path: '/api/kit',                       route: require('./routes/kit.routes') },
   { path: '/api/etudiant-payement-espace',  route: require('./routes/PaiementEespaceetudiant.routes') },
 

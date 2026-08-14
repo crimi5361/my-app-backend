@@ -23,6 +23,13 @@ exports.getDashboardComptabilite = async (req, res) => {
       : '';
     const baseParams = ecoleId !== null ? [anneeAcademiqueId, siteId, ecoleId] : [anneeAcademiqueId, siteId];
 
+    // ✅ Variante utilisée sur vue_position_academique/etudiant (alias e = étudiant directement,
+    // pas paiement) — même condition, même forme que dashboardFondateur.controller.js
+    // (ecoleCondEtudiant), reprise à l'identique pour le bloc finance ci-dessous.
+    const ecoleCondEtudiant = ecoleId !== null
+      ? 'AND e.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $3)'
+      : '';
+
     const [
       recettesJour,
       recettesHier,
@@ -34,6 +41,8 @@ exports.getDashboardComptabilite = async (req, res) => {
       methodeResult,
       parCaisseResult,
       enAttenteResult,
+      financeResult,
+      pecResult,
     ] = await Promise.all([
       db.query(`
         SELECT COALESCE(SUM(p.montant), 0) AS total FROM paiement p JOIN caisse c ON c.id = p.caisse_id
@@ -109,6 +118,26 @@ exports.getDashboardComptabilite = async (req, res) => {
             ${ecoleId !== null ? 'AND e2.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $2)' : ''}
           ) AS reinscriptions_en_attente
       `, ecoleId !== null ? [siteId, ecoleId] : [siteId]),
+
+      // ✅ Scolarité totale / versé / restant — mêmes indicateurs, même requête que
+      // dashboardFondateur.controller.js (vue_position_academique : montants toujours corrects
+      // par branche, y compris pour un étudiant réinscrit depuis une année déjà clôturée).
+      // Réutilisé à l'identique, pas réinventé (règle explicite du chantier).
+      db.query(`
+        SELECT
+          COALESCE(SUM(e.montant_scolarite), 0) AS total_scolarite,
+          COALESCE(SUM(e.scolarite_verse), 0) AS total_verse,
+          COALESCE(SUM(e.scolarite_restante), 0) AS total_restant
+        FROM vue_position_academique e
+        WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit' ${ecoleCondEtudiant}
+      `, baseParams),
+
+      // ✅ Prises en charge validées — même requête que dashboardFondateur.controller.js.
+      db.query(`
+        SELECT COALESCE(SUM(p.montant_reduction), 0) AS total, COUNT(*) AS nombre
+        FROM prise_en_charge p JOIN etudiant e ON e.id = p.etudiant_id
+        WHERE p.statut = 'valide' AND p.annee_academique_id = $1 AND e.site_id = $2 ${ecoleCondEtudiant}
+      `, baseParams),
     ]);
 
     res.status(200).json({
@@ -130,6 +159,13 @@ exports.getDashboardComptabilite = async (req, res) => {
         enAttente: {
           admissions: parseInt(enAttenteResult.rows[0].admissions_en_attente, 10),
           reinscriptions: parseInt(enAttenteResult.rows[0].reinscriptions_en_attente, 10),
+        },
+        finance: {
+          total_scolarite: parseFloat(financeResult.rows[0].total_scolarite),
+          total_verse: parseFloat(financeResult.rows[0].total_verse),
+          total_restant: parseFloat(financeResult.rows[0].total_restant),
+          total_pec: parseFloat(pecResult.rows[0].total),
+          nombre_pec: parseInt(pecResult.rows[0].nombre, 10),
         },
       },
     });

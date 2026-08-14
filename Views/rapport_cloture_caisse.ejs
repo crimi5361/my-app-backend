@@ -81,11 +81,17 @@
             <tr><th>Solde d'ouverture</th><td><%= Number(rapport.session.montant_ouverture).toLocaleString('fr-FR') %> FCFA</td></tr>
             <tr><th>Total encaissé</th><td><%= Number(rapport.total_encaisse).toLocaleString('fr-FR') %> FCFA</td></tr>
             <tr><th>Nombre de paiements</th><td><%= rapport.nb_paiements %></td></tr>
+            <tr><th>Montant théorique</th><td><%= Number(rapport.montant_theorique).toLocaleString('fr-FR') %> FCFA</td></tr>
             <% if (rapport.session.montant_fermeture !== null) { %>
             <tr><th>Solde de clôture (compté)</th><td><%= Number(rapport.session.montant_fermeture).toLocaleString('fr-FR') %> FCFA</td></tr>
-            <tr><th>Écart</th><td><%= (Number(rapport.session.montant_fermeture) - (Number(rapport.session.montant_ouverture) + Number(rapport.total_encaisse))).toLocaleString('fr-FR') %> FCFA</td></tr>
+            <tr><th>Écart</th><td><%= Number(rapport.ecart).toLocaleString('fr-FR') %> FCFA</td></tr>
             <% } %>
         </table>
+
+        <% if (rapport.session.observations) { %>
+        <h3 style="color:#003366;">Observations</h3>
+        <table class="recap-table"><tr><td><%= rapport.session.observations %></td></tr></table>
+        <% } %>
 
         <h3 style="color:#003366;">Répartition par méthode de paiement</h3>
         <table class="recap-table">
@@ -100,9 +106,75 @@
             </tbody>
         </table>
 
+        <h3 style="color:#003366;">Répartition par type de frais</h3>
+        <table class="recap-table">
+            <thead><tr><th>Type</th><th>Nombre</th><th>Montant</th></tr></thead>
+            <tbody>
+                <% rapport.repartition_type_frais.forEach(function(r) { %>
+                <tr><td style="text-transform:capitalize;"><%= r.type_frais %></td><td><%= r.nb %></td><td><%= Number(r.total).toLocaleString('fr-FR') %> FCFA</td></tr>
+                <% }) %>
+                <% if (rapport.repartition_type_frais.length === 0) { %>
+                <tr><td colspan="3">Aucune opération enregistrée sur cette session.</td></tr>
+                <% } %>
+            </tbody>
+        </table>
+
+        <h3 style="color:#003366;">Répartition par année académique</h3>
+        <table class="recap-table">
+            <thead><tr><th>Année</th><th>Nombre</th><th>Montant</th></tr></thead>
+            <tbody>
+                <% rapport.repartition_annee_academique.forEach(function(r) { %>
+                <tr><td><%= r.annee %></td><td><%= r.nb %></td><td><%= Number(r.total).toLocaleString('fr-FR') %> FCFA</td></tr>
+                <% }) %>
+                <% if (rapport.repartition_annee_academique.length === 0) { %>
+                <tr><td colspan="3">Aucune opération enregistrée sur cette session.</td></tr>
+                <% } %>
+            </tbody>
+        </table>
+
+        <h3 style="color:#003366;">Sorties / dépenses validées (total : <%= Number(rapport.total_sorties).toLocaleString('fr-FR') %> FCFA)</h3>
+        <table class="recap-table">
+            <thead><tr><th>Date</th><th>Catégorie</th><th>Motif</th><th>Bénéficiaire</th><th>Montant</th></tr></thead>
+            <tbody>
+                <% rapport.sorties.forEach(function(d) { %>
+                <tr>
+                    <td><%= new Date(d.date_depense).toLocaleDateString('fr-FR') %></td>
+                    <td><%= d.categorie_libelle || '-' %></td>
+                    <td><%= d.motif %></td>
+                    <td><%= d.beneficiaire %></td>
+                    <td><%= Number(d.montant).toLocaleString('fr-FR') %> FCFA</td>
+                </tr>
+                <% }) %>
+                <% if (rapport.sorties.length === 0) { %>
+                <tr><td colspan="5">Aucune sortie sur cette période.</td></tr>
+                <% } %>
+            </tbody>
+        </table>
+
+        <h3 style="color:#003366;">Détail des opérations</h3>
+        <table class="recap-table">
+            <thead><tr><th>Heure</th><th>Reçu</th><th>Étudiant</th><th>Matricule</th><th>Type</th><th>Méthode</th><th>Montant</th></tr></thead>
+            <tbody>
+                <% rapport.details_operations.forEach(function(p) { %>
+                <tr>
+                    <td><%= new Date(p.date_paiement).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }) %></td>
+                    <td><%= p.numero_recu || '-' %></td>
+                    <td><%= p.etudiant_nom ? (p.etudiant_nom + ' ' + (p.etudiant_prenoms || '')) : '-' %></td>
+                    <td><%= p.matricule_iipea || '-' %></td>
+                    <td style="text-transform:capitalize;"><%= p.type_frais %></td>
+                    <td><%= p.methode %></td>
+                    <td><%= Number(p.montant).toLocaleString('fr-FR') %> FCFA</td>
+                </tr>
+                <% }) %>
+                <% if (rapport.details_operations.length === 0) { %>
+                <tr><td colspan="7">Aucune opération enregistrée sur cette session.</td></tr>
+                <% } %>
+            </tbody>
+        </table>
+
         <div class="total-box">
             <span>Solde de clôture attendu</span>
-            <div class="total-value"><%= (Number(rapport.session.montant_ouverture) + Number(rapport.total_encaisse)).toLocaleString('fr-FR') %> FCFA</div>
+            <div class="total-value"><%= Number(rapport.montant_theorique).toLocaleString('fr-FR') %> FCFA</div>
         </div>
 
         <div class="footer">

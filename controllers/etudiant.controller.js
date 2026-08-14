@@ -4,6 +4,7 @@ const moment = require('moment');
 const path = require('path');
 const fs = require('fs');
 const { isKitSuspenduPourAnnee } = require('../services/kitCampagne.service');
+const { getMentionSoutenanceSiApplicable } = require('../services/mentionSoutenance.service');
 const { v4: uuidv4 } = require('uuid');
 const { genererCodeCandidat } = require('../services/codePaiement.service');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
@@ -1658,7 +1659,7 @@ exports.getRecuData = async (req, res) => {
         r.id as recu_id, r.numero_recu, r.date_emission, r.emetteur,
         k.montant as kit_montant, k.deposer as kit_deposer, k.date_enregistrement as kit_date,
         k.annee_academique_id as kit_annee_academique_id,
-        pec.id as pec_id, pec.type_pec, pec.pourcentage_reduction, pec.montant_reduction,
+        pec.id as pec_id, pec.type_pec, pec.nature_pec, pec.pourcentage_reduction, pec.montant_reduction,
         pec.statut as pec_statut, pec.reference as pec_reference,
         pec.date_demande as pec_date_demande, pec.date_validation as pec_date_validation,
         pec.valide_par as pec_valide_par, pec.motif_refus as pec_motif_refus
@@ -1788,6 +1789,7 @@ exports.getRecuData = async (req, res) => {
       .map(row => ({
         id: row.pec_id,
         type_pec: row.type_pec,
+        nature_pec: row.nature_pec,
         pourcentage_reduction: row.pourcentage_reduction,
         montant_reduction: row.montant_reduction,
         reference: row.pec_reference,
@@ -1799,9 +1801,11 @@ exports.getRecuData = async (req, res) => {
         valide_par_nom: row.admin_nom ? `${row.admin_nom} ${row.admin_prenoms}` : null
       }));
 
-    // Trouver la PEC active (valide) ou la dernière en attente
+    // Trouver la PEC active (valide) ou la dernière en attente d'une décision (Chantier 2 :
+    // "initiee" = PEC institutionnelle initiée à la Caisse, décision Fondateur encore ouverte —
+    // même statut "à trancher" que "en_attente" du point de vue du reçu).
     const pecActive = toutesLesPEC.find(pec => pec.statut === 'valide');
-    const pecEnAttente = toutesLesPEC.find(pec => pec.statut === 'en_attente');
+    const pecEnAttente = toutesLesPEC.find(pec => pec.statut === 'en_attente' || pec.statut === 'initiee');
     const pecRefusee = toutesLesPEC.find(pec => pec.statut === 'refuse');
 
     // Le kit peut être suspendu pour la campagne à laquelle il se rattache (cf.
@@ -1866,7 +1870,12 @@ exports.getRecuData = async (req, res) => {
         toutes_prises_en_charge: toutesLesPEC,
 
         // Modalités de paiement / échéancier
-        echeancier
+        echeancier,
+
+        // Chantier 2 TER (2026-08-14) : mention frais de soutenance — Licence 3 / Licence 3 Pro
+        // uniquement, pour l'année académique concernée (cf. mentionSoutenance.service.js).
+        // null pour tout autre niveau ou toute autre année, jamais affichée sinon.
+        mention_soutenance: getMentionSoutenanceSiApplicable(etudiantData.niveau, etudiantData.annee_academique)
       },
       paiements: paiementsUniques.map(row => ({
         id: row.paiement_id,

@@ -28,6 +28,12 @@ router.get('/dashboard/stats', authenticateToken, caisseOnly, caisseController.g
 router.get('/paiements', authenticateToken, caisseOnly, caisseController.getPaiements);
 router.get('/inscriptions-en-attente', authenticateToken, caisseOuScolariteLecture, caisseController.getInscriptionsEnAttente);
 
+// Supervision (Chantier Comptabilité, priorité 1, point 2) — réservée à la comptabilité/admin,
+// jamais au caissier (vue de contrôle sur l'ensemble des caisses, pas son propre outil de travail).
+const comptabiliteOnly = authorizeRoles('admin', 'comptabilite');
+router.get('/supervision/caisses', authenticateToken, comptabiliteOnly, caisseController.listerCaissesSite);
+router.get('/supervision/caisses/:caisseId', authenticateToken, comptabiliteOnly, caisseController.getSupervisionCaisse);
+
 router.get('/admission/recherche', authenticateToken, caisseOnly, caisseController.rechercherDossierAdmissionParCode);
 router.post('/admission/:code/valider', authenticateToken, caisseOnly, caisseController.validerPaiementAdmission);
 
