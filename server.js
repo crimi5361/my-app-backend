@@ -39,8 +39,8 @@ app.set('views', path.join(__dirname, 'Views'));
 // ─────────────────────────────────────────────────────────────
 const corsOptions = {
   origin: [
-    'http://localhost:5173',
-    'http://localhost:8080',
+    'https://iipea.com',
+    'https://www.iipea.com',
     'https://myiipea.ci',
     'https://www.myiipea.ci',
   ],
