@@ -30,6 +30,7 @@ node migrations/run.js 2026-08-11_module_enseignants.sql
 | `2026-08-13c_assistant_recherche_par_mots.sql` | Recherche par mots entiers dans un ordre libre (`assistant.correspond`), avec ses index. |
 | `2026-08-13d_assistant_reglages.sql` | Réglages par site : prénom de l'assistante, recherche web. |
 | `2026-08-13e_assistant_voix.sql` | Voix de synthèse retenue pour la session vocale. |
+| `2026-08-14_assistant_civilite.sql` | Civilité employée à l'accueil (`Monsieur` par défaut). La table `utilisateur` ne porte aucun genre : c'est la raison d'être de ce réglage. |
 
 ## Rôle de lecture de l'assistant
 

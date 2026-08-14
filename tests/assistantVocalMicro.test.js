@@ -46,6 +46,14 @@ test('le clavier reste utilisable micro coupé', () => {
   assert.equal(d.texte, "Combien d'inscrits ?");
 });
 
+test('la demande d\'accueil est reconnue, micro ouvert comme coupé', () => {
+  // C'est le navigateur qui la déclenche : lui seul sait si l'accueil a déjà été
+  // joué depuis la connexion. Le serveur voit une nouvelle session à chaque
+  // ouverture de l'écran et rejouerait la phrase à chaque fois.
+  assert.deepEqual(routerMessageNavigateur({ type: 'accueil' }, ouvert), { action: 'accueil' });
+  assert.deepEqual(routerMessageNavigateur({ type: 'accueil' }, coupe), { action: 'accueil' });
+});
+
 test('messages hors protocole : ignorés sans exception', () => {
   for (const msg of [null, undefined, 'bonjour', 42, {}, { type: 'inconnu' }, { type: 'audio' }]) {
     assert.equal(routerMessageNavigateur(msg, ouvert).action, 'ignorer');

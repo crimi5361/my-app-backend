@@ -22,6 +22,12 @@ function routerMessageNavigateur(msg, etat) {
 
   if (msg.type === 'micro') return { action: 'micro', coupe: msg.coupe === true };
 
+  // Demande d'accueil. C'est le NAVIGATEUR qui la déclenche, parce que lui seul
+  // sait si l'accueil a déjà été joué depuis la connexion : le serveur, lui, voit
+  // une nouvelle session à chaque ouverture de l'écran vocal et rejouerait la
+  // phrase à chaque fois.
+  if (msg.type === 'accueil') return { action: 'accueil' };
+
   if (msg.type === 'audio' && msg.pcm) {
     // LA barrière. Une trame reçue micro coupé s'arrête ici.
     if (etat.microCoupe) return { action: 'ignorer', motif: 'micro coupé' };

@@ -23,6 +23,7 @@ const PAR_OUTIL = {
   afficher_graphique: 'graphe',      // histogramme en gradins
   generer_excel: 'livre',            // ouvrage relie
   generer_rapport_audit: 'livre',
+  debriefing_veille: 'graphe',       // il aboutit a des graphiques
 };
 
 /**

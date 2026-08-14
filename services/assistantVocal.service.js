@@ -26,6 +26,9 @@ const { getReglages } = require('./assistantReglages.service');
 const { getVocabulaire } = require('./assistantVocabulaire.service');
 const { routerMessageNavigateur, transcriptionAdmise } = require('./assistantVocalProtocole');
 const { corrigerTranscription } = require('./assistantTranscription');
+const { intentionOuiNon } = require('./assistantIntention');
+const { debriefingVeille } = require('./assistantDebriefing.service');
+const { preparerAccueil } = require('./assistantAccueil.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -119,15 +122,72 @@ async function ouvrirSessionLive(ai, config, rappels) {
  */
 const sessionsOuvertes = new Map();
 
-// Memes outils que le canal ecrit, plus le graphique : une capacite qui existerait
-// au clavier et pas a l'oral serait incomprehensible pour le fondateur.
+/**
+ * Débriefing de la veille.
+ *
+ * L'outil prend la RÉPONSE BRUTE du fondateur, pas une interprétation. C'est le
+ * serveur qui tranche, avec `intentionOuiNon` — une fonction déterministe et
+ * testée. Laisser le modèle décider seul de ce qu'est un « oui » reviendrait à
+ * confier à une génération de texte le déclenchement d'un rapport entier lu à
+ * voix haute, sans possibilité de le vérifier.
+ *
+ * Propre au canal vocal, comme le graphique : le débriefing pousse plusieurs
+ * visuels à l'écran, ce que seul cet écran sait afficher.
+ */
+const DECLARATION_DEBRIEFING = {
+  name: 'debriefing_veille',
+  description:
+    "Établit le débriefing des mouvements de la veille : volumétrie, répartition par type d'acte, "
+    + "agents les plus actifs, comparaison à la semaine. À appeler dès que le fondateur répond à ta "
+    + "proposition de débriefing, QUELLE QUE SOIT sa réponse — accord, refus ou hésitation — en lui "
+    + "passant sa réponse mot pour mot. N'interprète jamais toi-même : c'est l'outil qui tranche et "
+    + "qui te dit quoi faire. À appeler aussi s'il redemande le débriefing plus tard dans la "
+    + "conversation, avec `reponse` valant « oui ».",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      reponse: {
+        type: Type.STRING,
+        description: "Ce que le fondateur vient de répondre, mot pour mot, sans reformulation.",
+      },
+    },
+    required: ['reponse'],
+  },
+};
+
+// Memes outils que le canal ecrit, plus le graphique et le debriefing : une
+// capacite qui existerait au clavier et pas a l'oral serait incomprehensible
+// pour le fondateur.
 const outilsPour = (reglages) => [{
   functionDeclarations: reglages?.recherche_web
-    ? [...DECLARATIONS, DECLARATION_GRAPHIQUE, DECLARATION_WEB]
-    : [...DECLARATIONS, DECLARATION_GRAPHIQUE],
+    ? [...DECLARATIONS, DECLARATION_GRAPHIQUE, DECLARATION_DEBRIEFING, DECLARATION_WEB]
+    : [...DECLARATIONS, DECLARATION_GRAPHIQUE, DECLARATION_DEBRIEFING],
 }];
 
-function construireInstruction(dictionnaire, annees, aujourdhui, reglages) {
+/**
+ * Protocole de l'accueil. Il est dans l'instruction et non dans le code du
+ * modèle : c'est lui qui parle, on ne peut que lui dire quoi faire — mais la
+ * DÉCISION, elle, est reprise côté serveur par l'outil.
+ */
+const blocAccueil = (phrase) => `## L'ouverture de la conversation
+
+Quand on te demande d'ouvrir la conversation, tu prononces EXACTEMENT cette
+phrase, mot pour mot, sans rien ajouter ni retirer :
+
+${phrase}
+
+Puis tu T'ARRÊTES et tu attends la réponse.
+
+Dès que le fondateur répond — quoi qu'il dise, un accord, un refus ou une
+hésitation — tu appelles \`debriefing_veille\` en lui passant sa réponse MOT POUR
+MOT. Tu n'interprètes pas toi-même, tu ne décides pas si c'est un oui : l'outil
+te répond ce qu'il faut faire, et tu le fais.
+
+Si l'outil te renvoie un résumé, tu le lis tel quel, sans y ajouter de chiffre.
+S'il te dit que la réponse est ambiguë, tu reposes la question une seule fois.
+S'il te dit que c'est un refus, tu enchaînes normalement sans insister.`;
+
+function construireInstruction(dictionnaire, annees, aujourdhui, reglages, phraseAccueil) {
   const catalogue = dictionnaire
     .map((v) => `### ${v.vue}\n${v.description || ''}\nColonnes : ${v.colonnes.join(', ')}`)
     .join('\n\n');
@@ -136,6 +196,8 @@ function construireInstruction(dictionnaire, annees, aujourdhui, reglages) {
     : '- (aucune année académique enregistrée)';
 
   return `${construireIdentite(reglages.nom_assistant)}
+
+${blocAccueil(phraseAccueil)}
 
 ${BLOC_CAPACITES}
 
@@ -277,7 +339,7 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       return fermer('budget dépassé');
     }
 
-    const [dictionnaire, calendrier, reglages, vocabulaire] = await Promise.all([
+    const [dictionnaire, calendrier, reglages, vocabulaire, accueil] = await Promise.all([
       getDictionnaire({ siteId, ecoleId }),
       executerRequete(
         'SELECT annee_academique_id, annee, etat FROM assistant.v_annees_academiques ORDER BY annee DESC',
@@ -285,12 +347,15 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       ),
       getReglages(siteId),
       getVocabulaire({ siteId, ecoleId }),
+      // Le nom est relu en base à chaque ouverture : le jeton ne porte que
+      // l'identifiant, et le navigateur n'a pas à dicter qui il est.
+      preparerAccueil({ utilisateurId, siteId }),
     ]);
     const aujourdhui = new Date().toLocaleDateString('fr-FR', {
       weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
     });
     const instruction = construireInstruction(
-      dictionnaire, calendrier.ok ? calendrier.lignes : [], aujourdhui, reglages
+      dictionnaire, calendrier.ok ? calendrier.lignes : [], aujourdhui, reglages, accueil.phrase
     );
 
     const config = {
@@ -339,6 +404,16 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
     // du bon fonctionnement du code client.
     const etatMicro = { microCoupe: false };
 
+    // Accueil : joué au plus une fois par session Live. Le navigateur décide
+    // s'il le demande (il connaît la connexion) ; le serveur garantit qu'il ne
+    // sera pas rejoué (il connaît la session).
+    let accueilJoue = false;
+
+    // Relances déjà faites sur une réponse ambiguë. Le protocole en autorise UNE :
+    // au-delà, insister sur une question à laquelle le fondateur ne répond pas
+    // devient une boucle dont il ne peut plus sortir qu'en fermant l'écran.
+    let relancesAccueil = 0;
+
     /**
      * Transcriptions en cours d'accumulation, par locuteur.
      *
@@ -378,6 +453,16 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
 
         case 'fin_flux':
           sessionLive.sendRealtimeInput({ audioStreamEnd: true });
+          break;
+
+        case 'accueil':
+          // Une seule fois par session, même si le navigateur redemandait.
+          if (accueilJoue) break;
+          accueilJoue = true;
+          sessionLive.sendClientContent({
+            turns: [{ role: 'user', parts: [{ text: "[Consigne système] Ouvre la conversation maintenant, selon le protocole d'ouverture." }] }],
+            turnComplete: true,
+          });
           break;
 
         case 'micro':
@@ -454,6 +539,73 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
                   + "ou aucune requete n'a encore ete executee.",
               } });
             }
+            continue;
+          }
+
+          // Débriefing de la veille. La décision — accord, refus, hésitation —
+          // est prise ICI, par une fonction déterministe et testée, et non par
+          // le modèle : il ne fait que transmettre la réponse et lire le résumé.
+          if (appel.name === 'debriefing_veille') {
+            const intention = intentionOuiNon(appel.args?.reponse);
+
+            if (intention === 'non') {
+              relancesAccueil = 0;
+              reponses.push({ id: appel.id, name: appel.name, response: {
+                accepte: false,
+                instruction: "Le fondateur ne souhaite pas de débriefing. Dis-lui simplement que "
+                  + "tu restes à sa disposition, en une phrase, et attends sa question.",
+              } });
+              continue;
+            }
+
+            if (intention === 'ambigu') {
+              if (relancesAccueil === 0) {
+                relancesAccueil += 1;
+                reponses.push({ id: appel.id, name: appel.name, response: {
+                  ambigu: true,
+                  instruction: "Sa réponse n'est pas claire. Repose la question UNE SEULE FOIS, "
+                    + "brièvement : « Voulez-vous que je vous présente les mouvements d'hier ? »",
+                } });
+              } else {
+                // Deuxième hésitation : on n'insiste pas davantage.
+                relancesAccueil = 0;
+                reponses.push({ id: appel.id, name: appel.name, response: {
+                  accepte: false,
+                  instruction: "La réponse reste incertaine. N'insiste pas : dis que tu restes "
+                    + "disponible s'il veut le débriefing, et passe à autre chose.",
+                } });
+              }
+              continue;
+            }
+
+            relancesAccueil = 0;
+            // eslint-disable-next-line no-await-in-loop
+            const brief = await debriefingVeille({ siteId, ecoleId });
+
+            // Les graphiques partent à l'écran, pas au modèle : il choisit de
+            // déclencher le débriefing, il n'en fabrique jamais les chiffres.
+            if (brief.graphiques.length) {
+              envoyer('debriefing', {
+                date: brief.date,
+                phrases: brief.phrases,
+                graphiques: brief.graphiques,
+              });
+              envoyer('forme', { forme: 'graphe' });
+            }
+
+            reponses.push({ id: appel.id, name: appel.name, response: {
+              accepte: true,
+              aucune_activite: brief.aucune_activite,
+              resume: brief.phrases,
+              instruction: brief.aucune_activite
+                ? "Lis ce résumé tel quel. N'invente aucun chiffre et ne cherche pas à combler le vide."
+                : "Lis ce résumé tel quel, dans l'ordre, sans y ajouter aucun chiffre. Les graphiques "
+                  + "sont déjà affichés à son écran : mentionne-les en une phrase à la fin.",
+              limite: "Ce débriefing ne couvre que les CRÉATIONS tracées (inscriptions, encaissements, "
+                + "prises en charge, sessions de caisse, mouvements de stock). Les connexions, "
+                + "consultations, modifications et suppressions ne sont enregistrées nulle part dans "
+                + "cette base. Si le fondateur demande plus, dis-le-lui franchement.",
+            } });
             continue;
           }
 

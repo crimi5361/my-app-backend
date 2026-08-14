@@ -30,11 +30,26 @@ const VOIX = [
 const VOIX_PAR_DEFAUT = 'Sulafat';
 const NOMS_VOIX = new Set(VOIX.map((v) => v.nom));
 
+/**
+ * Civilités proposées.
+ *
+ * La table `utilisateur` ne porte aucun genre : ni colonne `civilite`, ni
+ * `sexe`. Plutôt que d'écrire « Monsieur » en dur — ce qui obligerait à
+ * redéployer le jour où une femme occupe le poste — la civilité est un réglage
+ * du site. La chaîne vide donne une formule neutre : « Bonjour Koné Ismaël ».
+ *
+ * Liste FERMÉE : cette valeur est prononcée par l'assistante et injectée dans
+ * son instruction, elle ne peut pas être une saisie libre.
+ */
+const CIVILITES = ['Monsieur', 'Madame', ''];
+const CIVILITE_PAR_DEFAUT = 'Monsieur';
+
 const DEFAUTS = {
   nom_assistant: null,
   lancement_vocal: 'bouton',
   recherche_web: false,
   voix: VOIX_PAR_DEFAUT,
+  civilite: CIVILITE_PAR_DEFAUT,
 };
 
 const LANCEMENTS = new Set(['bouton', 'double_frappe', 'mot_reveil']);
@@ -73,7 +88,7 @@ function nettoyerNom(brut) {
 async function getReglages(siteId) {
   if (!siteId) return { ...DEFAUTS };
   const { rows } = await db.query(
-    'SELECT nom_assistant, lancement_vocal, recherche_web, voix FROM assistant_reglages WHERE site_id = $1',
+    'SELECT nom_assistant, lancement_vocal, recherche_web, voix, civilite FROM assistant_reglages WHERE site_id = $1',
     [siteId],
   );
   return rows.length ? { ...DEFAUTS, ...rows[0] } : { ...DEFAUTS };
@@ -99,20 +114,30 @@ async function majReglages(siteId, utilisateurId, modifs = {}) {
   // migration si le besoin revient — mais aucune saisie ne peut la changer.
   const voix = actuels.voix || VOIX_PAR_DEFAUT;
 
+  // Liste fermée : cette valeur est prononcée par l'assistante, elle ne peut pas
+  // être une saisie libre. Une valeur inconnue laisse la civilité en place.
+  const civilite = CIVILITES.includes(modifs.civilite)
+    ? modifs.civilite
+    : (actuels.civilite ?? CIVILITE_PAR_DEFAUT);
+
   await db.query(
-    `INSERT INTO assistant_reglages (site_id, nom_assistant, lancement_vocal, recherche_web, voix, maj_le, maj_par)
-     VALUES ($1, $2, $3, $4, $5, now(), $6)
+    `INSERT INTO assistant_reglages (site_id, nom_assistant, lancement_vocal, recherche_web, voix, civilite, maj_le, maj_par)
+     VALUES ($1, $2, $3, $4, $5, $6, now(), $7)
      ON CONFLICT (site_id) DO UPDATE
        SET nom_assistant = EXCLUDED.nom_assistant,
            lancement_vocal = EXCLUDED.lancement_vocal,
            recherche_web = EXCLUDED.recherche_web,
            voix = EXCLUDED.voix,
+           civilite = EXCLUDED.civilite,
            maj_le = now(),
            maj_par = EXCLUDED.maj_par`,
-    [siteId, nom, lancement, web, voix, utilisateurId || null],
+    [siteId, nom, lancement, web, voix, civilite, utilisateurId || null],
   );
 
-  return { nom_assistant: nom, lancement_vocal: lancement, recherche_web: web, voix };
+  return { nom_assistant: nom, lancement_vocal: lancement, recherche_web: web, voix, civilite };
 }
 
-module.exports = { getReglages, majReglages, nettoyerNom, LANCEMENTS, VOIX, VOIX_PAR_DEFAUT };
+module.exports = {
+  getReglages, majReglages, nettoyerNom,
+  LANCEMENTS, VOIX, VOIX_PAR_DEFAUT, CIVILITES, CIVILITE_PAR_DEFAUT,
+};
