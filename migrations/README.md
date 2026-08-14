@@ -54,7 +54,14 @@ GEMINI_API_KEY=
 ASSISTANT_DATABASE_URL=          # produit par setup-role-assistant.js
 ASSISTANT_BUDGET_MENSUEL_FCFA=20000
 ASSISTANT_TAUX_FCFA_USD=600
+ASSISTANT_SILENCE_MS=800         # facultatif — voir ci-dessous
 ```
+
+`ASSISTANT_SILENCE_MS` est la durée de silence après laquelle l'assistante
+considère que le fondateur a fini de parler. Un francophone qui hésite avant un
+chiffre marque 300 à 600 ms : en dessous de 700 ms, elle coupe la phrase en deux ;
+au-delà de 1200 ms, l'échange devient poussif. Ne toucher qu'en connaissance de
+cause.
 
 Agenda, visioconférence et messagerie sont facultatifs : sans ces trois
 variables, les outils correspondants refusent poliment et le reste fonctionne.

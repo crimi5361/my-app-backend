@@ -15,7 +15,7 @@
 //     navigateur. Le modèle choisit quoi tracer, jamais avec quelles valeurs.
 const jwt = require('jsonwebtoken');
 const { WebSocketServer } = require('ws');
-const { GoogleGenAI, Modality, Type } = require('@google/genai');
+const { GoogleGenAI, Modality, Type, EndSensitivity } = require('@google/genai');
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { verifierBudget, enregistrer, extraireUsage, getConsommationMois } = require('./assistantBudget.service');
 const {
@@ -25,6 +25,7 @@ const { formePour } = require('./assistantFormes.service');
 const { getReglages } = require('./assistantReglages.service');
 const { getVocabulaire } = require('./assistantVocabulaire.service');
 const { routerMessageNavigateur, transcriptionAdmise } = require('./assistantVocalProtocole');
+const { corrigerTranscription } = require('./assistantTranscription');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -34,6 +35,78 @@ const MODELE_VOCAL = process.env.ASSISTANT_MODELE_VOCAL || 'gemini-3.1-flash-liv
 const MODELE_VOCAL_REPLI = 'gemini-2.5-flash-native-audio-latest';
 
 const ROLES_AUTORISES = new Set(['admin', 'fondateur']);
+
+/**
+ * Silence à observer avant de considérer que le fondateur a fini de parler.
+ *
+ * POURQUOI 800 ms. Un locuteur francophone qui hésite — typiquement avant un
+ * chiffre, « on a encaissé… huit millions » — marque une pause de 300 à 600 ms.
+ * En dessous de 700 ms l'assistante lui coupe la parole au milieu de sa phrase
+ * et répond à une demi-question. Au-delà de 1200 ms, l'échange devient poussif :
+ * on attend visiblement la machine. 800 ms couvre la pause naturelle en gardant
+ * la réplique vive.
+ *
+ * `END_SENSITIVITY_LOW` va dans le même sens : la fin de parole est déclarée
+ * moins facilement. C'est le réglage patient, celui qui convient à quelqu'un qui
+ * réfléchit en parlant.
+ */
+const SILENCE_MS = Number(process.env.ASSISTANT_SILENCE_MS) || 800;
+
+/** Marge avant le début de parole détecté, pour ne pas décapiter le premier mot. */
+const PADDING_MS = 300;
+
+/** Reprise sur échec réseau. Trois tentatives, doublées à chaque fois : au-delà,
+ *  ce n'est plus un incident passager et le fondateur doit être averti plutôt
+ *  que de regarder un écran qui tourne. */
+const DELAIS_REPRISE_MS = [1000, 2000, 4000];
+
+const attendre = (ms) => new Promise((r) => { setTimeout(r, ms); });
+
+/**
+ * Un échec mérite-t-il une nouvelle tentative ?
+ *
+ * Le quota et l'authentification ne s'arrangent pas en réessayant : insister
+ * consomme le peu qui reste et retarde le message d'erreur. Seules les coupures
+ * réseau et les indisponibilités passagères sont reprises.
+ */
+function estReessayable(erreur) {
+  const m = String(erreur?.message || '');
+  if (/RESOURCE_EXHAUSTED|quota|429|PERMISSION_DENIED|UNAUTHENTICATED|API key/i.test(m)) return false;
+  return /ECONN|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|socket|network|UNAVAILABLE|503|500|502|504|timeout/i.test(m);
+}
+
+/**
+ * Ouvre la session Live, en reprenant sur les échecs passagers.
+ *
+ * Deux boucles imbriquées, et pas une seule : le modèle en preview peut avoir
+ * été retiré (il faut alors changer de modèle, pas réessayer le même), tandis
+ * qu'une coupure réseau se répare en réessayant (et changer de modèle n'y
+ * changerait rien).
+ */
+async function ouvrirSessionLive(ai, config, rappels) {
+  const modeles = [MODELE_VOCAL, MODELE_VOCAL_REPLI];
+  let derniere = null;
+
+  for (const modele of modeles) {
+    for (let essai = 0; essai <= DELAIS_REPRISE_MS.length; essai += 1) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const session = await ai.live.connect({ model: modele, config, callbacks: rappels });
+        return { session, modele };
+      } catch (erreur) {
+        derniere = erreur;
+        if (!estReessayable(erreur)) break;               // modèle ou plan en cause
+        if (essai === DELAIS_REPRISE_MS.length) break;    // reprises épuisées
+        console.warn(`[vocal] ${modele} : ${erreur.message} — reprise dans ${DELAIS_REPRISE_MS[essai]} ms`);
+        // eslint-disable-next-line no-await-in-loop
+        await attendre(DELAIS_REPRISE_MS[essai]);
+      }
+    }
+    if (derniere) console.warn(`[vocal] ${modele} indisponible (${derniere.message})`);
+  }
+
+  throw derniere || new Error('Aucun modèle vocal disponible.');
+}
 
 /**
  * Sessions vocales ouvertes, par utilisateur.
@@ -235,6 +308,15 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       // plus souvent.
       inputAudioTranscription: { languageCodes: ['fr-FR'], customVocabulary: vocabulaire },
       outputAudioTranscription: { languageCodes: ['fr-FR'], customVocabulary: vocabulaire },
+      // Découpage de la parole. Sans ce réglage, la valeur par défaut coupait la
+      // phrase à la moindre hésitation — voir SILENCE_MS pour le raisonnement.
+      realtimeInputConfig: {
+        automaticActivityDetection: {
+          silenceDurationMs: SILENCE_MS,
+          prefixPaddingMs: PADDING_MS,
+          endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_LOW,
+        },
+      },
       speechConfig: {
         languageCode: 'fr-FR',
         // Le nom vient des reglages du site, borne par assistantReglages :
@@ -256,6 +338,28 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
     // l'applique : c'est la seule façon d'avoir une coupure qui ne dépende pas
     // du bon fonctionnement du code client.
     const etatMicro = { microCoupe: false };
+
+    /**
+     * Transcriptions en cours d'accumulation, par locuteur.
+     *
+     * Les fragments arrivent mot par mot. On les renvoie tels quels pour que
+     * l'écran suive la parole, MAIS on ne les corrige pas : capitaliser chaque
+     * morceau produirait « Bonjour Monsieur Comment Puis-je ». La correction
+     * n'a de sens que sur le texte entier, à la fin du tour.
+     */
+    const tampons = { fondateur: '', assistant: '' };
+
+    /** Clôt un tour de transcription : le texte complet est corrigé une seule
+     *  fois, puis renvoyé pour REMPLACER les fragments déjà affichés. */
+    const finaliserTranscription = (qui) => {
+      const brut = tampons[qui];
+      tampons[qui] = '';
+      if (!brut.trim()) return;
+      envoyer(qui === 'fondateur' ? 'transcription_fondateur' : 'transcription_assistant', {
+        texte: corrigerTranscription(brut),
+        partiel: false,
+      });
+    };
 
     const traiterMessageNavigateur = (msg) => {
       const decision = routerMessageNavigateur(msg, etatMicro);
@@ -280,6 +384,10 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
           if (decision.coupe === etatMicro.microCoupe) break;
           etatMicro.microCoupe = decision.coupe;
           if (decision.coupe) {
+            // Le début de phrase capté avant le clic est abandonné : le finaliser
+            // ferait apparaître, micro coupé, une phrase que le fondateur croyait
+            // avoir interrompue.
+            tampons.fondateur = '';
             // Clôture le tour d'entrée en cours : Google vide sa file et arrête
             // sa détection d'activité, au lieu de continuer à transcrire ce qui
             // était déjà en vol. C'est ce qui rend la coupure immédiate à
@@ -311,16 +419,9 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       onclose: (e) => { envoyer('termine', { raison: e?.reason || null }); fermer('fermeture distante'); },
     };
 
-    let modeleUtilise = MODELE_VOCAL;
-    try {
-      sessionLive = await ai.live.connect({ model: MODELE_VOCAL, config, callbacks: rappels });
-    } catch (e) {
-      // Modèle en preview retiré ou indisponible : on bascule sur le repli plutôt
-      // que de laisser le fondateur devant un micro muet.
-      console.warn(`[vocal] ${MODELE_VOCAL} indisponible (${e.message}), repli sur ${MODELE_VOCAL_REPLI}`);
-      modeleUtilise = MODELE_VOCAL_REPLI;
-      sessionLive = await ai.live.connect({ model: MODELE_VOCAL_REPLI, config, callbacks: rappels });
-    }
+    const ouverture = await ouvrirSessionLive(ai, config, rappels);
+    sessionLive = ouverture.session;
+    const modeleUtilise = ouverture.modele;
 
     // Session Live établie et écouteur navigateur déjà branché : on peut annoncer
     // 'pret' sans risque de perdre la réponse immédiate du client.
@@ -373,13 +474,25 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
         return;
       }
 
-      // ── Transcriptions (affichées au fil de l'eau) ────────────────────────
-      if (msg.serverContent?.inputTranscription?.text && transcriptionAdmise(etatMicro)) {
-        envoyer('transcription_fondateur', { texte: msg.serverContent.inputTranscription.text });
+      // ── Transcriptions ────────────────────────────────────────────────────
+      // Deux temps, et c'est délibéré : le fragment part immédiatement pour que
+      // l'écran suive la parole (`partiel: true`, affiché en gris), puis le
+      // texte complet et corrigé le remplace quand le tour se ferme
+      // (`partiel: false`). Traiter les fragments ne donnerait ni l'un ni
+      // l'autre — ni la fluidité, ni un texte correct.
+      const entree = msg.serverContent?.inputTranscription;
+      if (entree?.text && transcriptionAdmise(etatMicro)) {
+        tampons.fondateur += entree.text;
+        envoyer('transcription_fondateur', { texte: entree.text, partiel: true });
       }
-      if (msg.serverContent?.outputTranscription?.text) {
-        envoyer('transcription_assistant', { texte: msg.serverContent.outputTranscription.text });
+      if (entree?.finished) finaliserTranscription('fondateur');
+
+      const sortie = msg.serverContent?.outputTranscription;
+      if (sortie?.text) {
+        tampons.assistant += sortie.text;
+        envoyer('transcription_assistant', { texte: sortie.text, partiel: true });
       }
+      if (sortie?.finished) finaliserTranscription('assistant');
 
       // ── Audio du modèle ──────────────────────────────────────────────────
       for (const part of msg.serverContent?.modelTurn?.parts || []) {
@@ -388,9 +501,19 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
 
       // Le fondateur a coupé la parole : le navigateur doit vider sa file de lecture,
       // sinon on entend la fin d'une phrase que le modèle a abandonnée.
-      if (msg.serverContent?.interrupted) envoyer('interrompu');
+      if (msg.serverContent?.interrupted) {
+        // Le tour de l'assistante est abandonné : sa transcription partielle n'a
+        // plus d'objet, elle décrit une phrase qui ne sera jamais dite en entier.
+        tampons.assistant = '';
+        envoyer('interrompu');
+      }
 
       if (msg.serverContent?.turnComplete) {
+        // Filet de sécurité : `finished` n'est pas garanti sur tous les modèles
+        // Live, tous en preview. Sans cette clôture, un tour resterait affiché
+        // en gris, jamais corrigé.
+        finaliserTranscription('fondateur');
+        finaliserTranscription('assistant');
         envoyer('forme', { forme: 'sphere' });
         envoyer('tour_termine');
       }

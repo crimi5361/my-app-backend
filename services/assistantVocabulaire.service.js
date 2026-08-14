@@ -17,16 +17,10 @@
 // et les filières du site. Le vocabulaire d'un établissement n'est pas devinable,
 // il est dans ses données.
 const { executerRequete } = require('./assistantSql.service');
-
-/** Termes métier fixes, indépendants du site. Ceux que le fondateur emploie
- *  chaque jour et que la reconnaissance générique rend mal. */
-const TERMES_METIER = [
-  'IIPEA', 'filière', 'filières', 'scolarité', 'matricule', 'prise en charge',
-  'réinscription', 'chargé pédagogique', 'moyens généraux', 'caisse',
-  'encaissement', 'recouvrement', 'effectif', 'effectifs', 'licence', 'master',
-  'BTS', 'fondateur', 'audit', 'emploi du temps', 'année académique',
-  'franc CFA', 'francs CFA', 'Abidjan', 'Cocody', 'Côte d\'Ivoire',
-];
+// Source unique du vocabulaire métier — voir config/vocabulaireMetier.js. La
+// liste vivait ici ; elle en est sortie pour que le chat écrit et le mode vocal
+// biaisent et corrigent sur exactement les mêmes termes.
+const { TERMES_METIER } = require('../config/vocabulaireMetier');
 
 /** Plafond volontaire : une liste trop longue dilue le biais au lieu de le
  *  concentrer, et alourdit chaque ouverture de session. */

@@ -27,6 +27,15 @@ router.get(
   assistantController.telecharger
 );
 
+// Sigles et corrections de dictée — lus par le navigateur pour corriger le texte
+// dicté dans le chat écrit, qui ne passe pas par le serveur.
+router.get(
+  '/vocabulaire',
+  authenticateToken,
+  authorizeRoles('admin', 'fondateur'),
+  assistantController.vocabulaire
+);
+
 router.get(
   '/point-du-jour',
   authenticateToken,

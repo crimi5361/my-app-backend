@@ -15,6 +15,7 @@ const { resoudre } = require('../services/assistantFichiers.service');
 const google = require('../services/assistantGoogle.service');
 const { getReglages, majReglages } = require('../services/assistantReglages.service');
 const { pointDuJour } = require('../services/assistantPointDuJour.service');
+const { SIGLES, CORRECTIONS, OUVERTURES_QUESTION } = require('../config/vocabulaireMetier');
 
 exports.chat = async (req, res) => {
   try {
@@ -246,6 +247,23 @@ exports.majReglages = async (req, res) => {
     console.error('Erreur assistant.majReglages:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.' });
   }
+};
+
+/**
+ * Configuration de correction de la dictée, servie au navigateur.
+ *
+ * La dictée du chat écrit passe par l'API Web Speech, qui n'atteint jamais le
+ * serveur : c'est le navigateur qui doit corriger. Il le fait avec CES données —
+ * celles de config/vocabulaireMetier.js, donc exactement les mêmes que le mode
+ * vocal. Ajouter une correction là-bas la propage aux deux canaux.
+ */
+exports.vocabulaire = async (_req, res) => {
+  res.status(200).json({
+    success: true,
+    sigles: SIGLES,
+    corrections: CORRECTIONS,
+    ouvertures_question: OUVERTURES_QUESTION,
+  });
 };
 
 /** Point du jour — affiché à l'ouverture, sans que le fondateur ait à demander. */
