@@ -24,6 +24,7 @@ const {
 const { formePour } = require('./assistantFormes.service');
 const { getReglages } = require('./assistantReglages.service');
 const { getVocabulaire } = require('./assistantVocabulaire.service');
+const { routerMessageNavigateur, transcriptionAdmise } = require('./assistantVocalProtocole');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -251,16 +252,44 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
     const enAttente = [];
     let sessionPrete = false;
 
+    // État du micro, tenu par le SERVEUR. Le navigateur l'annonce, le serveur
+    // l'applique : c'est la seule façon d'avoir une coupure qui ne dépende pas
+    // du bon fonctionnement du code client.
+    const etatMicro = { microCoupe: false };
+
     const traiterMessageNavigateur = (msg) => {
-      if (msg.type === 'audio' && msg.pcm) {
-        // PCM 16 bits, 16 kHz, mono — le format attendu par l'API Live en entrée.
-        sessionLive.sendRealtimeInput({ audio: { data: msg.pcm, mimeType: 'audio/pcm;rate=16000' } });
-      } else if (msg.type === 'texte' && msg.texte) {
-        sessionLive.sendClientContent({
-          turns: [{ role: 'user', parts: [{ text: msg.texte }] }], turnComplete: true,
-        });
-      } else if (msg.type === 'fin_flux') {
-        sessionLive.sendRealtimeInput({ audioStreamEnd: true });
+      const decision = routerMessageNavigateur(msg, etatMicro);
+
+      switch (decision.action) {
+        case 'audio':
+          // PCM 16 bits, 16 kHz, mono — le format attendu par l'API Live en entrée.
+          sessionLive.sendRealtimeInput({ audio: { data: decision.pcm, mimeType: 'audio/pcm;rate=16000' } });
+          break;
+
+        case 'texte':
+          sessionLive.sendClientContent({
+            turns: [{ role: 'user', parts: [{ text: decision.texte }] }], turnComplete: true,
+          });
+          break;
+
+        case 'fin_flux':
+          sessionLive.sendRealtimeInput({ audioStreamEnd: true });
+          break;
+
+        case 'micro':
+          if (decision.coupe === etatMicro.microCoupe) break;
+          etatMicro.microCoupe = decision.coupe;
+          if (decision.coupe) {
+            // Clôture le tour d'entrée en cours : Google vide sa file et arrête
+            // sa détection d'activité, au lieu de continuer à transcrire ce qui
+            // était déjà en vol. C'est ce qui rend la coupure immédiate à
+            // l'oreille comme à l'écran.
+            try { sessionLive.sendRealtimeInput({ audioStreamEnd: true }); } catch { /* session déjà close */ }
+          }
+          break;
+
+        default:
+          break;
       }
     };
 
@@ -345,7 +374,7 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       }
 
       // ── Transcriptions (affichées au fil de l'eau) ────────────────────────
-      if (msg.serverContent?.inputTranscription?.text) {
+      if (msg.serverContent?.inputTranscription?.text && transcriptionAdmise(etatMicro)) {
         envoyer('transcription_fondateur', { texte: msg.serverContent.inputTranscription.text });
       }
       if (msg.serverContent?.outputTranscription?.text) {
