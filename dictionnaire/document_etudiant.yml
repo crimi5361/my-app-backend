@@ -1,0 +1,32 @@
+table: document_etudiant
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Suivi de la fourniture d'un document administratif (par type_document) par un étudiant, avec stockage éventuel (local ou Drive)."
+granularite: "1 ligne = 1 (étudiant x type_document)"
+volumetrie:
+  lignes: 157
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: etudiant_id
+    reference: etudiant.id
+  - colonne: type_document_id
+    reference: type_document.id
+contrainte_cle: "UNIQUE (etudiant_id, type_document_id) : un seul enregistrement par document et par étudiant."
+colonnes_ambigues:
+  - nom: fourni
+    type: boolean
+    valeur_par_defaut: false
+    sens: "Indique si le document a été effectivement fourni, indépendamment de la présence d'un fichier."
+  - nom: storage_provider
+    valeur_par_defaut: "'local'"
+    a_confirmer: "Autres valeurs possibles (ex. 'drive') selon drive_file_id/drive_folder_id."
+  - nom: declare_par_etudiant
+    type: boolean
+    valeur_par_defaut: false
+    sens: "Distingue une déclaration faite par l'étudiant lui-même (portail public) d'une saisie par un agent."
+jointures_usuelles:
+  - sql: "document_etudiant de JOIN etudiant e ON e.id = de.etudiant_id"
+  - sql: "document_etudiant de JOIN type_document td ON td.id = de.type_document_id"

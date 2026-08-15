@@ -1,0 +1,21 @@
+table: emploi_du_temps
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Fichier d'emploi du temps uploadé (PDF/image) pour un groupe, sans structuration en séances (voir séance_edt/trame_edt pour la version structurée du module Enseignants)."
+granularite: "1 ligne = 1 fichier uploadé pour un groupe"
+volumetrie:
+  lignes: 160
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: groupe_id
+    reference: groupe.id
+colonnes_ambigues:
+  - nom: file_path
+    a_confirmer: "Stockage local uniquement (pas de colonne storage_provider comme document_etudiant) — à confirmer."
+pieges:
+  - "Ne pas confondre avec seance_edt/trame_edt (module Enseignants, planification structurée) : emploi_du_temps est un simple dépôt de fichier."
+jointures_usuelles:
+  - sql: "emploi_du_temps edt JOIN groupe g ON g.id = edt.groupe_id"

@@ -1,0 +1,178 @@
+# Tables de référence stables (rang C) — description courte, PK/FK, pièges éventuels.
+# Documentation allégée : pas de profilage exhaustif des colonnes pour ces tables.
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+rang: C
+
+tables:
+  - table: anneeacademique
+    lignes: 2
+    role: "Référentiel des années académiques (ex. '2025-2026'). Référencée par de très nombreuses tables (paiement, etudiant, niveau, classe, inscription_annuelle...)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    contraintes: "UNIQUE(annee)"
+    note_ajout: "Absente du rang A/B/C/D d'origine malgré son caractère central ; ajoutée en rang C le 2026-08-15."
+
+  - table: pays
+    lignes: 195
+    role: "Référentiel des pays (nationalité, code ISO)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    contraintes: "UNIQUE(code_iso)"
+
+  - table: ville
+    lignes: 55
+    role: "Référentiel des villes."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+
+  - table: serie_bac
+    lignes: 10
+    role: "Référentiel des séries de baccalauréat (référencé par etudiant.serie_bac en varchar, pas par FK)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    piege: "etudiant.serie_bac est un varchar libre, pas une FK vers cette table."
+
+  - table: annee_bac
+    lignes: 27
+    role: "Référentiel des années d'obtention du bac (référencé par etudiant.annee_bac en varchar, pas par FK)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    piege: "etudiant.annee_bac est un varchar libre, pas une FK vers cette table."
+
+  - table: type_document
+    lignes: 23
+    role: "Référentiel des types de documents administratifs attendus (obligatoire, contexte)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    contraintes: "UNIQUE(code)"
+    colonnes_ambigues:
+      - nom: contexte
+        valeur_par_defaut: "'admission'"
+        a_confirmer: "Autres valeurs de contexte possibles."
+
+  - table: typefiliere
+    lignes: 2
+    role: "Référentiel des types de filière."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    piege: "Coexiste avec niveau.type_filiere (varchar libre) — deux mécanismes possibles, à ne pas confondre."
+
+  - table: curcus
+    lignes: 3
+    role: "Référentiel des types de parcours (curcus.type_parcours)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    piege: "curcus_id est déclaré en FK sur plusieurs tables (classe, inscription_annuelle, demande_equivalence, historique_inscription, reinscription) mais reste NON ALIMENTÉ sur inscription_annuelle localement (voir inscription_annuelle.yml)."
+
+  - table: semestre
+    lignes: 2
+    role: "Référentiel des semestres (S1/S2)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+
+  - table: session
+    lignes: 1
+    role: "Référentiel des sessions d'examen."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    piege: "Une seule ligne localement, ce qui explique pourquoi note.session_id n'a qu'une seule valeur distincte observée (voir note.yml)."
+
+  - table: role
+    lignes: 10
+    role: "Référentiel des rôles applicatifs (admin, scolarite, caissier, etc.)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    piege: "utilisateur.role_id référence cette table sans contrainte FOREIGN KEY."
+
+  - table: site
+    lignes: 3
+    role: "Site physique d'implantation (une école peut avoir plusieurs sites)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+
+  - table: ecole
+    lignes: 5
+    role: "École au sein de l'établissement (regroupement de départements)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    contraintes: "UNIQUE(code)"
+
+  - table: departement
+    lignes: 5
+    role: "Département pédagogique au sein d'une école (regroupement de filières)."
+    cle_primaire: id
+    cles_etrangeres_declarees:
+      - colonne: ecole_id
+        reference: ecole.id
+    contraintes: "UNIQUE(ecole_id, nom)"
+
+  - table: categorie
+    lignes: 1
+    role: "Référentiel des catégories d'UE (ue.categorie_id)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    a_confirmer: "1 seule ligne localement : à ne pas considérer comme représentatif d'un vrai référentiel de catégories."
+
+  - table: accessoire
+    lignes: 4
+    role: "Article du stock scolaire (kit, fournitures)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    contraintes: "UNIQUE(code), UNIQUE(nom)"
+
+  - table: emplacement_stock
+    lignes: 3
+    role: "Emplacement physique de stockage, rattaché à un site."
+    cle_primaire: id
+    cles_etrangeres_declarees:
+      - colonne: site_id
+        reference: site.id
+
+  - table: fournisseur
+    lignes: 1
+    role: "Fournisseur pour les commandes d'accessoires/stock."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    contraintes: "UNIQUE(email), UNIQUE(nom), UNIQUE(telephone)"
+    a_confirmer: "1 seule ligne localement : module encore peu utilisé."
+
+  - table: etablissement_origine
+    lignes: 1226
+    role: "Référentiel des établissements d'origine des étudiants (lycées/écoles antérieures)."
+    cle_primaire: id
+    cles_etrangeres_declarees: []
+    piege: "etudiant.etablissement_origine est un champ texte libre (type text), PAS une FK vers cette table malgré le nom identique — à vérifier avant toute jointure."
+    contrainte_check: "statut ANY ('PUBLIC','PRIVE')"
+
+  - table: commande_fournisseur
+    lignes: 1
+    role: "Commande passée à un fournisseur (module stock/achats)."
+    cle_primaire: id
+    cles_etrangeres_declarees:
+      - colonne: fournisseur_id
+        reference: fournisseur.id
+      - colonne: site_id
+        reference: site.id
+    contrainte_check: "statut ANY ('brouillon','envoyee','partiellement_recue','receptionnee','annulee')"
+    a_confirmer: "1 seule ligne localement : module encore peu utilisé."
+
+  - table: ligne_commande_fournisseur
+    lignes: 4
+    role: "Ligne de détail (accessoire x quantité) d'une commande fournisseur."
+    cle_primaire: id
+    cles_etrangeres_declarees:
+      - colonne: accessoire_id
+        reference: accessoire.id
+      - colonne: commande_id
+        reference: commande_fournisseur.id
+
+  - table: reception_fournisseur
+    lignes: 2
+    role: "Réception physique d'une commande fournisseur."
+    cle_primaire: id
+    cles_etrangeres_declarees:
+      - colonne: commande_id
+        reference: commande_fournisseur.id
+      - colonne: recu_par
+        reference: utilisateur.id

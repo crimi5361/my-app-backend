@@ -1,0 +1,24 @@
+table: maquette
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Maquette pédagogique d'une filière x niveau x année académique, regroupant les UE."
+granularite: "1 ligne = 1 (filière x niveau x année académique)"
+volumetrie:
+  lignes: 118
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees: []
+references_non_contraintes:
+  - colonne: filiere_id
+    cible_supposee: filiere.id
+  - colonne: niveau_id
+    cible_supposee: niveau.id
+  - colonne: anneeacademique_id
+    cible_supposee: anneeacademique.id
+colonnes_ambigues:
+  - nom: parcour
+    a_confirmer: "Orthographe sans 's' finale volontaire ou coquille de schéma — sens exact du parcours à confirmer."
+jointures_usuelles:
+  - sql: "ue u JOIN maquette mq ON mq.id = u.maquette_id"

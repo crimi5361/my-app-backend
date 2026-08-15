@@ -1,0 +1,29 @@
+table: enseignement
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Rattachement d'un professeur à une matière pour un groupe donné, pour une année académique (offre de cours concrète)."
+granularite: "1 ligne = 1 (professeur x matière x groupe x année académique)"
+volumetrie:
+  lignes: 1981
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: groupe_id
+    reference: groupe.id
+  - colonne: matiere_id
+    reference: matiere.id
+  - colonne: professeur_id
+    reference: professeur.id
+colonnes_ambigues:
+  - nom: annee_academique
+    type: varchar
+    a_confirmer: "Stockée en texte libre (pas de FK vers anneeacademique.id) — format exact à confirmer (ex. '2025-2026')."
+contrainte_cle: "UNIQUE (professeur_id, matiere_id, groupe_id, annee_academique) : un seul enseignement par combinaison."
+pieges:
+  - "annee_academique est un varchar libre, pas une FK vers anneeacademique : risque de désynchronisation orthographique avec anneeacademique.annee."
+jointures_usuelles:
+  - sql: "note n JOIN enseignement en ON en.id = n.enseignement_id"
+  - sql: "enseignement en JOIN professeur p ON p.id = en.professeur_id"
+  - sql: "enseignement en JOIN matiere m ON m.id = en.matiere_id"

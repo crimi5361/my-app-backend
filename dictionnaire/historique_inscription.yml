@@ -1,0 +1,82 @@
+table: historique_inscription
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+note_ajout: >
+  Table absente du rang A/B/C/D d'origine, ajoutée en rang B à la demande explicite
+  de l'utilisateur (2026-08-15) car elle est centrale à l'architecture
+  d'historisation (voir CLAUDE.md, "Historisation académique unique").
+
+role_metier: >
+  Position académique FIGÉE d'un étudiant pour une année académique CLÔTURÉE,
+  alimentée à chaque réinscription/clôture. Combinée avec la position courante de
+  etudiant par la vue public.vue_position_academique (UNION ALL, filtrée sur
+  type_evenement = 'cloture') pour former la SEULE source de lecture recommandée
+  pour toute donnée historique (effectifs, statistiques, bulletins).
+
+granularite: "1 ligne = 1 événement de parcours figé pour un étudiant (réinscription ou clôture d'année)"
+
+volumetrie:
+  lignes: 9
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees:
+  - colonne: annee_academique_id
+    reference: anneeacademique.id
+  - colonne: curcus_id
+    reference: curcus.id
+  - colonne: etudiant_id
+    reference: etudiant.id
+  - colonne: groupe_id
+    reference: groupe.id
+  - colonne: niveau_id
+    reference: niveau.id
+  - colonne: reinscription_id
+    reference: reinscription.id
+  - colonne: valide_par
+    reference: utilisateur.id
+
+contraintes_check:
+  - nom: historique_inscription_type_evenement_check
+    definition: "type_evenement ANY ('admission','reinscription','cloture')"
+
+colonnes_ambigues:
+  - nom: type_evenement
+    valeurs_observees: ["cloture (8)", "reinscription (1)"]
+    note: "Seul type_evenement = 'cloture' est repris par la vue vue_position_academique (avec la condition annee_academique_id <> etudiant.annee_academique_id)."
+  - nom: montant_scolarite
+  - nom: scolarite_verse
+  - nom: scolarite_restante
+  - nom: statut_paiement
+    note: "Ces 4 colonnes dupliquent, en version figée, les colonnes homonymes de scolarite (statut_paiement correspond à scolarite.statut_etudiant). Elles ne sont PAS des FK vers scolarite : les valeurs sont recopiées au moment de la clôture."
+
+pieges:
+  - >
+    ATTENTION — ÉCART DÉTECTÉ AVEC UN COMMENTAIRE EXISTANT : le commentaire déjà en
+    place sur assistant.v_activite_agents (migration
+    2026-08-12d_assistant_audit_utilisateurs.sql) affirme que "les tables
+    historique_operations_admin et historique_inscription sont vides". C'est
+    toujours vrai pour historique_operations_admin (0 ligne, confirmé), mais FAUX
+    pour historique_inscription qui contient désormais 9 lignes au moment de cette
+    mesure. Ce commentaire assistant est donc partiellement obsolète — signalé pour
+    action future, non corrigé à cette étape (hors périmètre).
+  - "Ne pas confondre avec historique_operations_admin (changements de filière/parcours/cycle EXCEPTIONNELS, hors réinscription, table vide localement)."
+
+jointures_usuelles:
+  - sql: "historique_inscription h JOIN etudiant e ON e.id = h.etudiant_id"
+  - sql: "public.vue_position_academique (UNION ALL entre etudiant et historique_inscription filtré sur type_evenement='cloture')"
+
+questions_metier:
+  - "Quel était le parcours d'un étudiant sur une année académique déjà clôturée ? -> historique_inscription filtré sur etudiant_id, type_evenement='cloture'"
+  - "Quelle est la seule vue fiable pour des statistiques historiques ? -> public.vue_position_academique (jamais etudiant seul, ni historique_inscription seul)"
+
+synonymes:
+  historique_inscription: ["historique académique", "positions figées"]
+
+a_confirmer:
+  - "Raison pour laquelle seulement 9 lignes existent localement (peu de clôtures/réinscriptions effectuées à ce jour)"
+  - "Mécanisme exact d'écriture (déclenché par quel contrôleur/service)"

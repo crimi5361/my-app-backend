@@ -1,0 +1,130 @@
+table: prise_en_charge
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Réduction ou prise en charge institutionnelle des frais de scolarité d'un étudiant
+  (bourse, convention entreprise, réduction). Mouvement distinct des paiements réels.
+
+granularite: "1 ligne = 1 prise en charge accordée/demandée pour un étudiant"
+
+volumetrie:
+  lignes: 224
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees:
+  - colonne: annee_academique_id
+    reference: anneeacademique.id
+  - colonne: caisse_id
+    reference: caisse.id
+  - colonne: initie_par
+    reference: utilisateur.id
+
+references_non_contraintes:
+  - colonne: etudiant_id
+    cible_supposee: etudiant.id
+    note: "NOT NULL en base mais sans contrainte FOREIGN KEY."
+  - colonne: valide_par
+    cible_supposee: utilisateur.id
+
+contraintes_check:
+  - nom: prise_en_charge_nature_pec_check
+    definition: "nature_pec ANY ('reduction','institutionnelle')"
+  - nom: prise_en_charge_statut_check
+    definition: "statut ANY ('en_attente','initiee','valide','refuse')"
+
+colonnes:
+  - nom: id
+    type: integer
+    role: cle_primaire
+
+  - nom: reference
+    type: varchar(100)
+    nullable_declare: false
+
+  - nom: type_pec
+    type: varchar(100)
+    valeurs_observees: ["entreprise (196)", "bourse (27)", "organisation (1)"]
+
+  - nom: nature_pec
+    type: varchar(20)
+    nullable_declare: false
+    valeur_par_defaut: "'reduction'"
+    contrainte_check: "ANY ('reduction','institutionnelle')"
+    valeurs_observees: ["reduction (224, 100% localement)"]
+
+  - nom: pourcentage_reduction
+    type: numeric(5,2)
+    unite: "pourcentage (0-100, à confirmer la présence d'un CHECK applicatif)"
+
+  - nom: montant_reduction
+    type: numeric(12,2)
+    unite: "XOF (à confirmer)"
+    piege: "Ne pas additionner avec paiement.montant pour obtenir le coût total : ce sont deux mouvements de nature différente (encaissement vs réduction)."
+
+  - nom: statut
+    type: varchar(20)
+    nullable_declare: true
+    valeur_par_defaut: "'EN_ATTENTE'"
+    contrainte_check: "ANY ('en_attente','initiee','valide','refuse')"
+    valeurs_observees: ["valide (223)", "en_attente (1)"]
+    piege: >
+      INCOHÉRENCE DE CASSE ENTRE LE DÉFAUT ET LA CONTRAINTE : la valeur par défaut
+      de la colonne est 'EN_ATTENTE' (majuscules) mais la contrainte CHECK n'autorise
+      que des valeurs en minuscules ('en_attente', 'initiee', 'valide', 'refuse').
+      Si le défaut était appliqué sans qu'un contrôleur applicatif force une valeur
+      en minuscule, l'insertion échouerait. Les données observées sont bien en
+      minuscules. Hors périmètre de correction pour cette étape ; à signaler pour
+      une future maintenance structurelle.
+
+  - nom: date_demande
+    type: date
+    valeur_par_defaut: "CURRENT_DATE"
+
+  - nom: date_validation
+    type: date
+
+  - nom: date_initiation
+    type: timestamp
+
+  - nom: valide_par
+    type: integer
+    cle_etrangere_non_contrainte: utilisateur.id
+
+  - nom: initie_par
+    type: integer
+    cle_etrangere: utilisateur.id
+
+  - nom: etudiant_id
+    type: integer
+    nullable_declare: false
+    cle_etrangere_non_contrainte: etudiant.id
+
+  - nom: motif_refus
+    type: varchar(255)
+
+pieges:
+  - "statut par défaut 'EN_ATTENTE' (majuscules) incohérent avec la contrainte CHECK qui n'autorise que du minuscule — piège technique réel, non corrigé à cette étape."
+  - "etudiant_id n'est pas contraint par une FOREIGN KEY malgré son caractère NOT NULL."
+  - "montant_reduction est un mouvement distinct de paiement.montant : ne pas les combiner sans discernement dans un calcul de recettes."
+
+jointures_usuelles:
+  - sql: "prise_en_charge pec JOIN etudiant e ON e.id = pec.etudiant_id"
+    note: "Référence non contrainte."
+  - sql: "scolarite s JOIN prise_en_charge pec ON pec.id = s.prise_en_charge_id"
+
+questions_metier:
+  - "Quels étudiants bénéficient d'une prise en charge validée ? -> WHERE statut = 'valide' (minuscule, cf. piège)"
+  - "Quel est le montant total de réductions accordées ? -> SUM(montant_reduction) WHERE statut = 'valide'"
+
+synonymes:
+  prise_en_charge: ["PEC", "réduction", "bourse"]
+
+a_confirmer:
+  - "pourcentage_reduction : présence d'une contrainte applicative 0-100"
+  - "Comportement réel si le défaut EN_ATTENTE (majuscules) est atteint sans override applicatif"

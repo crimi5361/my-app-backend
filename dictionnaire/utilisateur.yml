@@ -1,0 +1,88 @@
+table: utilisateur
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Compte de connexion du personnel (agents, Scolarité, admin, etc.). Distinct des
+  comptes étudiants qui vivent dans etudiant (voir CLAUDE.md : POST /api/auth/login
+  sert les deux profils selon la table où l'identifiant est trouvé).
+
+granularite: "1 ligne = 1 compte utilisateur (personnel)"
+
+volumetrie:
+  lignes: 29
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees: []
+
+references_non_contraintes:
+  - colonne: role_id
+    cible_supposee: role.id
+  - colonne: site_id
+    cible_supposee: site.id
+  - colonne: ecole_id
+    cible_supposee: ecole.id
+
+colonnes:
+  - nom: id
+    type: integer
+    role: cle_primaire
+
+  - nom: email
+    type: varchar(100)
+    donnee_personnelle: true
+    a_confirmer: "Unicité applicative supposée (identifiant de connexion), aucune contrainte UNIQUE déclarée en base."
+
+  - nom: mot_de_passe
+    type: text
+    interdit: "NE JAMAIS exposer ni documenter le contenu, même haché — même règle que etudiant.password."
+
+  - nom: statut
+    type: varchar(20)
+    valeur_par_defaut: "'active'"
+    valeurs_observees: ["active (22)", "desactive (7)"]
+    regle: "Pour ne compter que les comptes actifs : WHERE statut = 'active'."
+
+  - nom: code
+    type: varchar(30)
+    a_confirmer: "Sens exact (matricule agent ?) à confirmer."
+
+  - nom: role_id
+    type: integer
+    cle_etrangere_non_contrainte: role.id
+
+  - nom: site_id
+    type: integer
+    cle_etrangere_non_contrainte: site.id
+
+  - nom: ecole_id
+    type: integer
+    cle_etrangere_non_contrainte: ecole.id
+
+pieges:
+  - "role_id, site_id, ecole_id ne sont contraints par aucune FOREIGN KEY."
+  - "mot_de_passe : ne jamais exposer, même haché."
+  - "Table très petite (29 lignes) : toute agrégation par utilisateur perd vite son intérêt statistique."
+
+jointures_usuelles:
+  - sql: "etudiant e JOIN utilisateur u ON u.id::text = e.inscrit_par"
+    note: "Jointure par cast de type (inscrit_par est varchar), pas de FK possible techniquement."
+  - sql: "utilisateur u JOIN role r ON r.id = u.role_id"
+  - sql: "paiement p JOIN utilisateur u ON u.nom = p.effectue_par"
+    note: "Hypothèse de jointure par nom, non garantie (effectue_par est un texte libre) — A CONFIRMER."
+
+questions_metier:
+  - "Quels sont les comptes actifs du personnel ? -> WHERE statut = 'active'"
+  - "Quel rôle a un utilisateur ? -> JOIN role sur role_id (non contraint)"
+
+synonymes:
+  utilisateur: ["agent", "compte personnel", "membre du staff"]
+
+a_confirmer:
+  - "utilisateur.code (sens exact)"
+  - "Fiabilité de la jointure paiement.effectue_par -> utilisateur.nom"

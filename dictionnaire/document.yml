@@ -1,0 +1,31 @@
+table: document
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Checklist des pièces administratives d'un dossier étudiant au moment de l'admission (4 flags texte, un par pièce), référencée par etudiant.document_id."
+granularite: "1 ligne = 1 dossier de pièces (probablement 1:1 avec etudiant via etudiant.document_id, non vérifié formellement — voir a_confirmer)"
+volumetrie:
+  lignes: 9395
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees: []
+colonnes_ambigues:
+  - nom: extrait_naissance
+    type: "varchar (PAS boolean)"
+    valeurs_observees: ["oui (9382)", "non (13)"]
+    piege: "Colonne texte 'oui'/'non', pas un boolean : un filtre WHERE extrait_naissance = true échouera silencieusement ou lèvera une erreur de type selon le driver. Utiliser WHERE extrait_naissance = 'oui'."
+  - nom: justificatif_identite
+    type: "varchar, même famille de valeurs que extrait_naissance"
+  - nom: dernier_diplome
+    type: "varchar, même famille de valeurs que extrait_naissance"
+  - nom: fiche_orientation
+    type: "varchar, même famille de valeurs que extrait_naissance"
+pieges:
+  - "Table 'document' distincte de document_etudiant (rang B, suivi par type_document) : deux mécanismes de suivi de pièces coexistent dans le schéma, à ne pas confondre."
+jointures_usuelles:
+  - sql: "etudiant e JOIN document d ON d.id = e.document_id"
+    note: "Référence non contrainte."
+a_confirmer:
+  - "Cardinalité exacte avec etudiant (1:1 attendu via etudiant.document_id, à vérifier)"
+  - "Coexistence avec document_etudiant : lequel des deux mécanismes fait foi aujourd'hui"

@@ -1,0 +1,30 @@
+table: kit
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Frais/dépôt de kit scolaire d'un étudiant pour une année académique (module distinct du stock d'accessoires, voir KIT_ANNEES_SUSPENDUES dans CLAUDE.md)."
+granularite: "1 ligne = 1 (étudiant x année académique) pour le kit"
+volumetrie:
+  lignes: 7314
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: annee_academique_id
+    reference: anneeacademique.id
+references_non_contraintes:
+  - colonne: etudiant_id
+    cible_supposee: etudiant.id
+colonnes_ambigues:
+  - nom: deposer
+    type: boolean
+    valeur_par_defaut: false
+    a_confirmer: "Orthographe 'deposer' (infinitif) plutôt que 'depose'/'deposee' — sens booléen à confirmer (kit remis/déposé ?)."
+  - nom: montant
+    nullable_declare: false
+    unite: "XOF (à confirmer)"
+pieges:
+  - "Certaines années académiques peuvent être suspendues pour le module kit (variable d'environnement KIT_ANNEES_SUSPENDUES) : ne pas s'attendre à une ligne par étudiant sur ces années-là."
+  - "etudiant_id non contraint par une FOREIGN KEY."
+jointures_usuelles:
+  - sql: "kit k JOIN etudiant e ON e.id = k.etudiant_id"

@@ -1,0 +1,78 @@
+table: anneeacademique_site
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Ouverture d'une année académique pour un site donné (une école peut avoir
+  plusieurs sites, chacun ouvrant/fermant l'année indépendamment).
+
+granularite: "1 ligne = 1 année académique x 1 site"
+
+volumetrie:
+  lignes: 2
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees:
+  - colonne: anneeacademique_id
+    reference: anneeacademique.id
+  - colonne: site_id
+    reference: site.id
+
+contraintes_cle:
+  - "UNIQUE (anneeacademique_id, site_id) : une seule ouverture par année et par site."
+  - >
+    Index unique partiel anneeacademique_site_one_en_cour_par_site : au plus une
+    ligne à l'état 'en cour' par site — RÈGLE MÉTIER CONFIRMÉE PAR LE SCHÉMA :
+    un site ne peut avoir qu'une seule année académique 'en cour' à la fois.
+
+contraintes_check:
+  - nom: anneeacademique_site_etat_check
+    definition: "etat ANY ('en cour', 'terminée')"
+
+colonnes:
+  - nom: id
+    type: integer
+    role: cle_primaire
+
+  - nom: anneeacademique_id
+    type: integer
+    cle_etrangere: anneeacademique.id
+
+  - nom: site_id
+    type: integer
+    cle_etrangere: site.id
+
+  - nom: etat
+    type: varchar(20)
+    nullable_declare: false
+    valeur_par_defaut: "'terminée'"
+    contrainte_check: "ANY ('en cour', 'terminée')"
+    valeurs_observees: ["terminée (1)", "en cour (1)"]
+    regle: "Pour trouver l'année académique active d'un site : WHERE etat = 'en cour' (garanti unique par site grâce à l'index partiel)."
+    piege: "Attention à l'orthographe exacte 'en cour' (sans accent sur 'cour', pas 'en cours')."
+
+  - nom: date_ouverture
+    type: timestamp
+
+  - nom: date_fermeture
+    type: timestamp
+
+pieges:
+  - "La valeur 'en cour' est orthographiée sans 's' final et sans le mot 'cours' complet — un filtre WHERE etat = 'en cours' (avec s) ne retournera aucune ligne."
+
+jointures_usuelles:
+  - sql: "anneeacademique_site aas JOIN anneeacademique a ON a.id = aas.anneeacademique_id"
+  - sql: "anneeacademique_site aas JOIN site s ON s.id = aas.site_id"
+
+questions_metier:
+  - "Quelle est l'année académique en cours pour un site ? -> WHERE site_id = ? AND etat = 'en cour'"
+
+synonymes:
+  etat: ["état de l'année académique", "statut d'ouverture"]
+
+a_confirmer: []

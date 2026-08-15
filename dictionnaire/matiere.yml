@@ -1,0 +1,35 @@
+table: matiere
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Matière enseignée (ECUE), rattachée à une UE, avec ses volumes horaires et taux horaires."
+granularite: "1 ligne = 1 matière"
+volumetrie:
+  lignes: 1701
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees: []
+references_non_contraintes:
+  - colonne: ue_id
+    cible_supposee: ue.id
+colonnes_ambigues:
+  - nom: type_evaluation
+    type: "USER-DEFINED (enum type_evaluation_enum)"
+    valeur_par_defaut: "'note_1_note_2_partiel'"
+    valeurs_enum: ["note_1_note_2_partiel", "note_1_partiel", "note_2_partiel", "partiel_only", "note_1_note_2", "note_1_only", "note_2_only"]
+    valeurs_observees: ["note_1_note_2_partiel (1681)", "note_1_note_2 (19)", "note_1_only (1)"]
+    regle_metier_cle: >
+      RÈGLE MÉTIER CENTRALE POUR ÉVITER LES ERREURS DE MOYENNE : indique quelles
+      colonnes de note (note1/note2/partiel) sont pertinentes pour cette matière.
+      Utiliser une colonne hors périmètre (ex. note2 pour une matière 'partiel_only')
+      fausse tout calcul de moyenne. Voir note.yml.
+  - nom: coefficient
+    a_confirmer: "Relation avec note.coefficient (colonne homonyme sur note) à clarifier."
+  - nom: code_ecue
+    contrainte: "UNIQUE"
+pieges:
+  - "type_evaluation doit être vérifié avant tout calcul de moyenne à partir de note.note1/note2/partiel."
+jointures_usuelles:
+  - sql: "note n JOIN enseignement en ON en.id = n.enseignement_id JOIN matiere m ON m.id = en.matiere_id"
+  - sql: "matiere m JOIN ue u ON u.id = m.ue_id"

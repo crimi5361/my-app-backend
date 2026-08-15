@@ -1,0 +1,145 @@
+table: paiement
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Un encaissement individuel réalisé par un étudiant (ou en son nom). Table de faits
+  financière, source de calcul des recettes réellement encaissées.
+
+granularite: "1 ligne = 1 paiement effectué"
+
+volumetrie:
+  lignes: 11734
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees:
+  - colonne: annee_academique_id
+    reference: anneeacademique.id
+  - colonne: caisse_id
+    reference: caisse.id
+  - colonne: session_caisse_id
+    reference: session_caisse.id
+
+references_non_contraintes:
+  - colonne: etudiant_id
+    cible_supposee: etudiant.id
+    orphelins_observes: 0
+    note: "0 orphelin sur 11734 lignes localement, mais aucune contrainte FOREIGN KEY déclarée."
+  - colonne: recu_id
+    cible_supposee: recu.id
+    orphelins_observes: 0
+    note: >
+      0 orphelin, et la relation est 1:1 (11734 paiements pour 11734 valeurs
+      recu_id distinctes). recu compte 11844 lignes au total : environ 110 reçus
+      n'ont donc aucun paiement qui les référence.
+
+colonnes:
+  - nom: id
+    type: integer
+    role: cle_primaire
+
+  - nom: montant
+    type: numeric(10,2)
+    unite: "XOF (Franc CFA), à confirmer explicitement — aucune colonne devise en base"
+    sens: "Montant réellement encaissé pour ce paiement, via le module Caisse uniquement."
+    piege: >
+      NE DÉDUIT PAS LES PRISES EN CHARGE (réductions/bourses) : ne pas soustraire
+      prise_en_charge.montant_reduction de ce montant, ce sont deux mouvements
+      distincts.
+      RÈGLE MÉTIER CONFIRMÉE (déjà en place sur assistant.v_paiements, migration
+      2026-08-12b_assistant_commentaires.sql) : SUM(paiement.montant) N'EST PAS le
+      chiffre d'affaires / total des recettes de l'établissement. La table paiement
+      ne couvre que les encaissements passés par le module Caisse ; les montants
+      repris à la mise en service (historique antérieur) n'y figurent pas. La
+      RÉFÉRENCE pour « chiffre d'affaires », « recettes », « total encaissé » est
+      scolarite.scolarite_verse (exposée par la vue vue_position_academique), pas
+      paiement. Voir scolarite.yml.
+
+  - nom: date_paiement
+    type: date
+    sens: "Date métier de l'encaissement (peut différer de la date d'enregistrement système)."
+
+  - nom: methode
+    type: varchar(50)
+    valeurs_observees: ["especes (11722)", "Espèces (8)", "Mobile Money (2)", "Wave (2)"]
+    piege: >
+      GRAPHIES INCOHÉRENTES CONFIRMÉES : 'especes' et 'Espèces' désignent la même
+      méthode mais avec une casse/accentuation différente. Un GROUP BY methode brut
+      double artificiellement le comptage de l'espèce. Ne pas corriger à cette étape
+      (hors périmètre), mais en tenir compte dans toute requête d'agrégation.
+
+  - nom: effectue_par
+    type: varchar(100)
+    a_confirmer: "Colonne texte libre (pas de FK vers utilisateur) : 9 valeurs distinctes observées localement. Origine et fiabilité à confirmer."
+
+  - nom: etudiant_id
+    type: integer
+    cle_etrangere_non_contrainte: etudiant.id
+
+  - nom: recu_id
+    type: integer
+    cle_etrangere_non_contrainte: recu.id
+
+  - nom: caisse_id
+    type: integer
+    cle_etrangere: caisse.id
+
+  - nom: type_frais
+    type: varchar(50)
+    valeurs_non_nulles: 0
+    piege: "COLONNE NON ALIMENTÉE : 100% NULL sur 11734 lignes locales. Ne pas s'appuyer dessus pour distinguer scolarité/kit/autres frais."
+
+  - nom: reference_transaction
+    type: varchar(100)
+    a_confirmer: "Format et origine (référence Mobile Money/Wave ?) à confirmer."
+
+  - nom: statut
+    type: varchar(20)
+    valeur_par_defaut: "'VALIDE'"
+    valeurs_observees: ["VALIDE (11734, 100%)"]
+    regle: "Pour les recettes : WHERE paiement.statut = 'VALIDE'. Aucune autre valeur observée localement, mais la colonne existe pour distinguer des paiements non validés/annulés dans d'autres jeux de données."
+
+  - nom: annee_academique_id
+    type: integer
+    cle_etrangere: anneeacademique.id
+
+  - nom: session_caisse_id
+    type: integer
+    cle_etrangere: session_caisse.id
+    a_confirmer: "Rattachement à la session de caisse ouverte au moment du paiement — nullabilité observée à vérifier plus finement."
+
+pieges:
+  - "paiement.montant ne déduit pas les prises en charge (prise_en_charge est un mouvement séparé)."
+  - "paiement.methode contient des graphies parasites ('especes' vs 'Espèces') : un GROUP BY brut fausse les comptages."
+  - "paiement.type_frais est 100% NULL localement : ne pas l'utiliser pour filtrer par nature de frais."
+  - "paiement.etudiant_id et paiement.recu_id ne sont pas contraints par une FOREIGN KEY (fiables sur les données observées, mais non garantis par le schéma)."
+
+jointures_usuelles:
+  - sql: "paiement p JOIN etudiant e ON e.id = p.etudiant_id"
+    note: "Référence non contrainte."
+  - sql: "paiement p JOIN recu r ON r.id = p.recu_id"
+    note: "Référence non contrainte ; relation 1:1 observée."
+  - sql: "paiement p JOIN caisse c ON c.id = p.caisse_id"
+  - sql: "paiement p JOIN session_caisse sc ON sc.id = p.session_caisse_id"
+  - sql: "paiement p JOIN anneeacademique a ON a.id = p.annee_academique_id"
+
+questions_metier:
+  - "Quelle a été l'activité de caisse (encaissements du jour/du mois, par caissier, par mode de paiement) ? -> SUM(montant) WHERE statut='VALIDE', GROUP BY date_trunc/effectue_par/methode"
+  - "Quel est le chiffre d'affaires / total des recettes de l'établissement ? -> NE PAS utiliser paiement ; utiliser SUM(scolarite.scolarite_verse) via vue_position_academique (voir scolarite.yml)."
+  - "Quel étudiant a effectué quel paiement ? -> JOIN etudiant sur etudiant_id (non contraint)"
+  - "Quel reçu correspond à quel paiement ? -> JOIN recu sur recu_id (non contraint, 1:1 observé)"
+
+synonymes:
+  montant: ["somme encaissée", "montant payé", "encaissement"]
+  methode: ["moyen de paiement", "mode de règlement"]
+
+a_confirmer:
+  - "Unité monétaire exacte de montant (supposée XOF, à confirmer)"
+  - "Sens et fiabilité de effectue_par (texte libre)"
+  - "Format de reference_transaction selon la méthode"
+  - "Pourquoi type_frais n'est jamais alimenté"

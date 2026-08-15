@@ -1,0 +1,84 @@
+table: session_caisse
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Session d'ouverture/fermeture d'une caisse par un caissier (arrêté de caisse
+  quotidien). Sert d'ancrage temporel/organisationnel pour rattacher les paiements
+  d'une plage horaire donnée à un caissier et une caisse.
+
+granularite: "1 ligne = 1 session d'ouverture de caisse par un caissier"
+
+volumetrie:
+  lignes: 9
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees:
+  - colonne: caisse_id
+    reference: caisse.id
+
+references_non_contraintes:
+  - colonne: caissier_id
+    cible_supposee: utilisateur.id
+
+colonnes:
+  - nom: id
+    type: integer
+    role: cle_primaire
+
+  - nom: caisse_id
+    type: integer
+    cle_etrangere: caisse.id
+
+  - nom: caissier_id
+    type: integer
+    cle_etrangere_non_contrainte: utilisateur.id
+
+  - nom: date_ouverture
+    type: timestamp
+    nullable_declare: false
+
+  - nom: date_fermeture
+    type: timestamp
+    nullable_declare: true
+    sens: "NULL tant que la session est ouverte."
+
+  - nom: montant_ouverture
+    type: numeric(12,2)
+    valeur_par_defaut: 0
+    unite: "XOF (à confirmer)"
+
+  - nom: montant_fermeture
+    type: numeric(12,2)
+    unite: "XOF (à confirmer)"
+    sens: "NULL tant que la session n'est pas fermée."
+
+  - nom: statut
+    type: varchar(20)
+    valeur_par_defaut: "'OUVERTE'"
+    valeurs_observees: ["FERMEE (6)", "OUVERTE (3)"]
+    regle: "Pour retrouver la session de caisse active : WHERE statut = 'OUVERTE'."
+
+pieges:
+  - "caissier_id n'est pas contraint par une FOREIGN KEY."
+  - "Table très petite (9 lignes) localement : peu représentative pour des statistiques d'usage."
+
+jointures_usuelles:
+  - sql: "paiement p JOIN session_caisse sc ON sc.id = p.session_caisse_id"
+  - sql: "session_caisse sc JOIN caisse c ON c.id = sc.caisse_id"
+
+questions_metier:
+  - "Quels paiements ont eu lieu pendant une session de caisse donnée ? -> paiement.session_caisse_id"
+  - "Quelle caisse a une session actuellement ouverte ? -> WHERE statut = 'OUVERTE'"
+
+synonymes:
+  session_caisse: ["arrêté de caisse", "vacation de caisse"]
+
+a_confirmer:
+  - "Unité monétaire de montant_ouverture / montant_fermeture"
+  - "Règle exacte de calcul de l'écart de caisse à la fermeture"

@@ -1,0 +1,27 @@
+table: filiere
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: >
+  Filière de formation, permanente d'une année sur l'autre (voir CLAUDE.md :
+  "une filiere n'est jamais recréée d'une année à l'autre"). Rattachée à un
+  département, peut avoir une filière mère (parcours dérivé).
+granularite: "1 ligne = 1 filière"
+volumetrie:
+  lignes: 29
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: departement_id
+    reference: departement.id
+  - colonne: filiere_mere_id
+    reference: "filiere.id (auto-référence)"
+colonnes_ambigues:
+  - nom: type_filiere_id
+    a_confirmer: "Référence supposée vers typefiliere.id, sans contrainte FOREIGN KEY déclarée."
+pieges:
+  - "Contrairement à classe/niveau/tarif/maquette, filiere n'est PAS dupliquée par année académique : ne jamais recréer une filiere pour une nouvelle rentrée, seuls niveau/tarif/maquette le sont."
+jointures_usuelles:
+  - sql: "filiere f JOIN departement d ON d.id = f.departement_id"
+  - sql: "niveau n JOIN filiere f ON f.id = n.filiere_id"
