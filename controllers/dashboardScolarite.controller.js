@@ -4,6 +4,7 @@
 // (getEcoleScopeFromUser, Chantier 3), cumulatifs.
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
+const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
 
 exports.getDashboardScolarite = async (req, res) => {
   try {
@@ -34,6 +35,7 @@ exports.getDashboardScolarite = async (req, res) => {
       parNiveauResult,
       parFiliereResult,
       activiteAgentsResult,
+      dossiersEnAttente,
     ] = await Promise.all([
       db.query(`
         SELECT COUNT(*) AS total FROM vue_position_academique e
@@ -119,6 +121,10 @@ exports.getDashboardScolarite = async (req, res) => {
         ORDER BY total_30j DESC
         LIMIT 10
       `, baseParams),
+
+      // Visibilité des dossiers en attente (admissions + réinscriptions), même définition/périmètre
+      // que le dashboard Caisse — voir services/dossiersEnAttente.service.js.
+      getDossiersEnAttenteParOrigine(db, { siteId, ecoleId, anneeAcademiqueId }),
     ]);
 
     const activiteAgents = activiteAgentsResult.rows.map((r) => {
@@ -161,6 +167,9 @@ exports.getDashboardScolarite = async (req, res) => {
         parNiveau: parNiveauResult.rows.map((r) => ({ niveau: r.niveau, total: parseInt(r.total, 10) })),
         parFiliere: parFiliereResult.rows.map((r) => ({ filiere: r.filiere, total: parseInt(r.total, 10) })),
         activiteAgents,
+        // Ajout — visibilité des dossiers en attente de paiement (admissions + réinscriptions),
+        // même définition que le dashboard Caisse, avec répartition par origine (source_inscription).
+        dossiersEnAttente,
       },
     });
   } catch (error) {

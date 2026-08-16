@@ -26,6 +26,7 @@ const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const {
   getEmplacementStockPourSite, getSoldesStockParEmplacement, getEtudiantsServis, getEvolutionDistributionsMensuelle,
 } = require('../services/stockMoyensGeneraux.service');
+const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
 
 exports.getDashboardFondateur = async (req, res) => {
   try {
@@ -69,6 +70,7 @@ exports.getDashboardFondateur = async (req, res) => {
       moyensGenerauxEtudiantsServis,
       moyensGenerauxEtatStock,
       moyensGenerauxEvolution,
+      dossiersEnAttente,
     ] = await Promise.all([
       db.query(`
         SELECT
@@ -185,6 +187,10 @@ exports.getDashboardFondateur = async (req, res) => {
       getEtudiantsServis(db, { anneeAcademiqueId, emplacementStockId, ecoleId }),
       getSoldesStockParEmplacement(db, emplacementStockId),
       getEvolutionDistributionsMensuelle(db, { anneeAcademiqueId, emplacementStockId, ecoleId }),
+
+      // Visibilité des dossiers en attente (admissions + réinscriptions), même définition/périmètre
+      // que le dashboard Caisse — voir services/dossiersEnAttente.service.js.
+      getDossiersEnAttenteParOrigine(db, { siteId, ecoleId, anneeAcademiqueId }),
     ]);
 
     res.status(200).json({
@@ -257,6 +263,9 @@ exports.getDashboardFondateur = async (req, res) => {
             evolution_distributions: moyensGenerauxEvolution,
           };
         })(),
+        // Ajout — visibilité des dossiers en attente de paiement (admissions + réinscriptions),
+        // même définition que le dashboard Caisse, avec répartition par origine (source_inscription).
+        dossiersEnAttente,
       },
     });
   } catch (error) {

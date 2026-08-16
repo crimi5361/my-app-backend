@@ -10,6 +10,7 @@
 // hors périmètre du cloisonnement école — même principe déjà validé pour Dashboard Caisse).
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
+const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
 
 exports.getDashboardAdministrateur = async (req, res) => {
   const debutRequete = Date.now();
@@ -43,6 +44,7 @@ exports.getDashboardAdministrateur = async (req, res) => {
       pecResult,
       journalEcolesResult,
       journalDepartementsResult,
+      dossiersEnAttente,
     ] = await Promise.all([
       db.query(`
         SELECT r.nom AS role, u.statut, COUNT(*) AS total
@@ -137,6 +139,10 @@ exports.getDashboardAdministrateur = async (req, res) => {
         SELECT 'departement' AS type, nom, created_at AS date, 'création' AS action FROM departement
         ORDER BY date DESC LIMIT 10
       `),
+
+      // Visibilité des dossiers en attente (admissions + réinscriptions), même définition/périmètre
+      // que le dashboard Caisse — voir services/dossiersEnAttente.service.js.
+      getDossiersEnAttenteParOrigine(db, { siteId, ecoleId, anneeAcademiqueId }),
     ]);
 
     const parRoleRaw = agentsParRole.rows;
@@ -225,6 +231,9 @@ exports.getDashboardAdministrateur = async (req, res) => {
           nb_classes: parseInt(classesResult.rows[0].total, 10),
           nb_annees_academiques: anneesResult.rows.length,
         },
+        // Ajout — visibilité des dossiers en attente de paiement (admissions + réinscriptions),
+        // même définition que le dashboard Caisse, avec répartition par origine (source_inscription).
+        dossiersEnAttente,
       },
     });
   } catch (error) {
