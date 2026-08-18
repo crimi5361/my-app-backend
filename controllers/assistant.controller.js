@@ -70,6 +70,7 @@ exports.chat = async (req, res) => {
       requetes: resultat.requetes,
       // Classeurs et rapports produits pendant le tour, à télécharger.
       fichiers: resultat.fichiers,
+      fiches: resultat.fiches,
       history: resultat.historique,
     });
   } catch (error) {

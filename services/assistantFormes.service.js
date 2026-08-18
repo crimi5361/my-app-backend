@@ -25,6 +25,8 @@ const PAR_OUTIL = {
   generer_rapport_audit: 'livre',
   debriefing_veille: 'graphe',       // il aboutit a des graphiques
   decrire_table: 'base',             // il interroge le catalogue du schema
+  afficher_fiche_personne: 'livre',  // une fiche, comme une page qu'on ouvre
+  rapport_personne: 'livre',
 };
 
 /**

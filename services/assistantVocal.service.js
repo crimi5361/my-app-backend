@@ -633,6 +633,9 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
           // Le fichier remonte a l'ecran : a l'oral, un classeur sans bouton de
           // telechargement visible n'existe pas pour le fondateur.
           if (sortie.fichier) envoyer('fichier', sortie.fichier);
+          // La fiche se dessine a l'ecran : elle ne repasse jamais par le modele,
+          // qui n'en connait que le nom et l'identifiant.
+          if (sortie.fiche) envoyer('fiche', { fiche: sortie.fiche });
 
           reponses.push({ id: appel.id, name: appel.name, response: sortie.reponse });
         }

@@ -13,6 +13,8 @@ const { executerRequete, decrireTable } = require('./assistantSql.service');
 const { genererExcel, genererRapportWord } = require('./assistantFichiers.service');
 const google = require('./assistantGoogle.service');
 const { chercherWeb } = require('./assistantWeb.service');
+const { chercherPersonnes, construireFiche } = require('./assistantFiche.service');
+const { rapportPersonne } = require('./assistantFicheRapport');
 
 // ---------------------------------------------------------------------------
 //  Identité — reprise mot pour mot par les deux canaux
@@ -475,6 +477,56 @@ const DECLARATION_DECRIRE = {
 // au clavier serait incomprehensible pour le fondateur.
 DECLARATIONS.push(DECLARATION_DECRIRE);
 
+/**
+ * Fiche d'identite affichee a l'ecran.
+ *
+ * Le modele choisit DE QUI parler ; le contenu est lu en SQL et pousse au
+ * navigateur sans repasser par lui. Il ne peut donc pas inventer une date de
+ * naissance ni un montant de scolarite.
+ *
+ * L'outil rend soit UNE fiche, soit une liste de candidats a departager. Ce
+ * n'est pas au modele de choisir entre deux homonymes : il redemande.
+ */
+const DECLARATION_FICHE = {
+  name: 'afficher_fiche_personne',
+  description:
+    "Affiche a l'ecran la fiche d'identite d'une personne - etudiant ou membre du personnel - a "
+    + "partir de son nom. A utiliser des que le fondateur demande QUI est quelqu'un, ou des "
+    + "informations sur une personne nommee. La fiche se dessine sur son ecran : annonce-la en une "
+    + "phrase, ne recite pas son contenu. Si l'outil rend plusieurs candidats, demande au fondateur "
+    + "lequel il vise avant de recommencer. Apres l'affichage, propose-lui un rapport detaille.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      nom: {
+        type: Type.STRING,
+        description: "Nom ou fragment de nom de la personne recherchee.",
+      },
+    },
+    required: ['nom'],
+  },
+};
+
+/** Le dossier complet, en Word. Produit seulement si le fondateur le demande :
+ *  quatre-vingts champs ne se lisent pas a l'ecran. */
+const DECLARATION_RAPPORT_PERSONNE = {
+  name: 'rapport_personne',
+  description:
+    "Produit le dossier COMPLET d'une personne en document Word : tout ce que la base contient sur "
+    + "elle. A appeler uniquement apres avoir affiche sa fiche et obtenu son accord. Reprends la "
+    + "categorie et l'identifiant rendus par afficher_fiche_personne.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      categorie: { type: Type.STRING, format: 'enum', enum: ['etudiant', 'agent'] },
+      id: { type: Type.NUMBER, description: "Identifiant rendu par afficher_fiche_personne." },
+    },
+    required: ['categorie', 'id'],
+  },
+};
+
+DECLARATIONS.push(DECLARATION_FICHE, DECLARATION_RAPPORT_PERSONNE);
+
 /** Consultation du web. N'est proposee au modele QUE si le fondateur l'a
  *  activee dans les reglages : une reponse venue du web n'a pas le meme statut
  *  qu'un chiffre de la base, et le choix lui revient. */
@@ -541,6 +593,47 @@ const NOMS_GOOGLE = new Set([
  */
 async function executerOutil(nom, args = {}, { siteId, ecoleId = null, utilisateurId = null }) {
   const contexte = { siteId, ecoleId, utilisateurId };
+
+  if (nom === 'afficher_fiche_personne') {
+    const trouve = await chercherPersonnes(args?.nom, contexte);
+    if (!trouve.ok) return { reponse: { erreur: trouve.motif } };
+    if (trouve.candidats.length === 0) {
+      return { reponse: { trouve: false, message: `Personne nommee ainsi : ${args?.nom}.` } };
+    }
+    if (trouve.candidats.length > 1) {
+      // Departager deux homonymes n'est pas au modele de le faire seul : il rend
+      // la liste et demande. Se tromper de personne serait pire que redemander.
+      return { reponse: { ambigu: true, candidats: trouve.candidats,
+        instruction: "Plusieurs personnes correspondent. Cite-les brievement et demande laquelle." } };
+    }
+    const c = trouve.candidats[0];
+    const f = await construireFiche(c.categorie, c.id, contexte);
+    if (!f.ok) return { reponse: { erreur: f.motif } };
+    return {
+      fiche: f.fiche,
+      reponse: {
+        affiche: true,
+        categorie: f.fiche.categorie,
+        id: f.fiche.id,
+        nom_complet: f.fiche.nom_complet,
+        instruction: "La fiche se dessine a son ecran. Annonce-la en une phrase, ne recite pas son "
+          + "contenu, puis demande-lui s'il veut le rapport detaille.",
+      },
+    };
+  }
+
+  if (nom === 'rapport_personne') {
+    const f = await construireFiche(args?.categorie, args?.id, contexte);
+    if (!f.ok) return { reponse: { erreur: f.motif } };
+    const r = await rapportPersonne(args.categorie, args.id, contexte, f.fiche);
+    if (!r.ok) return { reponse: { erreur: r.motif } };
+    return {
+      fichier: r.fichier,
+      reponse: { genere: true, nom: r.fichier.nom,
+        instruction: "Le document apparait a son ecran avec un bouton de telechargement. "
+          + "Annonce-le en une phrase, ne lis pas son contenu." },
+    };
+  }
 
   if (nom === 'decrire_table') {
     const d = await decrireTable(args?.nom, { siteId, ecoleId });

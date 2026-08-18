@@ -221,6 +221,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
 
   const requetes = [];        // trace de ce qui a été exécuté, montrée au fondateur
   const fichiers = [];        // classeurs et rapports produits pendant le tour
+  const fiches = [];          // fiches d'identite dessinees a l'ecran
   let dernierResultat = null; // alimente le graphique — jamais le modèle
 
   let tours = 0;
@@ -238,6 +239,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
       // le modele, qui ne peut donc pas en alterer les valeurs.
       if (sortie.resultat?.ok) dernierResultat = sortie.resultat;
       if (sortie.fichier) fichiers.push(sortie.fichier);
+      if (sortie.fiche) fiches.push(sortie.fiche);
 
       reponsesOutils.push({ id: appel.id, name: appel.name, response: sortie.reponse });
     }
@@ -271,6 +273,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
     colonnes: dernierResultat?.colonnes ?? null,
     requetes,
     fichiers,
+    fiches,
     historique: chat.getHistory(),
   };
 }
