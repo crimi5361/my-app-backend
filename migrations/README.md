@@ -31,6 +31,8 @@ node migrations/run.js 2026-08-11_module_enseignants.sql
 | `2026-08-13d_assistant_reglages.sql` | Réglages par site : prénom de l'assistante, recherche web. |
 | `2026-08-13e_assistant_voix.sql` | Voix de synthèse retenue pour la session vocale. |
 | `2026-08-14_assistant_civilite.sql` | Civilité employée à l'accueil (`Monsieur` par défaut). La table `utilisateur` ne porte aucun genre : c'est la raison d'être de ce réglage. |
+| `2026-08-18_exposition_complete.sql` | Un reflet en lecture par table (`assistant.t_<table>`), cloisonné par site quand un chemin existe. Porte l'assistante de 29 à 73 tables. |
+| `2026-08-18b_exposition_email_backup.sql` | Dernière table exposée. Ne restent hors d'atteinte que `etudiant.password`, `utilisateur.mot_de_passe` et `assistant_google_compte.jeton_rafraichissement`. |
 
 ## Rôle de lecture de l'assistant
 
@@ -76,3 +78,18 @@ GOOGLE_OAUTH_REDIRECT_URI=https://<domaine>/api/assistant/google/retour
 > Le jeton Google est chiffré au repos avec une clé dérivée de `JWT_SECRET`.
 > Changer `JWT_SECRET` rend les jetons illisibles et impose de refaire le
 > consentement.
+
+## Exclusion de l'administrateur — portée réelle
+
+`assistant.agent_exclu` retire l'administrateur de la plateforme des deux vues
+d'audit, `v_activite_agents` et `v_synthese_agents`. Il reste visible dans
+l'annuaire, ce qui est voulu.
+
+Depuis l'exposition complète du schéma (2026-08-18), cette exclusion **ne couvre
+plus les requêtes libres** : les colonnes auteur des reflets `t_paiement`,
+`t_etudiant` et `t_utilisateur` permettent de recomposer son activité.
+
+**Décision du fondateur, le 18 août 2026 : laisser ainsi.** L'exclusion protège
+les rapports d'audit formels, pas les requêtes ad hoc. L'étendre aux reflets
+aurait retiré ses 19 007 actes des totaux généraux, ce qui aurait faussé les
+chiffres globaux pour protéger une ligne de rapport.
