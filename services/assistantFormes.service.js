@@ -24,6 +24,7 @@ const PAR_OUTIL = {
   generer_excel: 'livre',            // ouvrage relie
   generer_rapport_audit: 'livre',
   debriefing_veille: 'graphe',       // il aboutit a des graphiques
+  decrire_table: 'base',             // il interroge le catalogue du schema
 };
 
 /**

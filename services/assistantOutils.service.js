@@ -9,7 +9,7 @@
 // Aucun outil n'accepte de valeur numérique métier en paramètre : ni le
 // graphique, ni le classeur, ni le rapport. Les nombres viennent tous de SQL.
 const { Type } = require('@google/genai');
-const { executerRequete } = require('./assistantSql.service');
+const { executerRequete, decrireTable } = require('./assistantSql.service');
 const { genererExcel, genererRapportWord } = require('./assistantFichiers.service');
 const google = require('./assistantGoogle.service');
 const { chercherWeb } = require('./assistantWeb.service');
@@ -444,6 +444,37 @@ const DECLARATIONS = [
   },
 ];
 
+/**
+ * Colonnes d'un objet du schema, a la demande.
+ *
+ * Le schema expose 91 objets et 830 colonnes. Tout injecter dans l'instruction
+ * coutait 11 700 jetons A CHAQUE conversation, pour un quota de 20 requetes par
+ * jour : le modele s'y noyait autant que le budget. Les vues metier restent
+ * donnees en entier ; les reflets de table `t_*` ne sont que nommes, et cet
+ * outil sert a en obtenir les colonnes quand le besoin se presente.
+ */
+const DECLARATION_DECRIRE = {
+  name: 'decrire_table',
+  description:
+    "Renvoie les colonnes d'une vue du schema assistant. A appeler AVANT d'ecrire du SQL sur une "
+    + "vue `t_*`, dont tu ne connais que le nom. Inutile pour les vues `v_*` : leurs colonnes te "
+    + "sont deja donnees. N'invente jamais un nom de colonne : demande-le.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      nom: {
+        type: Type.STRING,
+        description: "Nom de la vue, avec ou sans le prefixe assistant. Exemple : t_note.",
+      },
+    },
+    required: ['nom'],
+  },
+};
+
+// Disponible sur les deux canaux : une capacite qui existerait a l'oral et pas
+// au clavier serait incomprehensible pour le fondateur.
+DECLARATIONS.push(DECLARATION_DECRIRE);
+
 /** Consultation du web. N'est proposee au modele QUE si le fondateur l'a
  *  activee dans les reglages : une reponse venue du web n'a pas le meme statut
  *  qu'un chiffre de la base, et le choix lui revient. */
@@ -510,6 +541,15 @@ const NOMS_GOOGLE = new Set([
  */
 async function executerOutil(nom, args = {}, { siteId, ecoleId = null, utilisateurId = null }) {
   const contexte = { siteId, ecoleId, utilisateurId };
+
+  if (nom === 'decrire_table') {
+    const d = await decrireTable(args?.nom, { siteId, ecoleId });
+    return {
+      reponse: d.ok
+        ? { objet: d.objet, description: d.description, colonnes: d.colonnes }
+        : { erreur: d.motif },
+    };
+  }
 
   if (NOMS_SQL.has(nom)) {
     const resultat = await executerRequete(args.sql, { siteId, ecoleId });

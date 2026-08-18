@@ -81,9 +81,14 @@ const SCHEMA_REPONSE = {
 };
 
 function construireInstruction(dictionnaire, aujourdhui, annees, reglages) {
-  const catalogue = dictionnaire
+  // Deux niveaux de detail, et c'est deliberе : voir getDictionnaire.
+  // Les vues metier en entier, les reflets de table simplement nommes.
+  const catalogue = dictionnaire.metier
     .map((v) => `### ${v.vue}\n${v.description || ''}\nColonnes : ${v.colonnes.join(', ')}`)
     .join('\n\n');
+  const reflets = dictionnaire.tables
+    .map((v) => `- ${v.vue} (${v.nb_colonnes} col.) ${v.resume}`)
+    .join('\n');
 
   // Injecté d'emblée plutôt que laissé à découvrir : sans ça, le modèle dépensait
   // une à deux requêtes par question rien que pour situer « l'année passée ».
@@ -123,6 +128,16 @@ Elles sont déjà filtrées sur le site (et l'école) du fondateur connecté : n
 jamais de condition sur le site ou l'école, c'est fait pour toi.
 
 ${catalogue}
+
+## Le reste du schema, a la demande
+Ces vues refletent une table telle quelle, deja filtree sur le site du fondateur.
+Elles repondent aux questions que les vues metier ne couvrent pas : notes,
+scolarite, recus, tarifs, programme pedagogique, stock, candidatures.
+
+Tu n'en connais que le NOM. Pour obtenir leurs colonnes, appelle \`decrire_table\`
+AVANT d'ecrire le SQL. N'invente jamais un nom de colonne.
+
+${reflets}
 
 ## Règles de rédaction du SQL
 - Un seul SELECT à la fois, sans point-virgule final.

@@ -188,9 +188,14 @@ S'il te dit que la réponse est ambiguë, tu reposes la question une seule fois.
 S'il te dit que c'est un refus, tu enchaînes normalement sans insister.`;
 
 function construireInstruction(dictionnaire, annees, aujourdhui, reglages, phraseAccueil) {
-  const catalogue = dictionnaire
+  // Deux niveaux de detail, et c'est deliberе : voir getDictionnaire.
+  // Les vues metier en entier, les reflets de table simplement nommes.
+  const catalogue = dictionnaire.metier
     .map((v) => `### ${v.vue}\n${v.description || ''}\nColonnes : ${v.colonnes.join(', ')}`)
     .join('\n\n');
+  const reflets = dictionnaire.tables
+    .map((v) => `- ${v.vue} (${v.nb_colonnes} col.) ${v.resume}`)
+    .join('\n');
   const calendrier = annees.length
     ? annees.map((a) => `- id ${a.annee_academique_id} : ${a.annee} (état : ${a.etat || 'non renseigné'})`).join('\n')
     : '- (aucune année académique enregistrée)';
@@ -228,6 +233,16 @@ Uniquement ces vues, en lecture seule. Elles sont déjà filtrées sur le site e
 du fondateur : n'ajoute jamais de condition sur le site ou l'école.
 
 ${catalogue}
+
+## Le reste du schema, a la demande
+Ces vues refletent une table telle quelle, deja filtree sur le site du fondateur.
+Elles repondent aux questions que les vues metier ne couvrent pas : notes,
+scolarite, recus, tarifs, programme pedagogique, stock, candidatures.
+
+Tu n'en connais que le NOM. Pour obtenir leurs colonnes, appelle \`decrire_table\`
+AVANT d'ecrire le SQL. N'invente jamais un nom de colonne.
+
+${reflets}
 
 ## Règles SQL
 - Un seul SELECT, sans point-virgule final, vues préfixées par \`assistant.\`.

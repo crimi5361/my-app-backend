@@ -290,7 +290,22 @@ async function executerRequete(sqlBrut, { siteId, ecoleId = null, limiteLignes }
   }
 }
 
-/** Catalogue des vues et colonnes — ce que le modèle lit pour découvrir le schéma. */
+/**
+ * Catalogue du schéma — ce que le modèle lit pour découvrir les données.
+ *
+ * DEUX NIVEAUX DE DÉTAIL, et c'est délibéré. Le schéma expose 91 objets et 830
+ * colonnes ; tout injecter coûtait 11 700 jetons À CHAQUE conversation, sur un
+ * quota de 20 requêtes par jour. Le modèle s'y noyait autant que le budget.
+ *
+ *   • les vues métier `v_*` sont données EN ENTIER : jointures déjà faites,
+ *     libellés lisibles, règles de gestion dans le commentaire. C'est le chemin
+ *     recommandé, il doit être le plus facile à emprunter ;
+ *   • les reflets de table `t_*` sont seulement NOMMÉS, avec une phrase. Le
+ *     modèle appelle `decrire_table` quand il en a besoin d'un.
+ *
+ * Résultat : la portée passe de 29 à 73 tables, et le catalogue reste plus
+ * léger qu'avant.
+ */
 async function getDictionnaire({ siteId, ecoleId = null }) {
   const resultat = await executerRequete(
     'SELECT vue, description, colonne, type FROM assistant.v_dictionnaire',
@@ -298,13 +313,51 @@ async function getDictionnaire({ siteId, ecoleId = null }) {
   );
   if (!resultat.ok) throw new Error(resultat.motif);
 
-  // Regroupé par vue : nettement plus compact en contexte qu'une liste à plat.
   const parVue = new Map();
   for (const l of resultat.lignes) {
     if (!parVue.has(l.vue)) parVue.set(l.vue, { vue: `assistant.${l.vue}`, description: l.description, colonnes: [] });
     parVue.get(l.vue).colonnes.push(`${l.colonne} (${l.type})`);
   }
-  return [...parVue.values()];
+  const tout = [...parVue.values()];
+  return {
+    metier: tout.filter((v) => !v.vue.startsWith('assistant.t_')),
+    tables: tout.filter((v) => v.vue.startsWith('assistant.t_'))
+      .map((v) => ({ vue: v.vue, resume: premierePhrase(v.description), nb_colonnes: v.colonnes.length })),
+  };
 }
 
-module.exports = { validerRequete, executerRequete, getDictionnaire };
+/** Première phrase d'un commentaire — assez pour choisir une table, pas assez
+ *  pour peser en contexte. */
+function premierePhrase(texte) {
+  const t = String(texte || '').trim();
+  if (!t) return '';
+  const fin = t.search(/\.\s|\.$/);
+  return (fin > 0 ? t.slice(0, fin + 1) : t).slice(0, 170);
+}
+
+/**
+ * Colonnes d'un objet du schéma assistant, à la demande.
+ *
+ * Le nom est validé contre le catalogue plutôt que concaténé : c'est une entrée
+ * qui vient du modèle, donc du texte non fiable.
+ */
+async function decrireTable(nom, { siteId, ecoleId = null }) {
+  const propre = String(nom || '').replace(/^assistant\./, '').trim();
+  if (!/^[a-z0-9_]+$/i.test(propre)) return { ok: false, motif: 'Nom invalide.' };
+
+  const r = await executerRequete(
+    `SELECT vue, description, colonne, type FROM assistant.v_dictionnaire WHERE vue = '${propre}'`,
+    { siteId, ecoleId, limiteLignes: LIMITE_LIGNES_MAX }
+  );
+  if (!r.ok) return { ok: false, motif: r.motif };
+  if (!r.lignes.length) return { ok: false, motif: `Aucun objet nommé « ${propre} » dans le schéma assistant.` };
+
+  return {
+    ok: true,
+    objet: `assistant.${propre}`,
+    description: r.lignes[0].description || null,
+    colonnes: r.lignes.map((l) => `${l.colonne} (${l.type})`),
+  };
+}
+
+module.exports = { validerRequete, executerRequete, getDictionnaire, decrireTable };
