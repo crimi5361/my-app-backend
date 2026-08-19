@@ -22,21 +22,57 @@ const MAX_CANDIDATS = 8;
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Retrouve les personnes qui correspondent à un terme.
+ * Seuil de ressemblance entre DEUX MOTS.
  *
- * La recherche porte sur les tables exposées et non sur v_personnes : cette
- * dernière identifie les étudiants par `matricule`, qui compte 588 doublons.
- * Ici on rend l'identifiant technique, seul moyen sûr de désigner quelqu'un.
+ * Mesuré sur les cas réels, ce qui a décidé la valeur :
  *
- * `assistant.correspond` exige que TOUS les mots cherchés figurent dans le nom,
- * dans n'importe quel ordre : « christian boga » retrouve « BOGA ANGE CHRISTIAN
- * GUEMA », et « mani » ne ramène pas « MANIGA ».
+ *     mani  ↔ manni     0,571   ← à retenir (prononciation)
+ *     manny ↔ manni     0,500   ← à retenir (faute de frappe)
+ *     mani  ↔ amani     0,375   ← à REJETER (personne différente)
+ *     mani  ↔ manuella  0,273   ← à rejeter
+ *
+ * 0,45 passe entre 0,500 et 0,375 : il absorbe l'approximation sans confondre
+ * deux noms distincts. C'est exactement le reproche déjà entendu — « quand je
+ * dis Mani, c'est Mani, pas Maniga ».
  */
-async function chercherPersonnes(terme, { siteId, ecoleId = null }) {
-  const t = String(terme || '').trim().replace(/'/g, "''");
-  if (t.length < 2) return { ok: false, motif: 'Terme de recherche trop court.' };
+const SEUIL_MOT = 0.45;
 
-  const sql = `
+/** Au-delà, la recherche n'est plus un nom mais une phrase. */
+const MOTS_MAX = 5;
+
+/** Mots utiles d'un terme de recherche, normalisés comme en base. */
+function motsDuTerme(terme) {
+  return String(terme || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((m) => m.length >= 2)
+    .slice(0, MOTS_MAX);
+}
+
+/**
+ * Condition « chaque mot cherché a un mot proche dans le nom ».
+ *
+ * POURQUOI PAS `word_similarity`, essayé d'abord et écarté : cette fonction
+ * mesure à quel point le terme couvre UNE PORTION du nom. « grace » y vaut donc
+ * 1,000 contre les deux cents personnes dont le nom contient « grace », et
+ * « mani grace » remonte « GRACE MANUELLA » devant l'agent cherché. Elle
+ * récompense exactement ce qu'il ne faut pas.
+ *
+ * Ici, chaque mot de la recherche doit trouver SON correspondant parmi les mots
+ * du nom. C'est la version tolérante de `assistant.correspond`, et elle garde sa
+ * propriété essentielle : tous les mots comptent.
+ */
+function conditionApprochante(colonneNom, mots) {
+  return mots
+    .map((m) => `EXISTS (SELECT 1 FROM unnest(assistant.mots(${colonneNom})) mo `
+      + `WHERE similarity(mo, '${m}') > ${SEUIL_MOT})`)
+    .join(' AND ');
+}
+
+/** Assemble la requête de recherche à partir d'une condition par catégorie. */
+function requeteRecherche(condAgent, condEtudiant, tri) {
+  return `
     SELECT * FROM (
       SELECT 'agent'::text AS categorie,
              a.agent_id AS id,
@@ -44,9 +80,10 @@ async function chercherPersonnes(terme, { siteId, ecoleId = null }) {
              a.matricule AS reference,
              a.role AS rattachement,
              a.statut AS etat,
-             1 AS priorite
+             1 AS priorite,
+             ${condAgent.score} AS score
       FROM assistant.v_agents a
-      WHERE assistant.correspond(a.agent, '${t}')
+      WHERE ${condAgent.ou}
 
       UNION ALL
 
@@ -56,16 +93,89 @@ async function chercherPersonnes(terme, { siteId, ecoleId = null }) {
              e.matricule_iipea,
              e.statut_scolaire,
              e.standing,
-             2
+             2,
+             ${condEtudiant.score}
       FROM assistant.t_etudiant e
-      WHERE assistant.correspond(COALESCE(e.nom,'') || ' ' || COALESCE(e.prenoms,''), '${t}')
+      WHERE ${condEtudiant.ou}
     ) p
-    ORDER BY p.priorite, p.nom_complet
+    ORDER BY ${tri}
     LIMIT ${MAX_CANDIDATS + 1}`;
+}
 
-  const r = await executerRequete(sql, { siteId, ecoleId, limiteLignes: MAX_CANDIDATS + 1 });
-  if (!r.ok) return { ok: false, motif: r.motif };
-  return { ok: true, candidats: r.lignes.slice(0, MAX_CANDIDATS), tronque: r.lignes.length > MAX_CANDIDATS };
+/**
+ * Retrouve les personnes qui correspondent à un terme.
+ *
+ * DEUX PASSES, et la seconde a été ajoutée après un échec en conditions
+ * réelles. Le fondateur cherchait « Manni Grace », prononcé « Mani Grace » ;
+ * la recherche par mots entiers ne trouvait rien, alors que l'agent
+ * « MANNI CLAUDINE GRACE » était bien là. Une lettre d'écart suffisait à le
+ * rendre introuvable — c'est inacceptable pour une assistante à qui on parle.
+ *
+ *   1. MOTS ENTIERS (`assistant.correspond`) — précis, aucun faux positif.
+ *      « christian boga » retrouve « BOGA ANGE CHRISTIAN GUEMA », et « mani »
+ *      ne ramène pas « MANIGA ». C'est la passe qui doit gagner quand elle
+ *      trouve.
+ *   2. APPROCHANT (trigrammes) — seulement si la première ne rend rien.
+ *      Elle absorbe les fautes de frappe et les approximations de la
+ *      reconnaissance vocale, au prix d'un classement par ressemblance.
+ *
+ * L'ordre compte : intervertir les deux passes ferait remonter des homonymes
+ * approximatifs devant une correspondance exacte.
+ *
+ * La recherche porte sur les tables exposées et non sur v_personnes : cette
+ * dernière identifie les étudiants par `matricule`, qui compte 588 doublons.
+ * Ici on rend l'identifiant technique, seul moyen sûr de désigner quelqu'un.
+ */
+async function chercherPersonnes(terme, { siteId, ecoleId = null }) {
+  const t = String(terme || '').trim().replace(/'/g, "''");
+  if (t.length < 2) return { ok: false, motif: 'Terme de recherche trop court.' };
+
+  const nomEtudiant = "COALESCE(e.nom,'') || ' ' || COALESCE(e.prenoms,'')";
+
+  // ── Passe 1 : mots entiers ───────────────────────────────────────────────
+  const exact = await executerRequete(
+    requeteRecherche(
+      { ou: `assistant.correspond(a.agent, '${t}')`, score: '1' },
+      { ou: `assistant.correspond(${nomEtudiant}, '${t}')`, score: '1' },
+      'p.priorite, p.nom_complet',
+    ),
+    { siteId, ecoleId, limiteLignes: MAX_CANDIDATS + 1 },
+  );
+  if (!exact.ok) return { ok: false, motif: exact.motif };
+  if (exact.lignes.length) {
+    return {
+      ok: true, approchant: false,
+      candidats: exact.lignes.slice(0, MAX_CANDIDATS),
+      tronque: exact.lignes.length > MAX_CANDIDATS,
+    };
+  }
+
+  // ── Passe 2 : approchant, mot par mot ────────────────────────────────────
+  const mots = motsDuTerme(t);
+  if (!mots.length) return { ok: true, approchant: false, candidats: [], tronque: false };
+
+  // Le classement se fait sur la ressemblance du nom ENTIER : à conditions
+  // égales, le nom le plus proche en longueur passe devant.
+  const scoreAgent = `similarity(assistant.normaliser(a.agent), '${t}')`;
+  const scoreEtudiant = `similarity(assistant.normaliser(${nomEtudiant}), '${t}')`;
+  const flou = await executerRequete(
+    requeteRecherche(
+      { ou: conditionApprochante('a.agent', mots), score: scoreAgent },
+      { ou: conditionApprochante(nomEtudiant, mots), score: scoreEtudiant },
+      'p.score DESC, p.priorite, p.nom_complet',
+    ),
+    { siteId, ecoleId, limiteLignes: MAX_CANDIDATS + 1 },
+  );
+  if (!flou.ok) return { ok: false, motif: flou.motif };
+
+  return {
+    ok: true,
+    // Le drapeau remonte jusqu'au modèle : une correspondance approchante se
+    // confirme auprès du fondateur, elle ne s'affiche pas comme une certitude.
+    approchant: flou.lignes.length > 0,
+    candidats: flou.lignes.slice(0, MAX_CANDIDATS),
+    tronque: flou.lignes.length > MAX_CANDIDATS,
+  };
 }
 
 // ───────────────────────────────────────────────────────────────────────────

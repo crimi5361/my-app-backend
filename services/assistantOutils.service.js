@@ -494,7 +494,9 @@ const DECLARATION_FICHE = {
     + "partir de son nom. A utiliser des que le fondateur demande QUI est quelqu'un, ou des "
     + "informations sur une personne nommee. La fiche se dessine sur son ecran : annonce-la en une "
     + "phrase, ne recite pas son contenu. Si l'outil rend plusieurs candidats, demande au fondateur "
-    + "lequel il vise avant de recommencer. Apres l'affichage, propose-lui un rapport detaille.",
+    + "lequel il vise avant de recommencer. Si la correspondance est APPROCHANTE, dis le nom trouve et "
+    + "demande confirmation avant d'aller plus loin. Apres l'affichage, PROPOSE un rapport detaille "
+    + "et ATTENDS sa reponse : n'appelle jamais rapport_personne dans la foulee.",
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -512,16 +514,19 @@ const DECLARATION_FICHE = {
 const DECLARATION_RAPPORT_PERSONNE = {
   name: 'rapport_personne',
   description:
-    "Produit le dossier COMPLET d'une personne en document Word : tout ce que la base contient sur "
-    + "elle. A appeler uniquement apres avoir affiche sa fiche et obtenu son accord. Reprends la "
-    + "categorie et l'identifiant rendus par afficher_fiche_personne.",
+    "Produit le dossier COMPLET d'une personne en document Word. N'APPELLE CET OUTIL QUE SI LE "
+    + "FONDATEUR A DIT OUI a une proposition de rapport, ou l'a demande de lui-meme. Afficher une "
+    + "fiche n'est PAS une demande de rapport : produire un document qu'il n'a pas demande l'oblige "
+    + "a le trier ensuite. Passe l'identifiant rendu par afficher_fiche_personne ; si tu ne l'as "
+    + "pas, passe le nom et l'outil le retrouvera.",
   parameters: {
     type: Type.OBJECT,
     properties: {
       categorie: { type: Type.STRING, format: 'enum', enum: ['etudiant', 'agent'] },
-      id: { type: Type.NUMBER, description: "Identifiant rendu par afficher_fiche_personne." },
+      id: { type: Type.NUMBER, description: "Identifiant rendu par afficher_fiche_personne. A privilegier." },
+      nom: { type: Type.STRING, description: "Nom de la personne, si l'identifiant n'est pas connu." },
     },
-    required: ['categorie', 'id'],
+    required: ['categorie'],
   },
 };
 
@@ -616,6 +621,8 @@ async function executerOutil(nom, args = {}, { siteId, ecoleId = null, utilisate
         categorie: f.fiche.categorie,
         id: f.fiche.id,
         nom_complet: f.fiche.nom_complet,
+        // Une correspondance approchante se confirme, elle ne s'affirme pas.
+        correspondance: trouve.approchant ? 'approchante' : 'exacte',
         instruction: "La fiche se dessine a son ecran. Annonce-la en une phrase, ne recite pas son "
           + "contenu, puis demande-lui s'il veut le rapport detaille.",
       },
@@ -623,9 +630,29 @@ async function executerOutil(nom, args = {}, { siteId, ecoleId = null, utilisate
   }
 
   if (nom === 'rapport_personne') {
-    const f = await construireFiche(args?.categorie, args?.id, contexte);
+    // L'identifiant manquant faisait echouer l'outil sur « identifiant invalide »,
+    // ce que le modele ne savait pas reparer. Il retrouve desormais la personne
+    // par son nom, comme le ferait l'affichage de fiche.
+    let cible = { categorie: args?.categorie, id: args?.id };
+    if (!Number.isInteger(Number(cible.id))) {
+      if (!args?.nom) {
+        return { reponse: { erreur: "Ni identifiant ni nom fournis. Affiche d'abord la fiche." } };
+      }
+      const trouve = await chercherPersonnes(args.nom, contexte);
+      if (!trouve.ok) return { reponse: { erreur: trouve.motif } };
+      if (trouve.candidats.length === 0) {
+        return { reponse: { trouve: false, message: `Personne nommee ainsi : ${args.nom}.` } };
+      }
+      if (trouve.candidats.length > 1) {
+        return { reponse: { ambigu: true, candidats: trouve.candidats,
+          instruction: 'Plusieurs personnes correspondent. Demande laquelle avant de produire le rapport.' } };
+      }
+      cible = { categorie: trouve.candidats[0].categorie, id: trouve.candidats[0].id };
+    }
+
+    const f = await construireFiche(cible.categorie, cible.id, contexte);
     if (!f.ok) return { reponse: { erreur: f.motif } };
-    const r = await rapportPersonne(args.categorie, args.id, contexte, f.fiche);
+    const r = await rapportPersonne(cible.categorie, cible.id, contexte, f.fiche);
     if (!r.ok) return { reponse: { erreur: r.motif } };
     return {
       fichier: r.fichier,
