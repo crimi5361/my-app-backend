@@ -251,7 +251,7 @@ SELECT
   "curcus_id"
 FROM classe;
 COMMENT ON VIEW assistant.t_classe IS
-  'Classe pédagogique (année académique x niveau x filière), 155 lignes mesurées le 2026-08-15. Recréée chaque année académique (filiere reste permanente, voir CLAUDE.md). — NON cloisonnée : référentiel partagé ou structure commune aux sites.';
+  'Classe pédagogique (année académique x niveau x filière), 155 lignes mesurées le 2026-08-15. Recréée chaque année académique (filiere reste permanente, voir la documentation interne). — NON cloisonnée : référentiel partagé ou structure commune aux sites.';
 
 -- commande_fournisseur
 CREATE OR REPLACE VIEW assistant.t_commande_fournisseur AS
@@ -619,7 +619,7 @@ SELECT
 FROM historique_operations_admin
 WHERE etudiant_id IN (SELECT id FROM etudiant WHERE site_id = assistant.site_courant());
 COMMENT ON VIEW assistant.t_historique_operations_admin IS
-  'TABLE VIDE (0 ligne mesurée le 2026-08-15). Aucun changement de filière/parcours/cycle exceptionnel (hors réinscription) enregistré localement, voir CLAUDE.md. — Cloisonnée par l''étudiant rattaché.';
+  'TABLE VIDE (0 ligne mesurée le 2026-08-15). Aucun changement de filière/parcours/cycle exceptionnel (hors réinscription) enregistré localement, voir la documentation interne. — Cloisonnée par l''étudiant rattaché.';
 
 -- inscription_annuelle
 CREATE OR REPLACE VIEW assistant.t_inscription_annuelle AS

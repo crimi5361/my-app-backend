@@ -6,8 +6,6 @@ RRR/
 uploads/
 *.log
 config/secrets/
-CLAUDE.md
-.claude/
 
 # Documentation interne — usage exclusif équipe de développement, jamais publiée
 # sur le dépôt distant (voir README.md, section Déploiement).
