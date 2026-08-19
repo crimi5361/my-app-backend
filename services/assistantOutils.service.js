@@ -494,7 +494,9 @@ const DECLARATION_FICHE = {
     + "partir de son nom. A utiliser des que le fondateur demande QUI est quelqu'un, ou des "
     + "informations sur une personne nommee. La fiche se dessine sur son ecran : annonce-la en une "
     + "phrase, ne recite pas son contenu. Si l'outil rend plusieurs candidats, demande au fondateur "
-    + "lequel il vise avant de recommencer. Si la correspondance est APPROCHANTE, dis le nom trouve et "
+    + "lequel il vise avant de recommencer, PUIS RAPPELLE CET OUTIL en passant `categorie` : c'est le "
+    + "seul moyen de departager deux homonymes de categories differentes. Si la correspondance est "
+    + "APPROCHANTE, dis le nom trouve et "
     + "demande confirmation avant d'aller plus loin. Apres l'affichage, PROPOSE un rapport detaille "
     + "et ATTENDS sa reponse : n'appelle jamais rapport_personne dans la foulee.",
   parameters: {
@@ -503,6 +505,15 @@ const DECLARATION_FICHE = {
       nom: {
         type: Type.STRING,
         description: "Nom ou fragment de nom de la personne recherchee.",
+      },
+      categorie: {
+        type: Type.STRING,
+        format: 'enum',
+        enum: ['etudiant', 'agent'],
+        description: "A RENSEIGNER des que le fondateur precise de qui il parle : « l'agent », "
+          + "« le personnel », « la scolarite » donnent agent ; « l'etudiant », « l'etudiante », "
+          + "« l'apprenant » donnent etudiant. C'est ce parametre qui permet de trancher entre deux "
+          + "homonymes de categories differentes. Omets-le si rien n'est precise.",
       },
     },
     required: ['nom'],
@@ -600,7 +611,8 @@ async function executerOutil(nom, args = {}, { siteId, ecoleId = null, utilisate
   const contexte = { siteId, ecoleId, utilisateurId };
 
   if (nom === 'afficher_fiche_personne') {
-    const trouve = await chercherPersonnes(args?.nom, contexte);
+    const cat = args?.categorie === 'agent' || args?.categorie === 'etudiant' ? args.categorie : null;
+    const trouve = await chercherPersonnes(args?.nom, contexte, cat);
     if (!trouve.ok) return { reponse: { erreur: trouve.motif } };
     if (trouve.candidats.length === 0) {
       return { reponse: { trouve: false, message: `Personne nommee ainsi : ${args?.nom}.` } };
@@ -638,7 +650,7 @@ async function executerOutil(nom, args = {}, { siteId, ecoleId = null, utilisate
       if (!args?.nom) {
         return { reponse: { erreur: "Ni identifiant ni nom fournis. Affiche d'abord la fiche." } };
       }
-      const trouve = await chercherPersonnes(args.nom, contexte);
+      const trouve = await chercherPersonnes(args.nom, contexte, cible.categorie || null);
       if (!trouve.ok) return { reponse: { erreur: trouve.motif } };
       if (trouve.candidats.length === 0) {
         return { reponse: { trouve: false, message: `Personne nommee ainsi : ${args.nom}.` } };

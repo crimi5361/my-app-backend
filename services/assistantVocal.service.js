@@ -627,6 +627,13 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
           // eslint-disable-next-line no-await-in-loop
           const sortie = await executerOutil(appel.name, appel.args, { siteId, ecoleId, utilisateurId });
 
+          // Trace d'exploitation. Le modele ANNONCE parfois une action qu'il n'a
+          // pas demandee — « j'affiche la fiche » sans appeler l'outil. Sans
+          // cette ligne, impossible de distinguer un outil qui echoue d'un outil
+          // qui n'a jamais ete appele, et on en est reduit a supposer.
+          console.log(`[vocal] outil ${appel.name}`, JSON.stringify(appel.args || {}).slice(0, 120),
+            sortie.fiche ? '-> FICHE ENVOYEE' : sortie.fichier ? '-> fichier' : '');
+
           if (sortie.trace) envoyer('requete', sortie.trace);
           if (sortie.traces) sortie.traces.forEach((t) => envoyer('requete', t));
           if (sortie.resultat?.ok) dernierResultat = sortie.resultat;

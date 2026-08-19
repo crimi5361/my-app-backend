@@ -126,17 +126,31 @@ function requeteRecherche(condAgent, condEtudiant, tri) {
  * dernière identifie les étudiants par `matricule`, qui compte 588 doublons.
  * Ici on rend l'identifiant technique, seul moyen sûr de désigner quelqu'un.
  */
-async function chercherPersonnes(terme, { siteId, ecoleId = null }) {
+async function chercherPersonnes(terme, { siteId, ecoleId = null }, categorie = null) {
   const t = String(terme || '').trim().replace(/'/g, "''");
   if (t.length < 2) return { ok: false, motif: 'Terme de recherche trop court.' };
 
   const nomEtudiant = "COALESCE(e.nom,'') || ' ' || COALESCE(e.prenoms,'')";
 
+  /**
+   * Filtre par catégorie, quand le fondateur a précisé « l'agent » ou
+   * « l'étudiante ».
+   *
+   * Sans lui, la recherche tournait en rond sur les homonymes. Cas réel :
+   * « Manni Claudine Grace » désigne À LA FOIS une agente de la scolarité et une
+   * étudiante, et les deux noms contiennent les trois mots. L'assistante
+   * redemandait laquelle, le fondateur répondait « l'agent », et rien ne
+   * permettait de traduire cette réponse en requête — la boucle ne pouvait pas
+   * se refermer.
+   */
+  const garder = (c) => !categorie || categorie === c;
+  const jamais = '1 = 0';
+
   // ── Passe 1 : mots entiers ───────────────────────────────────────────────
   const exact = await executerRequete(
     requeteRecherche(
-      { ou: `assistant.correspond(a.agent, '${t}')`, score: '1' },
-      { ou: `assistant.correspond(${nomEtudiant}, '${t}')`, score: '1' },
+      { ou: garder('agent') ? `assistant.correspond(a.agent, '${t}')` : jamais, score: '1' },
+      { ou: garder('etudiant') ? `assistant.correspond(${nomEtudiant}, '${t}')` : jamais, score: '1' },
       'p.priorite, p.nom_complet',
     ),
     { siteId, ecoleId, limiteLignes: MAX_CANDIDATS + 1 },
@@ -160,8 +174,8 @@ async function chercherPersonnes(terme, { siteId, ecoleId = null }) {
   const scoreEtudiant = `similarity(assistant.normaliser(${nomEtudiant}), '${t}')`;
   const flou = await executerRequete(
     requeteRecherche(
-      { ou: conditionApprochante('a.agent', mots), score: scoreAgent },
-      { ou: conditionApprochante(nomEtudiant, mots), score: scoreEtudiant },
+      { ou: garder('agent') ? conditionApprochante('a.agent', mots) : jamais, score: scoreAgent },
+      { ou: garder('etudiant') ? conditionApprochante(nomEtudiant, mots) : jamais, score: scoreEtudiant },
       'p.score DESC, p.priorite, p.nom_complet',
     ),
     { siteId, ecoleId, limiteLignes: MAX_CANDIDATS + 1 },
