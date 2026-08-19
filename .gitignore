@@ -20,3 +20,6 @@ notes/
 # ne peut pas être mise en service ni testée. Aucun secret n'y figure — le mot de
 # passe du rôle de lecture est généré à l'exécution par setup-role-assistant.js
 # et affiché une seule fois, jamais écrit dans un fichier.
+
+# Scripts d'introspection temporaires
+_*.js
