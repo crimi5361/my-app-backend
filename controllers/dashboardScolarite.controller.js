@@ -5,6 +5,9 @@
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
+const {
+  getTotalInscrits, getInscriptionsValideesPeriodes, getEvolutionInscriptionsQuotidienne,
+} = require('../services/statistiquesInscriptions.service');
 
 exports.getDashboardScolarite = async (req, res) => {
   try {
@@ -25,45 +28,24 @@ exports.getDashboardScolarite = async (req, res) => {
 
     const [
       totalInscrits,
-      aujourdhui,
-      hier,
-      cetteSemaine,
-      semaineDerniere,
+      inscriptionsPeriodes,
       origineResult,
-      evolutionResult,
+      evolutionQuotidienne,
       parEcoleResult,
       parNiveauResult,
       parFiliereResult,
       activiteAgentsResult,
       dossiersEnAttente,
     ] = await Promise.all([
-      db.query(`
-        SELECT COUNT(*) AS total FROM vue_position_academique e
-        WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit' ${ecoleCond}
-      `, baseParams),
-
-      db.query(`
-        SELECT COUNT(*) AS total FROM vue_position_academique e
-        WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.date_inscription::date = CURRENT_DATE ${ecoleCond}
-      `, baseParams),
-
-      db.query(`
-        SELECT COUNT(*) AS total FROM vue_position_academique e
-        WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.date_inscription::date = CURRENT_DATE - INTERVAL '1 day' ${ecoleCond}
-      `, baseParams),
-
-      db.query(`
-        SELECT COUNT(*) AS total FROM vue_position_academique e
-        WHERE e.annee_academique_id = $1 AND e.site_id = $2
-          AND e.date_inscription::date >= date_trunc('week', CURRENT_DATE) ${ecoleCond}
-      `, baseParams),
-
-      db.query(`
-        SELECT COUNT(*) AS total FROM vue_position_academique e
-        WHERE e.annee_academique_id = $1 AND e.site_id = $2
-          AND e.date_inscription::date >= date_trunc('week', CURRENT_DATE) - INTERVAL '7 days'
-          AND e.date_inscription::date < date_trunc('week', CURRENT_DATE) ${ecoleCond}
-      `, baseParams),
+      // ✅ Chantier Statistiques (2026-08-18) : source unique — voir
+      // services/statistiquesInscriptions.service.js. "Aujourd'hui/hier/cette semaine/semaine
+      // dernière" et l'évolution quotidienne étaient basés sur etudiant.date_inscription (date de
+      // création du dossier) SANS filtre standing pour les compteurs de période — un étudiant en
+      // attente de paiement était donc compté. Remplacé par historique_inscription.created_at
+      // (date réelle de validation caisse), et la fenêtre passe de 14 jours glissants au 1er jour
+      // de l'année académique (demande explicite).
+      getTotalInscrits(db, { siteId, ecoleId, anneeAcademiqueId }),
+      getInscriptionsValideesPeriodes(db, { siteId, ecoleId, anneeAcademiqueId }),
 
       db.query(`
         SELECT COALESCE(e.source_inscription, 'agent') AS source, COUNT(*) AS total FROM vue_position_academique e
@@ -71,12 +53,7 @@ exports.getDashboardScolarite = async (req, res) => {
         GROUP BY COALESCE(e.source_inscription, 'agent')
       `, baseParams),
 
-      db.query(`
-        SELECT e.date_inscription::date AS jour, COUNT(*) AS total FROM vue_position_academique e
-        WHERE e.annee_academique_id = $1 AND e.site_id = $2
-          AND e.date_inscription::date BETWEEN CURRENT_DATE - INTERVAL '13 days' AND CURRENT_DATE ${ecoleCond}
-        GROUP BY e.date_inscription::date ORDER BY jour
-      `, baseParams),
+      getEvolutionInscriptionsQuotidienne(db, { siteId, ecoleId, anneeAcademiqueId }),
 
       db.query(`
         SELECT ec.nom AS ecole, COUNT(*) AS total
@@ -153,16 +130,18 @@ exports.getDashboardScolarite = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
-        totalInscrits: parseInt(totalInscrits.rows[0].total, 10),
-        inscriptionsAujourdhui: parseInt(aujourdhui.rows[0].total, 10),
-        inscriptionsHier: parseInt(hier.rows[0].total, 10),
-        inscriptionsCetteSemaine: parseInt(cetteSemaine.rows[0].total, 10),
-        inscriptionsSemaineDerniere: parseInt(semaineDerniere.rows[0].total, 10),
+        totalInscrits,
+        inscriptionsAujourdhui: inscriptionsPeriodes.aujourd_hui,
+        inscriptionsHier: inscriptionsPeriodes.hier,
+        inscriptionsCetteSemaine: inscriptionsPeriodes.cette_semaine,
+        inscriptionsSemaineDerniere: inscriptionsPeriodes.semaine_derniere,
         origine: {
           web_pct: totalOrigine > 0 ? Math.round(((origineWeb ? parseInt(origineWeb.total, 10) : 0) / totalOrigine) * 100) : 0,
           agent_pct: totalOrigine > 0 ? Math.round(((origineAgent ? parseInt(origineAgent.total, 10) : 0) / totalOrigine) * 100) : 0,
         },
-        evolutionQuotidienne: evolutionResult.rows.map((r) => ({ jour: r.jour, total: parseInt(r.total, 10) })),
+        // ⚠️ Changement de forme (2026-08-18) : {jour, admissions, reinscriptions, total} depuis le
+        // 1er jour de l'année académique, au lieu de {jour, total} sur 14 jours glissants.
+        evolutionQuotidienne,
         parEcole: parEcoleResult.rows.map((r) => ({ ecole: r.ecole, total: parseInt(r.total, 10) })),
         parNiveau: parNiveauResult.rows.map((r) => ({ niveau: r.niveau, total: parseInt(r.total, 10) })),
         parFiliere: parFiliereResult.rows.map((r) => ({ filiere: r.filiere, total: parseInt(r.total, 10) })),

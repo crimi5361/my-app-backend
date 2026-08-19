@@ -11,6 +11,7 @@
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
+const { getTotalInscrits, getInscriptionsValidees } = require('../services/statistiquesInscriptions.service');
 
 exports.getDashboardAdministrateur = async (req, res) => {
   const debutRequete = Date.now();
@@ -45,6 +46,7 @@ exports.getDashboardAdministrateur = async (req, res) => {
       journalEcolesResult,
       journalDepartementsResult,
       dossiersEnAttente,
+      inscriptionsValidees,
     ] = await Promise.all([
       db.query(`
         SELECT r.nom AS role, u.statut, COUNT(*) AS total
@@ -88,12 +90,11 @@ exports.getDashboardAdministrateur = async (req, res) => {
         ORDER BY a.annee DESC
       `, [siteId]),
 
-      // ✅ vue_position_academique (pas `etudiant` directement) : un étudiant réinscrit vers
-      // l'année suivante ne doit pas disparaître des effectifs de l'année qu'il vient de quitter.
-      db.query(`
-        SELECT COUNT(*) AS total FROM vue_position_academique e
-        WHERE e.site_id = $1 AND e.annee_academique_id = $2 AND e.standing = 'Inscrit'
-      `, [siteId, anneeAcademiqueId]),
+      // ✅ Chantier Statistiques (2026-08-18) : source unique — voir
+      // services/statistiquesInscriptions.service.js. Remplace un COUNT(*) local qui, à la
+      // différence de `etudiantsStatsResult` juste en dessous, n'appliquait PAS le cloisonnement
+      // école (ecoleCond) — un agent restreint à une école voyait ce total sur tout le site.
+      getTotalInscrits(db, { siteId, ecoleId, anneeAcademiqueId }),
 
       // Statistiques étudiants demandées explicitement (valeurs absolues, aucun pourcentage).
       db.query(`
@@ -143,6 +144,8 @@ exports.getDashboardAdministrateur = async (req, res) => {
       // Visibilité des dossiers en attente (admissions + réinscriptions), même définition/périmètre
       // que le dashboard Caisse — voir services/dossiersEnAttente.service.js.
       getDossiersEnAttenteParOrigine(db, { siteId, ecoleId, anneeAcademiqueId }),
+
+      getInscriptionsValidees(db, { siteId, ecoleId, anneeAcademiqueId }),
     ]);
 
     const parRoleRaw = agentsParRole.rows;
@@ -192,7 +195,7 @@ exports.getDashboardAdministrateur = async (req, res) => {
           temps_reponse_ms: Date.now() - debutRequete,
         },
         statistiques: {
-          totalEtudiants: parseInt(etudiantsResult.rows[0].total, 10),
+          totalEtudiants: etudiantsResult,
           totalAgentsActifs: totalActifs,
           totalAgentsDesactives: totalDesactives,
           nb_classes: parseInt(classesResult.rows[0].total, 10),
@@ -203,6 +206,8 @@ exports.getDashboardAdministrateur = async (req, res) => {
           femmes: parseInt(etudiantsStatsResult.rows[0].femmes, 10),
           inscriptions_web: parseInt(etudiantsStatsResult.rows[0].inscriptions_web, 10),
           inscriptions_agent: parseInt(etudiantsStatsResult.rows[0].inscriptions_agent, 10),
+          admissions_validees: inscriptionsValidees.admissions,
+          reinscriptions_validees: inscriptionsValidees.reinscriptions,
         },
         finance: {
           total_scolarite: parseFloat(financeResult.rows[0].total_scolarite),

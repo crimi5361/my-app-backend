@@ -1,5 +1,7 @@
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
+const { getInscriptionsValideesPeriodes } = require('../services/statistiquesInscriptions.service');
+const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
 
 exports.getStatsInscriptions = async (req, res) => {
   try {
@@ -27,13 +29,6 @@ exports.getStatsInscriptions = async (req, res) => {
       : '';
     if (ecoleId !== null) dateParams.push(ecoleId);
 
-    // Queries 2 et 4 ci-dessous n'utilisent jamais dateParams (pas de filtre date) : paramètre
-    // école toujours en position $3 pour elles.
-    const shortParams = [anneeAcademiqueId, departementId, ...(ecoleId !== null ? [ecoleId] : [])];
-    const ecoleCondAliasEShort = ecoleId !== null
-      ? 'AND e.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $3)'
-      : '';
-
     // 1. Nombre total d'étudiants inscrits
     // ✅ vue_position_academique (pas `etudiant` directement, ici et dans les requêtes suivantes
     // qui comptent des étudiants "de l'année $1") : etudiant.annee_academique_id n'est qu'une
@@ -49,37 +44,25 @@ exports.getStatsInscriptions = async (req, res) => {
         ${ecoleCondAliasE}
     `, dateParams);
 
-    // 2. Inscriptions aujourd'hui
-    const aujourdhui = await db.query(`
-      SELECT COUNT(*) AS total
-      FROM vue_position_academique e
-      WHERE e.annee_academique_id = $1
-        AND e.site_id = $2
-        AND DATE(e.date_inscription) = CURRENT_DATE
-        ${ecoleCondAliasEShort}
-    `, shortParams);
+    // 2. Inscriptions aujourd'hui + 4. Confirmés aujourd'hui
+    // ✅ Chantier Statistiques (2026-08-18) : ancienne requête #2 ne filtrait sur AUCUN standing
+    // (un dossier en attente de paiement créé aujourd'hui était compté comme "inscription
+    // aujourd'hui"), et les deux utilisaient etudiant.date_inscription (date de création du
+    // dossier) au lieu de la date réelle de finalisation caisse. Source unique désormais — voir
+    // services/statistiquesInscriptions.service.js. Les deux valeurs coïncident maintenant par
+    // construction (toutes deux = admissions+réinscriptions validées aujourd'hui).
+    const periodesValidees = await getInscriptionsValideesPeriodes(db, { siteId: departementId, ecoleId, anneeAcademiqueId });
+    const aujourdhui = { rows: [{ total: periodesValidees.aujourd_hui }] };
+    const confirmesAujourdhui = { rows: [{ total: periodesValidees.aujourd_hui }] };
 
     // 3. Étudiants en attente
-    const enAttente = await db.query(`
-      SELECT COUNT(*) AS total
-      FROM vue_position_academique e
-      WHERE e.annee_academique_id = $1
-        AND e.site_id = $2
-        AND e.standing = 'en attente'
-        ${dateCondition}
-        ${ecoleCondAliasE}
-    `, dateParams);
-
-    // 4. Confirmés aujourd'hui
-    const confirmesAujourdhui = await db.query(`
-      SELECT COUNT(*) AS total
-      FROM vue_position_academique e
-      WHERE e.annee_academique_id = $1
-        AND e.site_id = $2
-        AND e.standing = 'Inscrit'
-        AND DATE(e.date_inscription) = CURRENT_DATE
-        ${ecoleCondAliasEShort}
-    `, shortParams);
+    // ✅ Chantier Statistiques (2026-08-18) : l'ancienne requête ne comptait que les admissions en
+    // attente (etudiant.standing = 'en attente') — une réinscription en attente de paiement ne
+    // touche jamais etudiant.annee_academique_id/standing avant son passage en caisse (voir
+    // caisse.controller.js::validerPaiementReinscription), donc n'était JAMAIS comptée ici. Source
+    // unique désormais — voir services/dossiersEnAttente.service.js.
+    const dossiersEnAttenteStats = await getDossiersEnAttenteParOrigine(db, { siteId: departementId, ecoleId, anneeAcademiqueId });
+    const enAttente = { rows: [{ total: dossiersEnAttenteStats.admissions.total + dossiersEnAttenteStats.reinscriptions.total }] };
 
     // 5. Inscriptions par utilisateur
     const inscriptionsParUtilisateur = await db.query(`
@@ -226,28 +209,34 @@ exports.getStatsDetaillees = async (req, res) => {
       : '';
     if (ecoleId !== null) params.push(ecoleId);
 
-    const result = await db.query(`
-      SELECT 
-        -- Par statut
-        COUNT(*) FILTER (WHERE standing = 'Inscrit') AS total_inscrits,
-        COUNT(*) FILTER (WHERE standing = 'en attente') AS total_attente,
-        
-        -- Par genre
-        COUNT(*) FILTER (WHERE sexe = 'M') AS hommes,
-        COUNT(*) FILTER (WHERE sexe = 'F') AS femmes,
-        
-        -- Par période
-        COUNT(*) FILTER (WHERE DATE(date_inscription) = CURRENT_DATE) AS aujourdhui,
-        COUNT(*) FILTER (WHERE DATE(date_inscription) = CURRENT_DATE - INTERVAL '1 day') AS hier
+    // ✅ Chantier Statistiques (2026-08-18) : total_attente et aujourdhui/hier sourcés désormais
+    // sur la définition centralisée (services/statistiquesInscriptions.service.js) — l'ancien
+    // "aujourdhui"/"hier" ne filtrait sur aucun standing et utilisait date_inscription (création
+    // du dossier) au lieu de la date réelle de validation caisse.
+    const [result, periodesValidees, dossiersEnAttenteStats] = await Promise.all([
+      db.query(`
+        SELECT
+          COUNT(*) FILTER (WHERE standing = 'Inscrit') AS total_inscrits,
+          COUNT(*) FILTER (WHERE sexe = 'M') AS hommes,
+          COUNT(*) FILTER (WHERE sexe = 'F') AS femmes
+        FROM vue_position_academique
+        WHERE annee_academique_id = $1
+          AND site_id = $2
+          ${dateCondition}
+          ${ecoleCondNoAlias}
+      `, params),
+      getInscriptionsValideesPeriodes(db, { siteId: departementId, ecoleId, anneeAcademiqueId }),
+      getDossiersEnAttenteParOrigine(db, { siteId: departementId, ecoleId, anneeAcademiqueId }),
+    ]);
 
-      FROM vue_position_academique
-      WHERE annee_academique_id = $1
-        AND site_id = $2
-        ${dateCondition}
-        ${ecoleCondNoAlias}
-    `, params);
-
-    res.json(result.rows[0]);
+    res.json({
+      total_inscrits: result.rows[0].total_inscrits,
+      total_attente: dossiersEnAttenteStats.admissions.total + dossiersEnAttenteStats.reinscriptions.total,
+      hommes: result.rows[0].hommes,
+      femmes: result.rows[0].femmes,
+      aujourdhui: periodesValidees.aujourd_hui,
+      hier: periodesValidees.hier,
+    });
 
   } catch (error) {
     console.error('Erreur stats détaillées:', error);

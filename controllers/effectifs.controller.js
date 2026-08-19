@@ -5,6 +5,10 @@ const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 // est une position COURANTE, écrasée à chaque réinscription — un étudiant réinscrit disparaîtrait
 // sinon silencieusement des effectifs de son ancienne année. La vue UNIONne la position courante
 // et l'instantané figé (historique_inscription, événement 'cloture') des années déjà quittées.
+//
+// ✅ Correctif Chantier Statistiques (2026-08-18) : `nombre_inscrits`/`total_inscrits` ne
+// filtraient sur aucun standing — un étudiant en admission/réinscription encore en attente de
+// paiement était compté comme un effectif au même titre qu'un étudiant réellement inscrit.
 exports.getEffectifsParFiliereNiveau = async (req, res) => {
   const client = await db.connect();
 
@@ -35,6 +39,7 @@ exports.getEffectifsParFiliereNiveau = async (req, res) => {
       JOIN anneeacademique aa ON e.annee_academique_id = aa.id
       WHERE aa.id = $1
       AND e.site_id = $2  -- FILTRE PAR SITE
+      AND e.standing = 'Inscrit'
       AND ($3::int IS NULL OR f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3))  -- Chantier 3
       GROUP BY f.nom, f.sigle, n.libelle, c.type_parcours
       ORDER BY f.nom, n.libelle
@@ -49,6 +54,7 @@ exports.getEffectifsParFiliereNiveau = async (req, res) => {
       JOIN anneeacademique aa ON e.annee_academique_id = aa.id
       WHERE aa.id = $1
       AND e.site_id = $2  -- FILTRE PAR SITE
+      AND e.standing = 'Inscrit'
       AND ($3::int IS NULL OR e.id_filiere IN (SELECT id FROM filiere WHERE departement_id IN (SELECT id FROM departement WHERE ecole_id = $3)))  -- Chantier 3
     `;
 

@@ -1,5 +1,11 @@
 const db = require('../config/db.config');
 
+// ✅ Correctif Chantier Statistiques (2026-08-18) : `total`/`total_etudiants` comptaient TOUS les
+// étudiants positionnés sur l'année (admissions/réinscriptions encore en attente de paiement
+// comprises), alors que la colonne voisine `inscriptions` était déjà correctement filtrée par
+// `standing = 'Inscrit'`. Toutes les requêtes ci-dessous filtrent désormais sur ce même standing —
+// un étudiant en attente de paiement n'est officiellement inscrit nulle part sur cette page.
+//
 // ✅ Toutes les requêtes ci-dessous sourcent vue_position_academique (pas `etudiant` directement) :
 // etudiant.annee_academique_id n'est qu'une position COURANTE, écrasée à chaque réinscription — un
 // étudiant réinscrit vers l'année suivante ne doit pas disparaître rétroactivement des statistiques
@@ -31,7 +37,7 @@ exports.getStatisticsByCycle = async (req, res) => {
             INNER JOIN niveau n ON e.niveau_id = n.id
             INNER JOIN filiere f ON n.filiere_id = f.id
             INNER JOIN typefiliere tf ON f.type_filiere_id = tf.id
-            WHERE e.annee_academique_id = $1 AND e.site_id = $2
+            WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
             GROUP BY tf.id, tf.libelle
             ORDER BY tf.libelle
         `;
@@ -67,7 +73,7 @@ exports.getStatisticsByNiveau = async (req, res) => {
                 COUNT(*) as total
             FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
-            WHERE e.annee_academique_id = $1 AND e.site_id = $2
+            WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
             GROUP BY n.libelle
             ORDER BY 
                  CASE 
@@ -120,7 +126,7 @@ exports.getStatisticsByCursus = async (req, res) => {
             FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
             INNER JOIN curcus c ON e.curcus_id = c.id
-            WHERE e.annee_academique_id = $1 AND e.site_id = $2
+            WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
             GROUP BY c.id, c.type_parcours
             ORDER BY c.type_parcours
         `;
@@ -162,7 +168,7 @@ exports.getStatisticsByFiliere = async (req, res) => {
             INNER JOIN niveau n ON e.niveau_id = n.id
             INNER JOIN filiere f ON n.filiere_id = f.id
             INNER JOIN typefiliere tf ON f.type_filiere_id = tf.id
-            WHERE e.annee_academique_id = $1 AND e.site_id = $2
+            WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
             GROUP BY f.id, f.nom, f.sigle, tf.libelle, n.libelle, n.id
             ORDER BY f.nom, 
                 CASE 
@@ -246,32 +252,32 @@ exports.getDetailedStatistics = async (req, res) => {
                 INNER JOIN niveau n ON e.niveau_id = n.id
                 INNER JOIN filiere f ON n.filiere_id = f.id
                 INNER JOIN typefiliere tf ON f.type_filiere_id = tf.id
-                WHERE e.annee_academique_id = $1 AND e.site_id = $2
+                WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
                 GROUP BY tf.libelle
             `, [annee_academique_id, departement_id]),
-            
+
             db.query(`
                 SELECT n.libelle as niveau, COUNT(*) as total
                 FROM vue_position_academique e
                 INNER JOIN niveau n ON e.niveau_id = n.id
-                WHERE e.annee_academique_id = $1 AND e.site_id = $2
+                WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
                 GROUP BY n.libelle
             `, [annee_academique_id, departement_id]),
-            
+
             db.query(`
                 SELECT c.type_parcours as cursus, COUNT(*) as total
                 FROM vue_position_academique e
                 INNER JOIN curcus c ON e.curcus_id = c.id
-                WHERE e.annee_academique_id = $1 AND e.site_id = $2
+                WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
                 GROUP BY c.type_parcours
             `, [annee_academique_id, departement_id]),
-            
+
             db.query(`
                 SELECT f.nom as filiere, COUNT(*) as total
                 FROM vue_position_academique e
                 INNER JOIN niveau n ON e.niveau_id = n.id
                 INNER JOIN filiere f ON n.filiere_id = f.id
-                WHERE e.annee_academique_id = $1 AND e.site_id = $2
+                WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
                 GROUP BY f.nom
             `, [annee_academique_id, departement_id])
         ]);

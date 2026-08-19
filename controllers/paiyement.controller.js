@@ -147,11 +147,12 @@ exports.createPaiement = async (req, res) => {
         f.type_filiere_id,
         tf.libelle as type_filiere,
         n.libelle as niveau,
-        s.scolarite_verse, 
+        s.scolarite_verse,
         s.montant_scolarite,
-        s.scolarite_restante, 
+        s.scolarite_restante,
         s.id as scolarite_id,
         s.statut_etudiant,
+        e.statut_scolaire,
         p.montant_reduction
       FROM etudiant e
 	    JOIN curcus c ON e.curcus_id = c.id
@@ -246,11 +247,28 @@ exports.createPaiement = async (req, res) => {
         filiereId: etudiant.id_filiere,
         niveauId: etudiant.niveau_id,
       });
+      const groupeId = groupePrimaireId || null;
       if (groupePrimaireId) {
         await client.query(`UPDATE etudiant SET standing = 'Inscrit', groupe_id = $1 WHERE id = $2`, [groupePrimaireId, etudiant_id]);
       } else {
         await client.query(`UPDATE etudiant SET standing = 'Inscrit' WHERE id = $1`, [etudiant_id]);
       }
+
+      // ✅ Correctif Chantier Statistiques (2026-08-18) : ce chemin de finalisation (Scolarité →
+      // Effectuer un paiement) est le seul, avec caisse.controller.js, à faire passer standing à
+      // 'Inscrit' — mais il n'écrivait jusqu'ici aucune trace dans historique_inscription, la
+      // table utilisée comme source de vérité pour "admissions/réinscriptions validées" et pour
+      // la date réelle de finalisation (services/statistiquesInscriptions.service.js). Toujours
+      // 'admission' ici : cet endpoint ne fait jamais évoluer niveau_id/id_filiere/annee_academique_id
+      // (contrairement à validerPaiementReinscription), donc ne traite jamais une réinscription.
+      await client.query(
+        `INSERT INTO historique_inscription (
+           etudiant_id, type_evenement, annee_academique_id, niveau_id, id_filiere, groupe_id,
+           statut_scolaire, montant_scolarite, scolarite_verse, scolarite_restante, statut_paiement, valide_par, curcus_id
+         ) VALUES ($1, 'admission', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [etudiant_id, anneeAcademiqueId, etudiant.niveau_id, etudiant.id_filiere, groupeId,
+         etudiant.statut_scolaire, totalScolarite, newScolariteVerse, newScolariteRestante, statutEtudiant, userId, etudiant.curcus_id ?? null]
+      );
     }
 
     await client.query('COMMIT');

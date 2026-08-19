@@ -20,13 +20,23 @@
 // `getSoldesStockParEmplacement` et `getEvolutionDistributionsMensuelle` sont les mêmes fonctions
 // de service que celles utilisées par le Dashboard Moyens Généraux (sous-phase 3/8). Le nombre
 // total d'inscrits n'est PAS requêté une seconde fois : le bloc réutilise directement
-// `etudiantsResult.total_inscrits`, déjà calculé ci-dessous pour le reste du dashboard.
+// `totalInscrits`, déjà calculé ci-dessous pour le reste du dashboard.
+//
+// ✅ Chantier Statistiques & Dashboards (2026-08-18) : "Étudiants inscrits", "admissions/
+// réinscriptions validées", l'évolution quotidienne des inscriptions et celle des recettes
+// viennent désormais de services/statistiquesInscriptions.service.js — source unique, réutilisée
+// à l'identique par les dashboards Scolarité et Administrateur (ne plus dupliquer ces requêtes ici
+// si un nouveau bloc du même type est ajouté).
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const {
   getEmplacementStockPourSite, getSoldesStockParEmplacement, getEtudiantsServis, getEvolutionDistributionsMensuelle,
 } = require('../services/stockMoyensGeneraux.service');
 const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
+const {
+  getTotalInscrits, getInscriptionsValidees, getInscriptionsValideesPeriodes,
+  getEvolutionInscriptionsQuotidienne, getEvolutionRecettesQuotidienne,
+} = require('../services/statistiquesInscriptions.service');
 
 exports.getDashboardFondateur = async (req, res) => {
   try {
@@ -43,11 +53,6 @@ exports.getDashboardFondateur = async (req, res) => {
       : '';
     const etudiantParams = ecoleId !== null ? [anneeAcademiqueId, siteId, ecoleId] : [anneeAcademiqueId, siteId];
 
-    const ecoleCondPaiement = ecoleId !== null
-      ? 'AND p.etudiant_id IN (SELECT ex.id FROM etudiant ex WHERE ex.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $3))'
-      : '';
-    const paiementParams = ecoleId !== null ? [anneeAcademiqueId, siteId, ecoleId] : [anneeAcademiqueId, siteId];
-
     const caissesParams = ecoleId !== null ? [siteId, ecoleId] : [siteId];
 
     // Résolu une fois, réutilisé par les 3 appels de service Moyens Généraux ci-dessous — même
@@ -55,16 +60,17 @@ exports.getDashboardFondateur = async (req, res) => {
     const emplacementStockId = await getEmplacementStockPourSite(db, siteId);
 
     const [
-      etudiantsResult,
-      inscriptionsResult,
+      totalInscrits,
+      inscriptionsValidees,
+      inscriptionsPeriodes,
       parStatutScolaireResult,
       parCursusResult,
       parEcoleResult,
       parFiliereResult,
       parNiveauResult,
-      evolutionResult,
+      evolutionInscriptions,
       financeResult,
-      evolutionFinanceResult,
+      evolutionRecettes,
       pecResult,
       caissesResult,
       moyensGenerauxEtudiantsServis,
@@ -72,22 +78,14 @@ exports.getDashboardFondateur = async (req, res) => {
       moyensGenerauxEvolution,
       dossiersEnAttente,
     ] = await Promise.all([
-      db.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE e.standing = 'Inscrit') AS total_inscrits,
-          COUNT(*) FILTER (WHERE e.standing = 'en attente') AS total_en_attente,
-          COUNT(*) AS total_general
-        FROM vue_position_academique e WHERE e.annee_academique_id = $1 AND e.site_id = $2 ${ecoleCondEtudiant}
-      `, etudiantParams),
-
-      db.query(`
-        SELECT
-          COUNT(*) AS total_annee,
-          COUNT(*) FILTER (WHERE e.date_inscription::date = CURRENT_DATE) AS aujourd_hui,
-          COUNT(*) FILTER (WHERE e.date_inscription::date >= date_trunc('week', CURRENT_DATE)) AS cette_semaine,
-          COUNT(*) FILTER (WHERE e.date_inscription::date >= date_trunc('month', CURRENT_DATE)) AS ce_mois
-        FROM vue_position_academique e WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit' ${ecoleCondEtudiant}
-      `, etudiantParams),
+      // ✅ Chantier Statistiques (2026-08-18) : source unique — voir
+      // services/statistiquesInscriptions.service.js. Remplace l'ancien COUNT(*) sur
+      // vue_position_academique.standing (KPI "Étudiants inscrits") et l'ancien bloc
+      // "inscriptions" basé sur etudiant.date_inscription (date de CRÉATION du dossier, jamais la
+      // date de finalisation caisse) par historique_inscription.created_at.
+      getTotalInscrits(db, { siteId, ecoleId, anneeAcademiqueId }),
+      getInscriptionsValidees(db, { siteId, ecoleId, anneeAcademiqueId }),
+      getInscriptionsValideesPeriodes(db, { siteId, ecoleId, anneeAcademiqueId }),
 
       db.query(`
         SELECT COALESCE(e.statut_scolaire, 'Non défini') AS statut, COUNT(*) AS total
@@ -125,13 +123,11 @@ exports.getDashboardFondateur = async (req, res) => {
         GROUP BY n.libelle ORDER BY total DESC
       `, etudiantParams),
 
-      db.query(`
-        SELECT e.date_inscription::date AS jour, COUNT(*) AS total
-        FROM vue_position_academique e
-        WHERE e.annee_academique_id = $1 AND e.site_id = $2
-          AND e.date_inscription::date BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE ${ecoleCondEtudiant}
-        GROUP BY e.date_inscription::date ORDER BY jour
-      `, etudiantParams),
+      // Évolution quotidienne des inscriptions VALIDÉES (admissions + réinscriptions), depuis le
+      // 1er jour de l'année académique sélectionnée pour ce site — remplace l'ancienne fenêtre
+      // "30 derniers jours" basée sur etudiant.date_inscription (date de création du dossier, pas
+      // de finalisation caisse).
+      getEvolutionInscriptionsQuotidienne(db, { siteId, ecoleId, anneeAcademiqueId }),
 
       // Situation financière globale — uniquement scolarité/versé/restant, aucun autre détail
       // comptable (pas de répartition par méthode, pas de détail par caisse : ça reste le rôle
@@ -148,16 +144,11 @@ exports.getDashboardFondateur = async (req, res) => {
         WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit' ${ecoleCondEtudiant}
       `, etudiantParams),
 
-      // Graphique principal de la section financière — évolution des recettes du site sur
-      // l'ensemble de l'année académique sélectionnée (agrégation mensuelle), remplace l'ancien
-      // graphique "30 derniers jours" jugé trop court pour un pilotage stratégique. Même jointure
-      // caisse→site que Dashboard Comptabilité.
-      db.query(`
-        SELECT date_trunc('month', p.date_paiement) AS mois, COALESCE(SUM(p.montant), 0) AS total
-        FROM paiement p JOIN caisse c ON c.id = p.caisse_id
-        WHERE p.annee_academique_id = $1 AND c.site_id = $2 ${ecoleCondPaiement}
-        GROUP BY date_trunc('month', p.date_paiement) ORDER BY mois
-      `, paiementParams),
+      // Graphique principal de la section financière — évolution QUOTIDIENNE des recettes du site
+      // sur l'ensemble de l'année académique sélectionnée (remplace l'agrégation mensuelle :
+      // demande explicite 2026-08-18, cohérent avec le graphique quotidien déjà utilisé par le
+      // Dashboard Comptabilité). Source paiement.date_paiement, inchangée.
+      getEvolutionRecettesQuotidienne(db, { siteId, ecoleId, anneeAcademiqueId }),
 
       // ✅ Filtre sur p.annee_academique_id (capturé à la création de la PEC) au lieu de la
       // position courante de l'étudiant.
@@ -197,29 +188,34 @@ exports.getDashboardFondateur = async (req, res) => {
       success: true,
       data: {
         etudiants: {
-          total_inscrits: parseInt(etudiantsResult.rows[0].total_inscrits, 10),
-          total_en_attente: parseInt(etudiantsResult.rows[0].total_en_attente, 10),
-          total_general: parseInt(etudiantsResult.rows[0].total_general, 10),
+          total_inscrits: totalInscrits,
+          total_en_attente: dossiersEnAttente.admissions.total,
+          admissions_validees: inscriptionsValidees.admissions,
+          reinscriptions_validees: inscriptionsValidees.reinscriptions,
           par_statut_scolaire: parStatutScolaireResult.rows.map((r) => ({ statut: r.statut, total: parseInt(r.total, 10) })),
         },
         parCursus: parCursusResult.rows.map((r) => ({ cursus: r.cursus, total: parseInt(r.total, 10) })),
         inscriptions: {
-          total_annee: parseInt(inscriptionsResult.rows[0].total_annee, 10),
-          aujourd_hui: parseInt(inscriptionsResult.rows[0].aujourd_hui, 10),
-          cette_semaine: parseInt(inscriptionsResult.rows[0].cette_semaine, 10),
-          ce_mois: parseInt(inscriptionsResult.rows[0].ce_mois, 10),
+          total_annee: inscriptionsPeriodes.total_annee,
+          aujourd_hui: inscriptionsPeriodes.aujourd_hui,
+          cette_semaine: inscriptionsPeriodes.cette_semaine,
+          ce_mois: inscriptionsPeriodes.ce_mois,
         },
         parEcole: parEcoleResult.rows.map((r) => ({ ecole: r.ecole, total: parseInt(r.total, 10) })),
         parFiliere: parFiliereResult.rows.map((r) => ({ filiere: r.filiere, total: parseInt(r.total, 10) })),
         parNiveau: parNiveauResult.rows.map((r) => ({ niveau: r.niveau, total: parseInt(r.total, 10) })),
-        evolutionInscriptions: evolutionResult.rows.map((r) => ({ jour: r.jour, total: parseInt(r.total, 10) })),
+        // ⚠️ Changement de forme (2026-08-18) : {jour, admissions, reinscriptions, total} par jour
+        // depuis le 1er jour de l'année académique, au lieu de {jour, total} sur 30 jours glissants.
+        evolutionInscriptions,
         finance: {
           total_scolarite: parseFloat(financeResult.rows[0].total_scolarite),
           total_verse: parseFloat(financeResult.rows[0].total_verse),
           total_restant: parseFloat(financeResult.rows[0].total_restant),
           total_pec: parseFloat(pecResult.rows[0].total),
           nombre_pec: parseInt(pecResult.rows[0].nombre, 10),
-          evolution_recettes: evolutionFinanceResult.rows.map((r) => ({ mois: r.mois, total: parseFloat(r.total) })),
+          // ⚠️ Changement de forme (2026-08-18) : {jour, total} quotidien au lieu de {mois, total}
+          // mensuel — le frontend devra adapter dataKey="mois" → dataKey="jour" (Phase frontend).
+          evolution_recettes: evolutionRecettes,
         },
         caisses: {
           nb_caisses: parseInt(caissesResult.rows[0].nb_caisses, 10),
@@ -230,7 +226,6 @@ exports.getDashboardFondateur = async (req, res) => {
         // Moyens Généraux (sous-phase 12) — indicateurs de pilotage uniquement, aucune action de
         // gestion : cohérent avec la philosophie du reste de ce dashboard.
         moyensGeneraux: (() => {
-          const totalInscrits = parseInt(etudiantsResult.rows[0].total_inscrits, 10);
           const etudiantsRestants = Math.max(totalInscrits - moyensGenerauxEtudiantsServis, 0);
           const tauxCouverture = totalInscrits > 0 ? Math.round((moyensGenerauxEtudiantsServis / totalInscrits) * 100) : 0;
 

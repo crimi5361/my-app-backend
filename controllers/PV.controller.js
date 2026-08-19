@@ -2598,13 +2598,20 @@ exports.getStatsResultats = async (req, res) => {
         }
 
         // Récupérer les filières, niveaux et années pour les filtres
+        // ✅ Fix bug année→filière→niveau (2026-08-17) : `niveau` a une colonne `anneeacademique_id`
+        // — cette requête ne la filtrait pas du tout et ramenait donc les niveaux de TOUTES les
+        // années pour toutes les filières, faisant apparaître dans le filtre "Niveau" des niveaux
+        // appartenant en réalité à la configuration d'une autre année académique. Filtrée ici
+        // uniquement quand une année est sélectionnée (comportement inchangé sinon).
         const filieresQuery = `SELECT id, nom, sigle, type_filiere_id FROM filiere ORDER BY nom`;
-        const niveauxQuery = `SELECT id, libelle, filiere_id, prix_formation FROM niveau ORDER BY libelle`;
+        const niveauxQuery = anneeAcademiqueId
+            ? `SELECT id, libelle, filiere_id, prix_formation FROM niveau WHERE anneeacademique_id = $1 ORDER BY libelle`
+            : `SELECT id, libelle, filiere_id, prix_formation FROM niveau ORDER BY libelle`;
         const anneeQuery = `SELECT id, annee FROM anneeacademique ORDER BY annee DESC`;
 
         const [filieresResult, niveauxResult, anneeResult] = await Promise.all([
             db.query(filieresQuery),
-            db.query(niveauxQuery),
+            db.query(niveauxQuery, anneeAcademiqueId ? [anneeAcademiqueId] : []),
             db.query(anneeQuery)
         ]);
 
@@ -2700,7 +2707,12 @@ exports.getStatsResultats = async (req, res) => {
                 eligible_classe_superieure: e.eligible_classe_superieure,
                 type_filiere: e.type_filiere || null,
                 credits_valides: e.credits_valides,
-                credits_total: e.credits_total
+                credits_total: e.credits_total,
+                // ✅ Statut financier SOLDE/NON_SOLDE (2026-08-17) — déjà résolu par année dans la
+                // requête étudiants ci-dessus (vue_position_academique.statut_paiement, ou
+                // scolarite.statut_etudiant courant si aucune année sélectionnée), transitait déjà
+                // à travers traiterUnGroupe (spread `...etudiant`) mais n'était jamais réexposé ici.
+                statut_etudiant: e.statut_etudiant || null
             })),
             filieres: filieresResult.rows,
             niveaux: niveauxResult.rows,
