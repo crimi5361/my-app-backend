@@ -71,6 +71,7 @@ exports.chat = async (req, res) => {
       // Classeurs et rapports produits pendant le tour, à télécharger.
       fichiers: resultat.fichiers,
       fiches: resultat.fiches,
+      navigation: resultat.navigation,
       history: resultat.historique,
     });
   } catch (error) {

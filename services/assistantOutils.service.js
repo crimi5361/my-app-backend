@@ -15,6 +15,8 @@ const google = require('./assistantGoogle.service');
 const { chercherWeb } = require('./assistantWeb.service');
 const { chercherPersonnes, construireFiche } = require('./assistantFiche.service');
 const { rapportPersonne } = require('./assistantFicheRapport');
+const { destinationValide, catalogueTexte } = require('../config/destinations');
+const { intentionOuiNon } = require('./assistantIntention');
 
 // ---------------------------------------------------------------------------
 //  Identité — reprise mot pour mot par les deux canaux
@@ -85,6 +87,26 @@ const BLOC_CAPACITES = `## Ce que tu sais faire (à n'énumérer que si on te le
 9. Faire le point sur les messages reçus dans la boîte du fondateur.
 10. Rédiger un message, le lui lire, et ne l'envoyer qu'après son accord.
 11. Afficher la fiche d'identité d'une personne à l'écran, photo comprise.`;
+
+const BLOC_NAVIGATION = `## Conduire le fondateur vers un écran
+
+Tu connais les écrans du tableau de bord. Quand il cherche une information ou
+une action qui s'y trouve, NOMME l'écran et propose de l'y emmener :
+« Ça se trouve dans les effectifs. Voulez-vous que je vous y conduise ? »
+
+Puis appelle \`ouvrir_ecran\` en passant le chemin ET sa réponse mot pour mot.
+C'est l'outil qui tranche, pas toi : tu ne décides pas seul de quitter la
+conversation.
+
+S'il accepte, l'écran s'ouvre et LA CONVERSATION VOCALE SE TERMINE — c'est
+voulu, il part travailler. Annonce-le en une phrase courte avant, pour qu'il ne
+soit pas surpris de te voir disparaître.
+
+Ne propose un écran que s'il répond vraiment à la question. Si tu peux donner
+le chiffre toi-même, donne-le : ouvrir un écran pour un nombre que tu sais déjà
+lui fait perdre du temps.
+
+${catalogueTexte()}`;
 
 const BLOC_PROTECTION = `## Données protégées
 
@@ -587,6 +609,40 @@ const DECLARATION_RAPPORT_PERSONNE = {
 
 DECLARATIONS.push(DECLARATION_FICHE, DECLARATION_RAPPORT_PERSONNE);
 
+/**
+ * Redirection vers un écran du tableau de bord.
+ *
+ * Le chemin est VALIDÉ contre une liste fermée : il vient du modèle, donc c'est
+ * du texte non fiable, et une route inventée ne doit pas pouvoir être ouverte.
+ *
+ * Comme pour le débriefing, c'est le serveur qui lit l'accord — quitter la
+ * conversation est une action qu'on ne déclenche pas sur une interprétation.
+ */
+const DECLARATION_ECRAN = {
+  name: 'ouvrir_ecran',
+  description:
+    "Conduit le fondateur vers un ecran du tableau de bord. A appeler APRES lui avoir propose de "
+    + "l'y emmener, en passant sa reponse mot pour mot : c'est l'outil qui decide si c'est un accord. "
+    + "S'il accepte, l'ecran s'ouvre et la conversation vocale se termine. N'appelle jamais cet outil "
+    + "sans avoir propose d'abord.",
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      chemin: {
+        type: Type.STRING,
+        description: "Chemin exact de l'ecran, repris du catalogue. Exemple : /Etudiant/Effectifs",
+      },
+      reponse: {
+        type: Type.STRING,
+        description: "Ce que le fondateur vient de repondre, mot pour mot.",
+      },
+    },
+    required: ['chemin', 'reponse'],
+  },
+};
+
+DECLARATIONS.push(DECLARATION_ECRAN);
+
 /** Consultation du web. N'est proposee au modele QUE si le fondateur l'a
  *  activee dans les reglages : une reponse venue du web n'a pas le meme statut
  *  qu'un chiffre de la base, et le choix lui revient. */
@@ -681,6 +737,31 @@ async function executerOutil(nom, args = {}, { siteId, ecoleId = null, utilisate
         correspondance: trouve.approchant ? 'approchante' : 'exacte',
         instruction: "La fiche se dessine a son ecran. Annonce-la en une phrase, ne recite pas son "
           + "contenu, puis demande-lui s'il veut le rapport detaille.",
+      },
+    };
+  }
+
+  if (nom === 'ouvrir_ecran') {
+    const cible = destinationValide(args?.chemin);
+    if (!cible) {
+      return { reponse: { erreur: `Ecran inconnu : ${args?.chemin}. Reprends un chemin du catalogue.` } };
+    }
+    const intention = intentionOuiNon(args?.reponse);
+    if (intention !== 'oui') {
+      return { reponse: {
+        ouvert: false,
+        instruction: intention === 'non'
+          ? "Il ne veut pas quitter la conversation. Reste avec lui et enchaine."
+          : "Sa reponse n'est pas claire. Redemande une seule fois s'il veut que tu l'y conduises.",
+      } };
+    }
+    return {
+      navigation: { chemin: cible.chemin, libelle: cible.libelle },
+      reponse: {
+        ouvert: true,
+        ecran: cible.libelle,
+        instruction: "Annonce en UNE phrase courte que tu l'y conduis. La conversation vocale se "
+          + "termine juste apres : ne pose pas d'autre question.",
       },
     };
   }
@@ -832,6 +913,7 @@ module.exports = {
   BLOC_CAPACITES,
   BLOC_PHOTOS,
   BLOC_PROTECTION,
+  BLOC_NAVIGATION,
   BLOC_RECHERCHE,
   BLOC_EXPERTISE,
   BLOC_AUDIT,

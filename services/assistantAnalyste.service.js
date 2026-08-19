@@ -14,7 +14,7 @@ const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { enregistrer, extraireUsage } = require('./assistantBudget.service');
 const { getReglages } = require('./assistantReglages.service');
 const {
-  construireIdentite, BLOC_CAPACITES, BLOC_PHOTOS, BLOC_PROTECTION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, executerOutil,
+  construireIdentite, BLOC_CAPACITES, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, executerOutil,
 } = require('./assistantOutils.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -103,6 +103,8 @@ ${BLOC_CAPACITES}
 ${BLOC_PHOTOS}
 
 ${BLOC_PROTECTION}
+
+${BLOC_NAVIGATION}
 
 ${BLOC_RECHERCHE}
 
@@ -226,6 +228,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
   const requetes = [];        // trace de ce qui a été exécuté, montrée au fondateur
   const fichiers = [];        // classeurs et rapports produits pendant le tour
   const fiches = [];          // fiches d'identite dessinees a l'ecran
+  let navigation = null;      // ecran vers lequel conduire le fondateur
   let dernierResultat = null; // alimente le graphique — jamais le modèle
 
   let tours = 0;
@@ -244,6 +247,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
       if (sortie.resultat?.ok) dernierResultat = sortie.resultat;
       if (sortie.fichier) fichiers.push(sortie.fichier);
       if (sortie.fiche) fiches.push(sortie.fiche);
+      if (sortie.navigation) navigation = sortie.navigation;
 
       reponsesOutils.push({ id: appel.id, name: appel.name, response: sortie.reponse });
     }
@@ -278,6 +282,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
     requetes,
     fichiers,
     fiches,
+    navigation,
     historique: chat.getHistory(),
   };
 }

@@ -19,7 +19,7 @@ const { GoogleGenAI, Modality, Type, EndSensitivity } = require('@google/genai')
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { verifierBudget, enregistrer, extraireUsage, getConsommationMois } = require('./assistantBudget.service');
 const {
-  construireIdentite, BLOC_CAPACITES, BLOC_PHOTOS, BLOC_PROTECTION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATION_GRAPHIQUE, executerOutil,
+  construireIdentite, BLOC_CAPACITES, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATION_GRAPHIQUE, executerOutil,
 } = require('./assistantOutils.service');
 const { formePour } = require('./assistantFormes.service');
 const { getReglages } = require('./assistantReglages.service');
@@ -209,6 +209,8 @@ ${BLOC_CAPACITES}
 ${BLOC_PHOTOS}
 
 ${BLOC_PROTECTION}
+
+${BLOC_NAVIGATION}
 
 ${BLOC_RECHERCHE}
 
@@ -647,6 +649,12 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
           // La fiche se dessine a l'ecran : elle ne repasse jamais par le modele,
           // qui n'en connait que le nom et l'identifiant.
           if (sortie.fiche) envoyer('fiche', { fiche: sortie.fiche });
+
+          // Redirection : le message part, la reponse d'outil est renvoyee pour
+          // que l'assistante annonce le depart, puis la session se ferme d'
+          // elle-meme apres sa phrase — la fermeture est declenchee cote
+          // navigateur, quand il a fini de l'entendre parler.
+          if (sortie.navigation) envoyer('navigation', sortie.navigation);
 
           reponses.push({ id: appel.id, name: appel.name, response: sortie.reponse });
         }
