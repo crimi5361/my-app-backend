@@ -36,12 +36,14 @@ const NOMS_VOIX = new Set(VOIX.map((v) => v.nom));
  * La table `utilisateur` ne porte aucun genre : ni colonne `civilite`, ni
  * `sexe`. Plutôt que d'écrire « Monsieur » en dur — ce qui obligerait à
  * redéployer le jour où une femme occupe le poste — la civilité est un réglage
- * du site. La chaîne vide donne une formule neutre : « Bonjour Koné Ismaël ».
+ * du site.
  *
  * Liste FERMÉE : cette valeur est prononcée par l'assistante et injectée dans
  * son instruction, elle ne peut pas être une saisie libre.
  */
-const CIVILITES = ['Monsieur', 'Madame', ''];
+// « Sans civilité » a été retiré à la demande du fondateur : l'assistante
+// s'adresse toujours à quelqu'un, et « Bonjour Koné Ismaël » sonnait sec.
+const CIVILITES = ['Monsieur', 'Madame'];
 const CIVILITE_PAR_DEFAUT = 'Monsieur';
 
 const DEFAUTS = {
