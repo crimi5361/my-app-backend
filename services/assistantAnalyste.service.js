@@ -14,7 +14,7 @@ const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { enregistrer, extraireUsage } = require('./assistantBudget.service');
 const { getReglages } = require('./assistantReglages.service');
 const {
-  construireIdentite, BLOC_CAPACITES, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, executerOutil,
+  construireIdentite, BLOC_CAPACITES, BLOC_PHOTOS, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, executerOutil,
 } = require('./assistantOutils.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -99,6 +99,8 @@ function construireInstruction(dictionnaire, aujourdhui, annees, reglages) {
   return `${construireIdentite(reglages.nom_assistant)}
 
 ${BLOC_CAPACITES}
+
+${BLOC_PHOTOS}
 
 ${BLOC_RECHERCHE}
 

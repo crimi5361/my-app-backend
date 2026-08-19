@@ -33,6 +33,7 @@ node migrations/run.js 2026-08-11_module_enseignants.sql
 | `2026-08-14_assistant_civilite.sql` | Civilité employée à l'accueil (`Monsieur` par défaut). La table `utilisateur` ne porte aucun genre : c'est la raison d'être de ce réglage. |
 | `2026-08-18_exposition_complete.sql` | Un reflet en lecture par table (`assistant.t_<table>`), cloisonné par site quand un chemin existe. Porte l'assistante de 29 à 73 tables. |
 | `2026-08-18b_exposition_email_backup.sql` | Dernière table exposée. Ne restent hors d'atteinte que `etudiant.password`, `utilisateur.mot_de_passe` et `assistant_google_compte.jeton_rafraichissement`. |
+| `2026-08-19_photo_disponible.sql` | Colonne `a_photo` sur `v_etudiants` : l'assistante sait enfin qui a une photo. Commentaires precisant que le personnel n'en a aucune. |
 
 ## Rôle de lecture de l'assistant
 

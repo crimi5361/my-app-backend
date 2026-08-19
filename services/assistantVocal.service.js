@@ -19,7 +19,7 @@ const { GoogleGenAI, Modality, Type, EndSensitivity } = require('@google/genai')
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { verifierBudget, enregistrer, extraireUsage, getConsommationMois } = require('./assistantBudget.service');
 const {
-  construireIdentite, BLOC_CAPACITES, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATION_GRAPHIQUE, executerOutil,
+  construireIdentite, BLOC_CAPACITES, BLOC_PHOTOS, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATION_GRAPHIQUE, executerOutil,
 } = require('./assistantOutils.service');
 const { formePour } = require('./assistantFormes.service');
 const { getReglages } = require('./assistantReglages.service');
@@ -205,6 +205,8 @@ function construireInstruction(dictionnaire, annees, aujourdhui, reglages, phras
 ${blocAccueil(phraseAccueil)}
 
 ${BLOC_CAPACITES}
+
+${BLOC_PHOTOS}
 
 ${BLOC_RECHERCHE}
 
