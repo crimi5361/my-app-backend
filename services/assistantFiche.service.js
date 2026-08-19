@@ -50,28 +50,8 @@ function motsDuTerme(terme) {
     .slice(0, MOTS_MAX);
 }
 
-/**
- * Condition « chaque mot cherché a un mot proche dans le nom ».
- *
- * POURQUOI PAS `word_similarity`, essayé d'abord et écarté : cette fonction
- * mesure à quel point le terme couvre UNE PORTION du nom. « grace » y vaut donc
- * 1,000 contre les deux cents personnes dont le nom contient « grace », et
- * « mani grace » remonte « GRACE MANUELLA » devant l'agent cherché. Elle
- * récompense exactement ce qu'il ne faut pas.
- *
- * Ici, chaque mot de la recherche doit trouver SON correspondant parmi les mots
- * du nom. C'est la version tolérante de `assistant.correspond`, et elle garde sa
- * propriété essentielle : tous les mots comptent.
- */
-function conditionApprochante(colonneNom, mots) {
-  return mots
-    .map((m) => `EXISTS (SELECT 1 FROM unnest(assistant.mots(${colonneNom})) mo `
-      + `WHERE similarity(mo, '${m}') > ${SEUIL_MOT})`)
-    .join(' AND ');
-}
-
 /** Assemble la requête de recherche à partir d'une condition par catégorie. */
-function requeteRecherche(condAgent, condEtudiant, tri) {
+function requeteRecherche(condAgent, condEtudiant, tri, filtre) {
   return `
     SELECT * FROM (
       SELECT 'agent'::text AS categorie,
@@ -98,9 +78,34 @@ function requeteRecherche(condAgent, condEtudiant, tri) {
       FROM assistant.t_etudiant e
       WHERE ${condEtudiant.ou}
     ) p
+    ${filtre ? `WHERE ${filtre}` : ''}
     ORDER BY ${tri}
     LIMIT ${MAX_CANDIDATS + 1}`;
 }
+
+/**
+ * Combien de mots cherchés se retrouvent dans le nom.
+ *
+ * Une SOMME et non un ET : c'est ce qui permet de trouver quelqu'un dont on
+ * cite un prénom de trop. Le résultat sert à la fois de filtre et de tri.
+ */
+function scoreMots(colonneNom, mots) {
+  return mots
+    .map((m) => `(CASE WHEN EXISTS (SELECT 1 FROM unnest(assistant.mots(${colonneNom})) mo `
+      + `WHERE similarity(mo, '${m}') > ${SEUIL_MOT}) THEN 1 ELSE 0 END)`)
+    .join(' + ');
+}
+
+/**
+ * Combien de mots doivent correspondre au minimum.
+ *
+ * Sur un ou deux mots, on exige tout : « koffi » seul relâché ramènerait la
+ * moitié de l'établissement. À partir de trois, on tolère UN mot en trop ou
+ * inexact — c'est le cas courant à l'oral, où l'on ajoute un prénom dont on
+ * n'est pas sûr. « Koffi Grace Amenan » retrouve ainsi les KOFFI AMENAN comme
+ * les KOFFI GRACE, les mieux appariés en tête.
+ */
+const seuilMots = (n) => (n <= 2 ? n : n - 1);
 
 /**
  * Retrouve les personnes qui correspondent à un terme.
@@ -164,19 +169,46 @@ async function chercherPersonnes(terme, { siteId, ecoleId = null }, categorie = 
     };
   }
 
-  // ── Passe 2 : approchant, mot par mot ────────────────────────────────────
+  // ── Passe 2 : approchante et RELÂCHÉE ────────────────────────────────────
+  //
+  // Le défaut qui a motivé cette passe : « Koffi Grace Amenan » rendait ZÉRO,
+  // alors que « Koffi Amenan » rendait quatre étudiantes et « Koffi Grace »
+  // huit. Exiger tous les mots condamne toute recherche où l'on cite un prénom
+  // de trop — ce qui arrive constamment à l'oral. On compte donc les mots
+  // trouvés au lieu de les exiger tous, et on classe par ce compte.
   const mots = motsDuTerme(t);
   if (!mots.length) return { ok: true, approchant: false, candidats: [], tronque: false };
 
-  // Le classement se fait sur la ressemblance du nom ENTIER : à conditions
-  // égales, le nom le plus proche en longueur passe devant.
-  const scoreAgent = `similarity(assistant.normaliser(a.agent), '${t}')`;
-  const scoreEtudiant = `similarity(assistant.normaliser(${nomEtudiant}), '${t}')`;
+  const minimum = seuilMots(mots.length);
   const flou = await executerRequete(
     requeteRecherche(
-      { ou: garder('agent') ? conditionApprochante('a.agent', mots) : jamais, score: scoreAgent },
-      { ou: garder('etudiant') ? conditionApprochante(nomEtudiant, mots) : jamais, score: scoreEtudiant },
+      {
+        ou: garder('agent') ? `${scoreMots('a.agent', mots)} >= ${minimum}` : jamais,
+        // L'annuaire ne sépare pas nom et prénoms ; le PREMIER MOT en tient
+        // lieu, comme partout dans cette base. Sans cette symétrie, un agent
+        // perdait systématiquement face à un étudiant homonyme, qui seul
+        // touchait le bonus de patronyme.
+        score: `${scoreMots('a.agent', mots)}`
+          + ` + 0.5 * (${scoreMots("split_part(a.agent, ' ', 1)", mots)})`
+          + ` + 0.4 * similarity(assistant.normaliser(a.agent), '${t}')`,
+      },
+      {
+        ou: garder('etudiant') ? `${scoreMots(nomEtudiant, mots)} >= ${minimum}` : jamais,
+        // Un mot retrouvé dans le NOM DE FAMILLE pèse une demi-unité de plus
+        // qu'un mot retrouvé dans les prénoms. Sans cette pondération,
+        // « Koffi Grace Amenan » plaçait KOUAKOU AMENAN GRACE devant
+        // KOFFI AMENAN : les deux ont deux mots sur trois, mais seul le second
+        // porte le patronyme demandé. La base sépare `nom` et `prenoms`, autant
+        // s'en servir.
+        score: `${scoreMots(nomEtudiant, mots)}`
+          + ` + 0.5 * (${scoreMots("COALESCE(e.nom,'')", mots)})`
+          + ` + 0.4 * similarity(assistant.normaliser(${nomEtudiant}), '${t}')`,
+      },
+      // Le score entier compte les mots trouvés, la décimale départage par
+      // ressemblance globale : un nom qui a tous les mots ET la bonne longueur
+      // passe devant un nom qui n'a que les mots.
       'p.score DESC, p.priorite, p.nom_complet',
+      null,
     ),
     { siteId, ecoleId, limiteLignes: MAX_CANDIDATS + 1 },
   );

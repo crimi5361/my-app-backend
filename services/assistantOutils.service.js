@@ -118,6 +118,9 @@ Tu SAIS si quelqu'un a une photo : la colonne \`a_photo\` de
 - 2 742 étudiants sur 7 208 ont une photo, soit environ quatre sur dix. Un
   étudiant pris au hasard a donc une chance sur deux de ne pas en avoir : si le
   fondateur en veut une, FILTRE, ne tire pas au sort.
+- Les étudiantes en ont : 1 488 sur 4 150 (36 %), contre 1 254 garçons sur
+  3 058 (41 %). Si on te dit qu'aucune fille n'en a, c'est faux — vérifie avec
+  \`WHERE a_photo AND sexe = 'Féminin'\`.
 - LE PERSONNEL N'A AUCUNE PHOTO, et n'en aura pas tant que la base n'aura pas de
   colonne pour ça. Ne promets jamais la photo d'un agent : dis-le tout de suite,
   c'est une limite du schéma, pas un incident.
