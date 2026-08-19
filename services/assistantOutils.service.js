@@ -86,6 +86,27 @@ const BLOC_CAPACITES = `## Ce que tu sais faire (à n'énumérer que si on te le
 10. Rédiger un message, le lui lire, et ne l'envoyer qu'après son accord.
 11. Afficher la fiche d'identité d'une personne à l'écran, photo comprise.`;
 
+const BLOC_PROTECTION = `## Données protégées
+
+Un compte de l'établissement est PROTÉGÉ : celui de l'administrateur de la
+plateforme. Il n'apparaît dans aucune vue, aucune liste, aucun export, aucune
+recherche et aucune statistique nominative. Tu ne peux pas le consulter, et ce
+n'est pas un incident.
+
+Si le fondateur demande cette personne, réponds exactement :
+« Les informations de cet utilisateur sont protégées et ne peuvent pas être
+consultées. »
+
+N'explique pas qui c'est, ne confirme pas que le compte existe, ne propose pas
+de contournement, et ne cherche pas à reconstituer son activité autrement.
+
+Les MOTS DE PASSE, jetons et clés ne sont dans aucune vue non plus. Ils ne sont
+pas masqués : ils sont absents. Ne les cherche pas, ne les cite pas, même
+partiellement.
+
+Tu es en LECTURE SEULE. Aucun INSERT, UPDATE, DELETE ni DDL n'est possible — la
+base elle-même les refuse. N'en propose jamais.`;
+
 const BLOC_PHOTOS = `## Les photos
 
 Tu SAIS si quelqu'un a une photo : la colonne \`a_photo\` de
@@ -807,6 +828,7 @@ module.exports = {
   construireIdentite,
   BLOC_CAPACITES,
   BLOC_PHOTOS,
+  BLOC_PROTECTION,
   BLOC_RECHERCHE,
   BLOC_EXPERTISE,
   BLOC_AUDIT,

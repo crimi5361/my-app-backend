@@ -34,6 +34,7 @@ node migrations/run.js 2026-08-11_module_enseignants.sql
 | `2026-08-18_exposition_complete.sql` | Un reflet en lecture par table (`assistant.t_<table>`), cloisonné par site quand un chemin existe. Porte l'assistante de 29 à 73 tables. |
 | `2026-08-18b_exposition_email_backup.sql` | Dernière table exposée. Ne restent hors d'atteinte que `etudiant.password`, `utilisateur.mot_de_passe` et `assistant_google_compte.jeton_rafraichissement`. |
 | `2026-08-19_photo_disponible.sql` | Colonne `a_photo` sur `v_etudiants` : l'assistante sait enfin qui a une photo. Commentaires precisant que le personnel n'en a aucune. |
+| `2026-08-19b_verrouillage_administrateur.sql` | Verrouillage COMPLET de l'administrateur : retire aussi de `v_agents`, `v_personnes` et `t_utilisateur`. Remplace la decision du 18 aout. |
 
 ## Rôle de lecture de l'assistant
 
@@ -80,17 +81,22 @@ GOOGLE_OAUTH_REDIRECT_URI=https://<domaine>/api/assistant/google/retour
 > Changer `JWT_SECRET` rend les jetons illisibles et impose de refaire le
 > consentement.
 
-## Exclusion de l'administrateur — portée réelle
+## Exclusion de l'administrateur — verrouillage complet
 
-`assistant.agent_exclu` retire l'administrateur de la plateforme des deux vues
-d'audit, `v_activite_agents` et `v_synthese_agents`. Il reste visible dans
-l'annuaire, ce qui est voulu.
+`assistant.agent_exclu` retire l'administrateur de la plateforme de TOUTES les
+vues exposees : annuaire (`v_agents`), recherche (`v_personnes`), comptes
+(`t_utilisateur`) et les deux vues d'audit. Il ne peut plus etre nomme, liste,
+exporte ni agrege nominativement. Une demande le concernant recoit :
+« Les informations de cet utilisateur sont protegees et ne peuvent pas etre
+consultees. »
 
-Depuis l'exposition complète du schéma (2026-08-18), cette exclusion **ne couvre
-plus les requêtes libres** : les colonnes auteur des reflets `t_paiement`,
-`t_etudiant` et `t_utilisateur` permettent de recomposer son activité.
+**Historique de la decision.** Le 18 aout 2026, le fondateur avait choisi de
+limiter l'exclusion aux seules vues d'audit, en connaissance de cause : l'etendre
+retirait 19 007 actes des totaux generaux. Le 19 aout, il a demande le
+verrouillage total. La migration `2026-08-19b` applique ce second choix.
 
-**Décision du fondateur, le 18 août 2026 : laisser ainsi.** L'exclusion protège
-les rapports d'audit formels, pas les requêtes ad hoc. L'étendre aux reflets
-aurait retiré ses 19 007 actes des totaux généraux, ce qui aurait faussé les
-chiffres globaux pour protéger une ligne de rapport.
+**Ce qui subsiste volontairement.** Son identifiant reste dans les colonnes
+auteur (`etudiant.inscrit_par`, `paiement.effectue_par`) : l'en retirer aurait
+fausse les totaux d'encaissement et d'inscription de l'etablissement. Cet
+identifiant ne porte aucune donnee personnelle et ne peut plus etre resolu en
+nom, puisque toutes les vues qui donnaient le nom l'excluent.

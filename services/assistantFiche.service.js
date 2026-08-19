@@ -306,7 +306,29 @@ async function ficheEtudiant(id, contexte) {
   };
 }
 
+/** Formule imposee pour toute personne protegee. Elle ne dit ni pourquoi ni
+ *  qui : confirmer l'existence du compte serait deja une information. */
+const REFUS_PROTEGE = "Les informations de cet utilisateur sont protegees et ne peuvent pas etre consultees.";
+
+/**
+ * La personne est-elle hors perimetre ?
+ *
+ * Les vues excluent deja l'administrateur, donc une fiche le concernant echoue
+ * naturellement. Ce controle sert a donner la BONNE RAISON : « aucun agent ne
+ * porte cet identifiant » laisserait croire a une erreur de saisie et
+ * inviterait a chercher encore.
+ */
+async function estProtege(id, { siteId, ecoleId = null }) {
+  const r = await executerRequete(
+    `SELECT COUNT(*)::int AS n FROM assistant.agent_exclu WHERE utilisateur_id = ${Number(id)}`,
+    { siteId, ecoleId, limiteLignes: 1 },
+  );
+  return r.ok && Number(r.lignes[0]?.n) > 0;
+}
+
 async function ficheAgent(id, contexte) {
+  if (await estProtege(id, contexte)) return { ok: false, protege: true, motif: REFUS_PROTEGE };
+
   const r = await executerRequete(`
     SELECT a.agent_id, a.agent, a.matricule, a.role, a.role_description,
            a.statut, a.site, a.ecole, u.email
@@ -374,4 +396,4 @@ async function construireFiche(categorie, id, contexte) {
   return { ok: false, motif: `Catégorie inconnue : ${categorie}.` };
 }
 
-module.exports = { chercherPersonnes, construireFiche, MAX_CANDIDATS };
+module.exports = { chercherPersonnes, construireFiche, MAX_CANDIDATS, REFUS_PROTEGE };
