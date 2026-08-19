@@ -35,6 +35,7 @@ node migrations/run.js 2026-08-11_module_enseignants.sql
 | `2026-08-18b_exposition_email_backup.sql` | Dernière table exposée. Ne restent hors d'atteinte que `etudiant.password`, `utilisateur.mot_de_passe` et `assistant_google_compte.jeton_rafraichissement`. |
 | `2026-08-19_photo_disponible.sql` | Colonne `a_photo` sur `v_etudiants` : l'assistante sait enfin qui a une photo. Commentaires precisant que le personnel n'en a aucune. |
 | `2026-08-19b_verrouillage_administrateur.sql` | Verrouillage COMPLET de l'administrateur : retire aussi de `v_agents`, `v_personnes` et `t_utilisateur`. Remplace la decision du 18 aout. |
+| `2026-08-19c_recherche_phonetique.sql` | `assistant.phonetique()` : Koffi, Kofi, Coffi, Kauffi, Kofy et Kophi rendent tous `kofi`. Deux index GIN. |
 
 ## Rôle de lecture de l'assistant
 

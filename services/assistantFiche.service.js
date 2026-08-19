@@ -92,7 +92,20 @@ function requeteRecherche(condAgent, condEtudiant, tri, filtre) {
 function scoreMots(colonneNom, mots) {
   return mots
     .map((m) => `(CASE WHEN EXISTS (SELECT 1 FROM unnest(assistant.mots(${colonneNom})) mo `
-      + `WHERE similarity(mo, '${m}') > ${SEUIL_MOT}) THEN 1 ELSE 0 END)`)
+      // DEUX FILETS, et ils ne rattrapent pas les mêmes choses.
+      //
+      //   • les TRIGRAMMES absorbent la lettre en trop ou en moins :
+      //     mani ↔ manni, amenan ↔ amenane ;
+      //   • la CLÉ PHONÉTIQUE absorbe l'orthographe entière : Koffi, Kofi,
+      //     Coffi, Kauffi, Kofy et Kophi rendent tous « kofi ».
+      //
+      // Le second était demandé explicitement — « qu'il essaie Koffi avec un F,
+      // avec deux F, avec O, avec AU ». Une clé commune couvre ces formes et
+      // celles qu'on n'aurait pas pensé à écrire, sans énumérer quoi que ce
+      // soit, et sans pouvoir déborder : les lettres répétées sont écrasées,
+      // donc « Koffi avec cinq F » n'existe pas.
+      + `WHERE similarity(mo, '${m}') > ${SEUIL_MOT} `
+      + `OR assistant.phonetique(mo) = assistant.phonetique('${m}')) THEN 1 ELSE 0 END)`)
     .join(' + ');
 }
 
