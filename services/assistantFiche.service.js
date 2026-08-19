@@ -193,118 +193,10 @@ async function chercherPersonnes(terme, { siteId, ecoleId = null }, categorie = 
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-//  Fiche — l'essentiel, pour l'écran
+//  Fiche — TOUT ce que la base contient sur la personne
 // ───────────────────────────────────────────────────────────────────────────
-
-const vide = (v) => v === null || v === undefined || String(v).trim() === '' || String(v).trim() === '-';
-
-/** Un champ absent n'est pas affiché : une fiche criblée de tirets donne
- *  l'impression d'une base incomplète alors qu'elle est simplement muette
- *  sur ce point. */
-const champs = (paires) => paires
-  .filter(([, v]) => !vide(v))
-  .map(([libelle, valeur]) => ({ libelle, valeur: String(valeur) }));
-
-function nombreLisible(v) {
-  const n = Number(v || 0);
-  return `${Math.round(n).toLocaleString('fr-FR')} FCFA`;
-}
-
-function dateLisible(v) {
-  if (vide(v)) return null;
-  const d = v instanceof Date ? v : new Date(v);
-  if (Number.isNaN(d.getTime())) return String(v);
-  return d.toLocaleDateString('fr-FR', { day: '2-digit', month: 'long', year: 'numeric' });
-}
-
-async function ficheEtudiant(id, contexte) {
-  const r = await executerRequete(`
-    SELECT e.id, e.nom, e.prenoms, e.matricule_iipea, e.matricule, e.photo_url,
-           e.sexe, e.date_naissance, e.lieu_naissance, e.nationalite, e.pays_naissance,
-           e.telephone, e.contact_etudiant, e.email, e.email_personnel, e.lieu_residence,
-           e.standing, e.statut_scolaire, e.date_inscription, e.source_inscription,
-           e.serie_bac, e.annee_bac, e.mention_bac, e.etablissement_origine,
-           e.nom_parent_1, e.contact_parent, e.nom_parent_2, e.contact_parent_2,
-           s.montant_scolarite, s.scolarite_verse, s.scolarite_restante
-    FROM assistant.t_etudiant e
-    LEFT JOIN assistant.t_scolarite s ON s.id = e.scolarite_id
-    WHERE e.id = ${Number(id)}`, { ...contexte, limiteLignes: 1 });
-
-  if (!r.ok) return { ok: false, motif: r.motif };
-  if (!r.lignes.length) return { ok: false, motif: "Aucun étudiant ne porte cet identifiant." };
-  const e = r.lignes[0];
-
-  // Parcours académique : la dernière année d'abord, c'est celle qui compte.
-  const p = await executerRequete(`
-    SELECT annee_academique, ecole, filiere, niveau, cursus, statut_paiement
-    FROM assistant.v_etudiants WHERE matricule = '${String(e.matricule).replace(/'/g, "''")}'
-    ORDER BY annee_academique DESC LIMIT 1`, { ...contexte, limiteLignes: 1 });
-  const a = p.ok && p.lignes.length ? p.lignes[0] : {};
-
-  return {
-    ok: true,
-    fiche: {
-      categorie: 'etudiant',
-      libelle_categorie: 'Étudiant',
-      id: e.id,
-      nom_complet: `${e.nom || ''} ${e.prenoms || ''}`.trim(),
-      reference: e.matricule_iipea || e.matricule,
-      photo_url: e.photo_url || null,
-      etat: e.standing || null,
-      soustitre: [a.filiere, a.niveau].filter(Boolean).join(' — ') || null,
-      blocs: [
-        {
-          titre: 'Identité',
-          champs: champs([
-            ['Sexe', e.sexe],
-            ['Naissance', dateLisible(e.date_naissance)],
-            ['Lieu', e.lieu_naissance],
-            ['Nationalité', e.nationalite],
-            ['Résidence', e.lieu_residence],
-          ]),
-        },
-        {
-          titre: 'Contact',
-          champs: champs([
-            ['Téléphone', e.telephone || e.contact_etudiant],
-            ['E-mail', e.email],
-            ['E-mail personnel', e.email_personnel],
-          ]),
-        },
-        {
-          titre: 'Scolarité',
-          champs: champs([
-            ['Année', a.annee_academique],
-            ['École', a.ecole],
-            ['Filière', a.filiere],
-            ['Niveau', a.niveau],
-            ['Cursus', a.cursus],
-            ['Statut', e.statut_scolaire],
-            ['Inscrit le', dateLisible(e.date_inscription)],
-          ]),
-        },
-        {
-          titre: 'Situation financière',
-          champs: champs([
-            ['Scolarité', vide(e.montant_scolarite) ? null : nombreLisible(e.montant_scolarite)],
-            ['Versé', vide(e.scolarite_verse) ? null : nombreLisible(e.scolarite_verse)],
-            ['Reste à payer', vide(e.scolarite_restante) ? null : nombreLisible(e.scolarite_restante)],
-            ['État', a.statut_paiement],
-          ]),
-        },
-        {
-          titre: 'Parents',
-          champs: champs([
-            ['Parent 1', e.nom_parent_1],
-            ['Contact 1', e.contact_parent],
-            ['Parent 2', e.nom_parent_2],
-            ['Contact 2', e.contact_parent_2],
-          ]),
-        },
-      ].filter((b) => b.champs.length > 0),
-    },
-  };
-}
+const { BLOCS_ETUDIANT, BLOCS_AGENT, LACUNES_AGENT, LACUNES_ETUDIANT } = require('./assistantFicheChamps');
+const { analyseEtudiant } = require('./assistantFicheAnalyse');
 
 /** Formule imposee pour toute personne protegee. Elle ne dit ni pourquoi ni
  *  qui : confirmer l'existence du compte serait deja une information. */
@@ -326,27 +218,78 @@ async function estProtege(id, { siteId, ecoleId = null }) {
   return r.ok && Number(r.lignes[0]?.n) > 0;
 }
 
+const ligne = (r) => (r.ok && r.lignes.length ? r.lignes[0] : {});
+
+async function ficheEtudiant(id, contexte) {
+  const n = Number(id);
+
+  const [base, parcours, analyse] = await Promise.all([
+    executerRequete(`
+      SELECT e.*, s.montant_scolarite, s.scolarite_verse, s.scolarite_restante, s.statut_etudiant
+      FROM assistant.t_etudiant e
+      LEFT JOIN assistant.t_scolarite s ON s.id = e.scolarite_id
+      WHERE e.id = ${n}`, { ...contexte, limiteLignes: 1 }),
+    executerRequete(`
+      SELECT annee_academique, ecole, filiere, filiere_sigle, niveau, cursus, statut_paiement
+      FROM assistant.v_etudiants
+      WHERE matricule = (SELECT matricule FROM assistant.t_etudiant WHERE id = ${n})
+      ORDER BY annee_academique DESC LIMIT 1`, { ...contexte, limiteLignes: 1 }),
+    analyseEtudiant(n, contexte),
+  ]);
+
+  if (!base.ok) return { ok: false, motif: base.motif };
+  if (!base.lignes.length) return { ok: false, motif: "Aucun etudiant ne porte cet identifiant." };
+
+  const e = base.lignes[0];
+  const a = ligne(parcours);
+
+  return {
+    ok: true,
+    fiche: {
+      categorie: 'etudiant',
+      libelle_categorie: 'Étudiant',
+      id: e.id,
+      nom_complet: `${e.nom || ''} ${e.prenoms || ''}`.replace(/\s+/g, ' ').trim(),
+      reference: e.matricule_iipea || e.matricule,
+      photo_url: e.photo_url || null,
+      etat: e.standing || null,
+      soustitre: [a.filiere, a.niveau, a.annee_academique].filter(Boolean).join(' — ') || null,
+      blocs: BLOCS_ETUDIANT(e, a, e),
+      analyse,
+      lacunes: LACUNES_ETUDIANT,
+    },
+  };
+}
+
 async function ficheAgent(id, contexte) {
   if (await estProtege(id, contexte)) return { ok: false, protege: true, motif: REFUS_PROTEGE };
+  const n = Number(id);
 
-  const r = await executerRequete(`
-    SELECT a.agent_id, a.agent, a.matricule, a.role, a.role_description,
-           a.statut, a.site, a.ecole, u.email
-    FROM assistant.v_agents a
-    LEFT JOIN assistant.t_utilisateur u ON u.id = a.agent_id
-    WHERE a.agent_id = ${Number(id)}`, { ...contexte, limiteLignes: 1 });
+  const [base, activite, domaines] = await Promise.all([
+    executerRequete(`
+      SELECT a.agent_id, a.agent, a.matricule, a.role, a.role_description,
+             a.statut, a.site, a.ecole, u.email
+      FROM assistant.v_agents a
+      LEFT JOIN assistant.t_utilisateur u ON u.id = a.agent_id
+      WHERE a.agent_id = ${n}`, { ...contexte, limiteLignes: 1 }),
+    executerRequete(`
+      SELECT COUNT(*)::int AS actes, MIN(horodatage)::date AS premier, MAX(horodatage)::date AS dernier
+      FROM assistant.v_activite_agents WHERE agent_id = ${n}`, { ...contexte, limiteLignes: 1 }),
+    executerRequete(`
+      SELECT domaine, acte, COUNT(*)::int AS actes
+      FROM assistant.v_activite_agents WHERE agent_id = ${n}
+      GROUP BY domaine, acte ORDER BY COUNT(*) DESC`, { ...contexte, limiteLignes: 30 }),
+  ]);
 
-  if (!r.ok) return { ok: false, motif: r.motif };
-  if (!r.lignes.length) return { ok: false, motif: "Aucun agent ne porte cet identifiant." };
-  const a = r.lignes[0];
+  if (!base.ok) return { ok: false, motif: base.motif };
+  if (!base.lignes.length) return { ok: false, motif: "Aucun agent ne porte cet identifiant." };
 
-  // Activité : reconstruite depuis les colonnes auteur, seule trace existante.
-  const act = await executerRequete(`
-    SELECT COUNT(*)::int AS actes,
-           MIN(horodatage)::date AS premier,
-           MAX(horodatage)::date AS dernier
-    FROM assistant.v_activite_agents WHERE agent_id = ${Number(id)}`, { ...contexte, limiteLignes: 1 });
-  const v = act.ok && act.lignes.length ? act.lignes[0] : {};
+  const a = base.lignes[0];
+  const act = ligne(activite);
+  const parDomaine = domaines.ok ? domaines.lignes : [];
+  act.domaines = parDomaine.length
+    ? [...new Set(parDomaine.map((d) => d.domaine))].join(', ')
+    : null;
 
   return {
     ok: true,
@@ -356,29 +299,29 @@ async function ficheAgent(id, contexte) {
       id: a.agent_id,
       nom_complet: a.agent,
       reference: a.matricule,
-      photo_url: null,               // la table utilisateur ne porte pas de photo
+      photo_url: null,
       etat: a.statut,
       soustitre: a.role_description || a.role,
-      blocs: [
-        {
-          titre: 'Fonction',
-          champs: champs([
-            ['Rôle', a.role],
-            ['Statut', a.statut],
-            ['Site', a.site],
-            ['École', a.ecole],
-          ]),
-        },
-        { titre: 'Contact', champs: champs([['E-mail', a.email]]) },
-        {
-          titre: 'Activité tracée',
-          champs: champs([
-            ['Actes', v.actes],
-            ['Premier', dateLisible(v.premier)],
-            ['Dernier', dateLisible(v.dernier)],
-          ]),
-        },
-      ].filter((b) => b.champs.length > 0),
+      blocs: BLOCS_AGENT(a, act),
+      // L'activite d'un agent se lit mieux en barres qu'en tableau : c'est la
+      // repartition qui informe, pas le detail des libelles.
+      analyse: parDomaine.length ? {
+        disponible: true,
+        synthese: { actes: Number(act.actes) || 0, domaines: parDomaine.length },
+        graphiques: [{
+          type: 'barres', titre: "Activité par type d'acte", cle: 'acte',
+          series: [{ colonne: 'actes', libelle: 'Actes' }],
+          donnees: parDomaine.map((d) => ({ acte: d.acte, actes: Number(d.actes), domaine: d.domaine })),
+          lecture: `${parDomaine.reduce((t, d) => t + Number(d.actes), 0)} actes tracés `
+            + `dans ${new Set(parDomaine.map((d) => d.domaine)).size} domaine(s).`,
+        }],
+        lacunes: [],
+      } : {
+        disponible: false,
+        motif: "Aucun acte n'est tracé pour cet agent.",
+        lacunes: [],
+      },
+      lacunes: LACUNES_AGENT,
     },
   };
 }
@@ -393,7 +336,7 @@ async function construireFiche(categorie, id, contexte) {
   if (!Number.isInteger(Number(id))) return { ok: false, motif: 'Identifiant invalide.' };
   if (categorie === 'agent') return ficheAgent(id, contexte);
   if (categorie === 'etudiant') return ficheEtudiant(id, contexte);
-  return { ok: false, motif: `Catégorie inconnue : ${categorie}.` };
+  return { ok: false, motif: `Categorie inconnue : ${categorie}.` };
 }
 
 module.exports = { chercherPersonnes, construireFiche, MAX_CANDIDATS, REFUS_PROTEGE };

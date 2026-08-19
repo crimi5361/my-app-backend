@@ -9,6 +9,7 @@
 // documents qui exécute et met en tableau. Ni ce module ni le modèle ne
 // manipulent les chiffres : ils ne peuvent donc pas en inventer.
 const { genererRapportWord } = require('./assistantFichiers.service');
+const { analyseEtudiant } = require('./assistantFicheAnalyse');
 
 /**
  * Bascule une ligne en tableau « Champ / Valeur ».
@@ -19,7 +20,13 @@ const { genererRapportWord } = require('./assistantFichiers.service');
  */
 function tableVerticale(vue, id, paires) {
   return paires
-    .map(([libelle, colonne]) => `SELECT '${libelle}' AS champ, ${colonne}::text AS valeur FROM ${vue} WHERE id = ${id}`)
+    .map(([libelle, colonne]) => {
+      // L'apostrophe du libelle est DOUBLEE : « Numero d'acte de naissance »
+      // fermait la chaine SQL et faisait echouer la section entiere, en
+      // silence, sur trois des dix tableaux du rapport.
+      const l = String(libelle).replace(/'/g, "''");
+      return `SELECT '${l}' AS champ, ${colonne}::text AS valeur FROM ${vue} WHERE id = ${id}`;
+    })
     .join(' UNION ALL ');
 }
 
@@ -99,7 +106,41 @@ const SECTIONS_ETUDIANT = (id) => [
   },
   {
     niveau: 1,
-    titre: 'Résultats académiques',
+    titre: 'Résultats détaillés par matière',
+    texte: "Une ligne par évaluation, avec la moyenne de la promotion en regard. "
+      + "C'est l'écart à la promotion qui situe le niveau, pas la note seule.",
+    sql: 'SELECT m.nom AS matiere, n.semestre_id AS semestre, ROUND(n.moyenne, 2) AS moyenne, '
+      + 'n.coefficient, m.credits, ROUND(n.note1::numeric, 2) AS note_1, '
+      + 'ROUND(n.note2::numeric, 2) AS note_2, ROUND(n.partiel::numeric, 2) AS partiel '
+      + 'FROM assistant.t_note n '
+      + 'JOIN assistant.t_enseignement en ON en.id = n.enseignement_id '
+      + 'JOIN assistant.t_matiere m ON m.id = en.matiere_id '
+      + `WHERE n.etudiant_id = ${id} ORDER BY n.semestre_id, m.nom`,
+  },
+  {
+    niveau: 2,
+    titre: 'Comparaison à la promotion',
+    sql: 'SELECT m.nom AS matiere, '
+      + `ROUND(AVG(n.moyenne) FILTER (WHERE n.etudiant_id = ${id}), 2) AS lui, `
+      + 'ROUND(AVG(n.moyenne), 2) AS promotion, COUNT(DISTINCT n.etudiant_id)::int AS effectif '
+      + 'FROM assistant.t_note n '
+      + 'JOIN assistant.t_enseignement en ON en.id = n.enseignement_id '
+      + 'JOIN assistant.t_matiere m ON m.id = en.matiere_id '
+      + `WHERE en.groupe_id = (SELECT groupe_id FROM assistant.t_etudiant WHERE id = ${id}) `
+      + 'GROUP BY m.nom ORDER BY m.nom',
+  },
+  {
+    niveau: 2,
+    titre: 'Moyenne par semestre',
+    sql: 'SELECT n.semestre_id AS semestre, '
+      + 'ROUND(SUM(n.moyenne * n.coefficient) / NULLIF(SUM(n.coefficient), 0), 2) AS moyenne_ponderee, '
+      + 'COUNT(*)::int AS matieres '
+      + `FROM assistant.t_note n WHERE n.etudiant_id = ${id} `
+      + 'GROUP BY n.semestre_id ORDER BY n.semestre_id',
+  },
+  {
+    niveau: 1,
+    titre: 'Synthèse académique',
     texte: 'Synthèse des évaluations enregistrées. Les colonnes note1, note2 et partiel ne sont pas '
       + 'toutes pertinentes selon la matière : la moyenne fait foi.',
     sql: 'SELECT COUNT(*)::int AS evaluations, ROUND(AVG(moyenne), 2) AS moyenne_generale, '
@@ -158,11 +199,65 @@ async function rapportPersonne(categorie, id, contexte, entete) {
   const n = Number(id);
   if (!Number.isInteger(n)) return { ok: false, motif: 'Identifiant invalide.' };
 
+  // ── Lecture rédigée ──────────────────────────────────────────────────────
+  // La différence entre une fiche et un rapport n'est pas le volume, c'est
+  // l'interprétation. Ces phrases sont composées À PARTIR DES CHIFFRES, en
+  // JavaScript : elles ne peuvent donc ni les contredire ni les inventer.
+  const analyse = categorie === 'etudiant' ? await analyseEtudiant(n, contexte) : null;
+  const lecture = [];
+  if (analyse?.disponible) {
+    const a = analyse.synthese;
+    const ecart = a.moyenne_groupe !== null ? Math.round((a.moyenne - a.moyenne_groupe) * 100) / 100 : null;
+
+    lecture.push(`Moyenne générale de ${a.moyenne} sur 20, calculée sur ${a.matieres} matières `
+      + `pondérées par leurs coefficients.`);
+
+    if (a.rang && a.effectif) {
+      const quart = a.rang / a.effectif;
+      const situe = quart <= 0.25 ? 'dans le premier quart' : quart <= 0.5 ? 'dans la première moitié'
+        : quart <= 0.75 ? 'dans la troisième tranche' : 'dans le dernier quart';
+      lecture.push(`Classé ${a.rang} sur ${a.effectif}, soit ${situe} de sa promotion.`);
+    }
+    if (ecart !== null) {
+      lecture.push(Math.abs(ecart) < 0.3
+        ? `Le niveau est aligné sur celui de la promotion (${a.moyenne_groupe}).`
+        : `L'écart à la moyenne de la promotion (${a.moyenne_groupe}) est de ${ecart > 0 ? '+' : ''}${ecart} point.`);
+    }
+
+    lecture.push(`${a.matieres_validees} matières validées sur ${a.matieres}, `
+      + `soit ${a.credits_valides} crédits acquis sur ${a.credits_total}.`);
+
+    const sem = (analyse.graphiques || []).find((g) => g.type === 'courbe');
+    if (sem) lecture.push(sem.lecture);
+    const cmp = (analyse.graphiques || []).find((g) => g.type === 'barres');
+    if (cmp) lecture.push(cmp.lecture);
+    const rad = (analyse.graphiques || []).find((g) => g.type === 'radar');
+    if (rad) lecture.push(rad.lecture);
+  } else if (categorie === 'etudiant') {
+    lecture.push(analyse?.motif || "Aucune note n'est enregistrée pour cet étudiant.");
+  }
+
+  const sections = categorie === 'agent' ? SECTIONS_AGENT(n) : SECTIONS_ETUDIANT(n);
+  if (lecture.length) {
+    sections.unshift({ niveau: 1, titre: "Lecture d'ensemble", texte: lecture.join('\n') });
+  }
+  // Ce que la base ne sait pas dire figure DANS le rapport : un dossier qu'on
+  // croit exhaustif alors qu'il ne l'est pas conduit à des conclusions fausses.
+  const lacunes = (analyse?.lacunes || []).concat(
+    categorie === 'agent'
+      ? ["Ce dossier ne couvre que les CRÉATIONS tracées : aucune connexion, "
+        + "consultation, modification ni suppression n'est enregistrée dans cette base."]
+      : [],
+  );
+  if (lacunes.length) {
+    sections.push({ niveau: 1, titre: "Ce que la base n'enregistre pas", texte: lacunes.join('\n') });
+  }
+
   const fichier = await genererRapportWord({
     titre: entete.nom_complet,
     objet: `Dossier complet — ${entete.libelle_categorie}`,
     secteur: [entete.libelle_categorie, entete.reference].filter(Boolean).join(' · '),
-    sections: categorie === 'agent' ? SECTIONS_AGENT(n) : SECTIONS_ETUDIANT(n),
+    sections,
     siteId: contexte.siteId,
     ecoleId: contexte.ecoleId,
     utilisateurId: contexte.utilisateurId,
