@@ -1,0 +1,149 @@
+table: note
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Une évaluation d'un étudiant dans un enseignement (couple matière/professeur/groupe)
+  donné. Table de faits pédagogique la plus volumineuse de la base.
+
+granularite: "1 ligne = 1 relevé de note pour un étudiant sur un enseignement"
+
+volumetrie:
+  lignes: 105353
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: false
+  piege: >
+    AUCUNE clé primaire déclarée en base sur note.id, malgré la colonne serial
+    (nextval note_id_seq). Rien n'empêche techniquement un doublon d'id. Hors
+    périmètre de correction pour cette étape ; à traiter dans une future
+    maintenance structurelle.
+
+cles_etrangeres_declarees: []
+
+references_non_contraintes:
+  - colonne: etudiant_id
+    cible_supposee: etudiant.id
+  - colonne: enseignement_id
+    cible_supposee: enseignement.id
+    note: "2009 valeurs distinctes observées, colonne alimentée à 100%."
+  - colonne: semestre_id
+    cible_supposee: semestre.id
+    note: "Seulement 2 valeurs distinctes observées (cohérent avec semestre qui ne compte que 2 lignes)."
+  - colonne: session_id
+    cible_supposee: session.id
+    piege: >
+      Alimentée à 100% (105353/105353) mais avec UNE SEULE valeur distincte
+      localement — cohérent avec la table session qui ne compte qu'une seule ligne.
+      Colonne non discriminante sur le jeu de données actuel ; ne pas s'appuyer
+      dessus pour distinguer des sessions d'examen tant que la table session n'est
+      pas davantage peuplée.
+
+contraintes_check:
+  - nom: note_range_check
+    definition: "note1, note2, partiel doivent chacun être compris entre 0 et 20"
+  - nom: note_coefficient_check
+    definition: "coefficient doit être compris entre 0 et 100"
+
+colonnes:
+  - nom: id
+    type: integer
+    role: "identifiant technique (PAS de contrainte PRIMARY KEY déclarée, voir cle_primaire)"
+
+  - nom: note1
+    type: double precision
+    plage_check: "[0, 20]"
+    valeurs_non_nulles: 105228
+    taux_remplissage: "99,88%"
+    a_confirmer: "Signification exacte (1er devoir ? contrôle continu ?) — dépend de matiere.type_evaluation de l'enseignement concerné (voir matiere.yml)."
+
+  - nom: note2
+    type: double precision
+    plage_check: "[0, 20]"
+    valeurs_non_nulles: 104676
+    taux_remplissage: "99,35%"
+    a_confirmer: "Idem note1 — pertinence conditionnée par matiere.type_evaluation."
+
+  - nom: partiel
+    type: double precision
+    plage_check: "[0, 20]"
+    valeurs_non_nulles: 103761
+    taux_remplissage: "98,49%"
+    a_confirmer: "Idem — pertinence conditionnée par matiere.type_evaluation."
+
+  - nom: moyenne
+    type: numeric(5,2)
+    valeurs_non_nulles: 105353
+    taux_remplissage: "100%"
+    a_confirmer: "Formule de calcul exacte (pondération note1/note2/partiel selon matiere.type_evaluation et matiere.coefficient) non déductible avec certitude du schéma seul."
+
+  - nom: coefficient
+    type: numeric(5,2)
+    valeur_par_defaut: 1.0
+    plage_check: "[0, 100]"
+    a_confirmer: "Relation avec matiere.coefficient (colonne homonyme sur matiere) à clarifier — copie au moment de la saisie, ou valeur indépendante ?"
+
+  - nom: statut
+    type: varchar(20)
+    valeur_par_defaut: "'active'"
+    valeurs_observees: ["active (105353, 100%)"]
+    a_confirmer: "Aucune autre valeur observée localement ; existence d'un statut d'annulation/désactivation logique à confirmer avant de l'utiliser comme filtre."
+
+  - nom: fichier_source
+    type: varchar(255)
+    valeurs_non_nulles: 105353
+    valeurs_distinctes: 2234
+    a_confirmer: "Alimentée à 100% avec 2234 valeurs distinctes, vraisemblablement un nom de fichier d'import (chargement de notes en masse, voir controllers/chargementNote.js) — sens métier exact et fiabilité pour l'audit à confirmer."
+
+  - nom: enseignement_id
+    type: integer
+    cle_etrangere_non_contrainte: enseignement.id
+
+  - nom: session_id
+    type: integer
+    cle_etrangere_non_contrainte: session.id
+
+  - nom: semestre_id
+    type: integer
+    cle_etrangere_non_contrainte: semestre.id
+
+regle_metier_cle: >
+  Les colonnes note1/note2/partiel ne sont pas toutes pertinentes pour tous les
+  enseignements : matiere.type_evaluation (enum type_evaluation_enum) indique
+  lesquelles doivent être prises en compte pour une matière donnée
+  (note_1_note_2_partiel, note_1_partiel, note_2_partiel, partiel_only,
+  note_1_note_2, note_1_only, note_2_only). Utiliser une colonne hors périmètre
+  pour une matière donnée peut fausser un calcul de moyenne. Voir matiere.yml.
+
+pieges:
+  - "Pas de clé primaire déclarée sur note.id : doublons techniquement possibles, non exclus par le schéma."
+  - "note.session_id ne varie pas actuellement (1 seule valeur) : ne pas l'utiliser comme filtre discriminant sans vérifier au préalable le contenu de la table session."
+  - "note1/note2/partiel ne sont pas toutes significatives pour chaque matière : croiser avec matiere.type_evaluation avant tout calcul de moyenne."
+  - "Aucune FOREIGN KEY déclarée sur cette table : toutes les jointures reposent sur une convention de nom, pas sur une contrainte."
+
+jointures_usuelles:
+  - sql: "note n JOIN etudiant e ON e.id = n.etudiant_id"
+    note: "Référence non contrainte."
+  - sql: "note n JOIN enseignement en ON en.id = n.enseignement_id"
+    note: "Référence non contrainte."
+  - sql: "note n JOIN semestre s ON s.id = n.semestre_id"
+
+questions_metier:
+  - "Quelles sont les notes d'un étudiant ? -> JOIN etudiant sur etudiant_id"
+  - "Quelle est la moyenne d'un étudiant dans une matière ? -> attention à matiere.type_evaluation avant d'agréger note1/note2/partiel"
+
+synonymes:
+  moyenne: ["note moyenne", "résultat"]
+  partiel: ["examen partiel", "note d'examen"]
+
+a_confirmer:
+  - "note.note1"
+  - "note.note2"
+  - "note.partiel"
+  - "note.moyenne (formule de calcul exacte)"
+  - "note.session_id (sens métier tant que session n'a qu'une ligne)"
+  - "note.fichier_source (traçabilité d'import, à valider)"
+  - "note.coefficient vs matiere.coefficient"

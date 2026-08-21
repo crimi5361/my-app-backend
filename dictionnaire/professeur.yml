@@ -1,0 +1,24 @@
+table: professeur
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: >
+  Enseignant tel qu'utilisé par le module de notes/enseignements historique
+  (enseignement.professeur_id). À NE PAS CONFONDRE avec la table enseignant
+  (module RH enseignants plus récent, actuellement vide localement — voir
+  tables_vides_et_techniques.yml). A CONFIRMER si les deux tables convergeront.
+granularite: "1 ligne = 1 professeur"
+volumetrie:
+  lignes: 115
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees: []
+colonnes_ambigues:
+  - nom: statut
+    valeur_par_defaut: "'Actif'"
+    a_confirmer: "Valeurs possibles au-delà de 'Actif' (pas de CHECK déclaré)."
+pieges:
+  - "Deux notions de 'professeur' coexistent dans le schéma : professeur (utilisée par enseignement/note, 115 lignes) et enseignant (module RH, 0 ligne). Ne pas les confondre dans les requêtes."
+jointures_usuelles:
+  - sql: "enseignement en JOIN professeur p ON p.id = en.professeur_id"

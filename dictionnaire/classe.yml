@@ -1,0 +1,29 @@
+table: classe
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Classe pédagogique pour une année académique, un niveau et une filière donnés."
+granularite: "1 ligne = 1 classe (année académique x niveau x filière)"
+volumetrie:
+  lignes: 155
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: annee_academique_id
+    reference: anneeacademique.id
+  - colonne: curcus_id
+    reference: curcus.id
+  - colonne: filiere_id
+    reference: filiere.id
+  - colonne: niveau_id
+    reference: niveau.id
+colonnes_ambigues:
+  - nom: nom
+    a_confirmer: "Convention de nommage (libre ou générée)."
+pieges:
+  - "Une classe est propre à une année académique (voir CLAUDE.md : filiere permanente, mais classe/niveau/tarif/maquette recréés chaque année) — ne pas réutiliser une classe d'une année sur l'autre."
+jointures_usuelles:
+  - sql: "classe c JOIN niveau n ON n.id = c.niveau_id"
+  - sql: "classe c JOIN filiere f ON f.id = c.filiere_id"
+  - sql: "groupe g JOIN classe c ON c.id = g.classe_id"

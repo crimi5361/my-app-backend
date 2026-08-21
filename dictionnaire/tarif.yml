@@ -1,0 +1,28 @@
+table: tarif
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Barème tarifaire de scolarité pour un niveau donné (montant affecté/non affecté)."
+granularite: "1 ligne = 1 niveau (relation 1:1 garantie par une contrainte UNIQUE sur niveau_id)"
+volumetrie:
+  lignes: 147
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: niveau_id
+    reference: niveau.id
+contrainte_cle: "UNIQUE (niveau_id) : au plus un tarif par niveau."
+colonnes_ambigues:
+  - nom: montant_affecte
+    a_confirmer: "Sens de 'affecté' (étudiant affecté à un groupe/classe ?) vs montant_non_affecte."
+  - nom: montant_non_affecte
+    nullable_declare: false
+  - nom: toujours_non_affecte
+    type: boolean
+    valeur_par_defaut: false
+    a_confirmer: "Sens métier exact."
+  - nom: montant_affecte_reinscription
+    a_confirmer: "Tarif spécifique aux réinscriptions, distinct du tarif d'admission initiale — à confirmer."
+jointures_usuelles:
+  - sql: "tarif t JOIN niveau n ON n.id = t.niveau_id"

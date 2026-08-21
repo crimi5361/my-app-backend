@@ -1,0 +1,68 @@
+table: recu
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Justificatif d'encaissement (reçu) associé à un paiement. Table très simple,
+  probablement générée automatiquement à chaque paiement.
+
+granularite: "1 ligne = 1 reçu émis"
+
+volumetrie:
+  lignes: 11844
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: false
+  piege: >
+    AUCUNE CONTRAINTE DU TOUT sur cette table : ni PRIMARY KEY, ni UNIQUE, ni FOREIGN
+    KEY, ni même un index (vérifié via pg_indexes — 0 résultat). numero_recu n'a
+    aucune contrainte d'unicité en base bien que 11844/11844 valeurs soient
+    distinctes localement. Hors périmètre de correction pour cette étape.
+
+cles_etrangeres_declarees: []
+
+colonnes:
+  - nom: id
+    type: integer
+    role: "identifiant technique, aucune contrainte en base"
+
+  - nom: numero_recu
+    type: varchar(100)
+    valeurs_non_nulles: 11844
+    valeurs_distinctes: 11844
+    sens: "Numéro de reçu affiché à l'étudiant, distinct en pratique localement mais sans garantie d'unicité en base."
+
+  - nom: date_emission
+    type: date
+
+  - nom: montant
+    type: numeric(10,2)
+    unite: "XOF (à confirmer)"
+    a_confirmer: "Toujours identique au paiement.montant qui le référence ? Non vérifié systématiquement."
+
+  - nom: emetteur
+    type: varchar(100)
+    a_confirmer: "Texte libre, 11 valeurs distinctes observées — probablement le nom de l'agent ayant émis le reçu, à confirmer."
+
+pieges:
+  - "Table sans clé primaire ni index : recherche par id ou numero_recu non optimisée et sans garantie d'unicité côté base."
+  - "Aucun paiement ne référence recu par une FOREIGN KEY : la relation dépend uniquement de la convention de nom paiement.recu_id."
+  - "11844 reçus pour 11734 paiements référençant un recu_id : environ 110 reçus ne sont référencés par aucun paiement (A CONFIRMER pourquoi)."
+
+jointures_usuelles:
+  - sql: "paiement p JOIN recu r ON r.id = p.recu_id"
+    note: "Référence non contrainte des deux côtés."
+
+questions_metier:
+  - "Quel est le reçu d'un paiement donné ? -> JOIN via paiement.recu_id (non garanti par une FK)"
+
+synonymes:
+  numero_recu: ["numéro de reçu", "référence du reçu"]
+
+a_confirmer:
+  - "Pourquoi ~110 reçus ne sont référencés par aucun paiement"
+  - "Sens exact de emetteur (agent ? caisse ?)"
+  - "Cohérence systématique entre recu.montant et paiement.montant"

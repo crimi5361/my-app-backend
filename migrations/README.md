@@ -31,6 +31,7 @@ node migrations/run.js 2026-08-11_module_enseignants.sql
 | `2026-08-13d_assistant_reglages.sql` | Réglages par site : prénom de l'assistante, recherche web. |
 | `2026-08-13e_assistant_voix.sql` | Voix de synthèse retenue pour la session vocale. |
 | `2026-08-14_assistant_civilite.sql` | Civilité employée à l'accueil (`Monsieur` par défaut). La table `utilisateur` ne porte aucun genre : c'est la raison d'être de ce réglage. |
+| `2026-08-15_documentation_base_assistante.sql` | Documentation sémantique du schéma `public` (COMMENT ON TABLE/COLUMN) pour l'assistante : rôle métier, pièges, règles de calcul (ex. `scolarite.scolarite_verse` comme référence du chiffre d'affaires, pas `paiement`). Source de vérité : `dictionnaire/*.yml`. |
 | `2026-08-18_exposition_complete.sql` | Un reflet en lecture par table (`assistant.t_<table>`), cloisonné par site quand un chemin existe. Porte l'assistante de 29 à 73 tables. |
 | `2026-08-18b_exposition_email_backup.sql` | Dernière table exposée. Ne restent hors d'atteinte que `etudiant.password`, `utilisateur.mot_de_passe` et `assistant_google_compte.jeton_rafraichissement`. |
 | `2026-08-19_photo_disponible.sql` | Colonne `a_photo` sur `v_etudiants` : l'assistante sait enfin qui a une photo. Commentaires precisant que le personnel n'en a aucune. |

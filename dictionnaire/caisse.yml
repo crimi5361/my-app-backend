@@ -1,0 +1,24 @@
+table: caisse
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Caisse physique/logique d'un site, point d'encaissement des paiements."
+granularite: "1 ligne = 1 caisse"
+volumetrie:
+  lignes: 3
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: site_id
+    reference: site.id
+colonnes_ambigues:
+  - nom: mode_reouverture
+    valeur_par_defaut: "'REPORT'"
+    valeurs_observees: ["REPORT (3, 100%)"]
+    a_confirmer: "Autres valeurs possibles (report du solde à l'ouverture suivante ?) non observées localement."
+  - nom: code
+    contrainte: "UNIQUE"
+jointures_usuelles:
+  - sql: "paiement p JOIN caisse c ON c.id = p.caisse_id"
+  - sql: "session_caisse sc JOIN caisse c ON c.id = sc.caisse_id"

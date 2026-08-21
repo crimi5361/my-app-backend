@@ -1,0 +1,91 @@
+# Rang D — tables vides et tables techniques.
+# Une table vide est explicitement distinguée d'une table inexistante ou simplement
+# peu alimentée : toutes les tables ci-dessous EXISTENT en base avec leur schéma
+# complet (colonnes, contraintes) mais contiennent 0 ligne au moment de la mesure,
+# sauf etudiant_email_backup qui est une table technique non vide.
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+rang: D
+
+nombre_tables_vides_observees: 24
+divergence_avec_document_reference: >
+  Le document de référence mentionne 22 tables vides. La base locale en compte 24
+  au moment de cette mesure. Les 2 tables supplémentaires (assistant_google_compte,
+  assistant_reglages) proviennent des migrations 2026-08-12e_assistant_google.sql et
+  2026-08-13d_assistant_reglages.sql, vraisemblablement postérieures à la rédaction
+  du document de référence.
+
+groupes:
+  - groupe: "Module Enseignants (RH) — introduit par migrations/2026-08-11_module_enseignants.sql"
+    raison_probable: "Module récent, pas encore utilisé en base locale (pas de recrutement/contrat saisi)."
+    tables:
+      - candidature_enseignant
+      - candidature_diplome
+      - candidature_filiere
+      - offre_emploi_enseignant
+      - besoin_enseignant
+      - enseignant
+      - contrat_enseignant
+      - contrat_classe
+      - affectation_charge_pedagogique
+      - salle
+      - trame_edt
+      - seance_edt
+    piege: >
+      La table enseignant (module RH, vide) coexiste avec professeur (module
+      notes/enseignements historique, 115 lignes) — voir professeur.yml. Ne pas
+      supposer que enseignant remplace professeur tant qu'aucune donnée n'y est
+      saisie.
+
+  - groupe: "Module équivalence de diplôme"
+    raison_probable: "Fonctionnalité présente en base mais non utilisée localement (A CONFIRMER : en attente de mise en service, ou testée ailleurs)."
+    tables:
+      - demande_equivalence
+      - demande_equivalence_historique
+      - document_equivalence
+
+  - groupe: "Module stock — distribution"
+    raison_probable: "Module stock globalement peu alimenté localement (accessoire: 4 lignes, fournisseur: 1 ligne, commande_fournisseur: 1 ligne) — distribution n'a pas encore eu lieu."
+    tables:
+      - distribution
+      - ligne_distribution
+
+  - groupe: "Permissions granulaires"
+    raison_probable: "A CONFIRMER — les rôles semblent gérés directement via utilisateur.role_id / role plutôt que via un système permission/rolepermission plus fin."
+    tables:
+      - permission
+      - rolepermission
+
+  - groupe: "Assistant fondateur — comptes/réglages Google"
+    raison_probable: "Migrations très récentes (12-13/08/2026) ; aucun compte Google ni réglage de site n'a encore été configuré localement."
+    tables:
+      - assistant_google_compte
+      - assistant_reglages
+
+  - groupe: "Autres tables vides isolées"
+    tables:
+      - table: decoupage_groupe
+        raison_probable: "A CONFIRMER — fonctionnalité de répartition automatique de groupes, jamais déclenchée localement."
+      - table: historique_operations_admin
+        raison_probable: "A CONFIRMER — aucune opération administrative exceptionnelle (changement de filière/parcours/cycle hors réinscription, voir CLAUDE.md) n'a eu lieu localement."
+      - table: resultat
+        raison_probable: >
+          A CONFIRMER — ses colonnes (moyenne, decision, etudiant_id, session_id)
+          font doublon fonctionnel avec inscription_annuelle.moyenne_annuelle /
+          decision_annuelle. Hypothèse plausible mais non certaine : table
+          supplantée par inscription_annuelle. Ne pas s'appuyer dessus tant que
+          l'hypothèse n'est pas confirmée.
+
+table_technique_non_vide:
+  - table: etudiant_email_backup
+    lignes: 1058
+    role: >
+      Table de sauvegarde technique (id, matricule_iipea, email, date_sauvegarde),
+      sans clé primaire ni contrainte déclarée. Structure cohérente avec une
+      sauvegarde ponctuelle des emails étudiants avant une opération de
+      correction/migration de données. A CONFIRMER : date et raison exacte de cette
+      sauvegarde (non déductible du schéma seul).
+    donnees_personnelles: >
+      Contient une colonne email : donnée personnelle. Aucune valeur de cette table
+      ne doit jamais être recopiée dans une documentation, un YAML ou un COMMENT ON.
+    piege: "Table probablement obsolète (pas de trace d'utilisation applicative dans routes/controllers) — à ne pas utiliser comme source de vérité pour les emails actuels des étudiants (utiliser etudiant.email)."

@@ -1,0 +1,31 @@
+table: niveau
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Niveau d'études (ex. L1, L2...) rattaché à une filière et une année académique, propre à un site."
+granularite: "1 ligne = 1 niveau (filière x année académique x site)"
+volumetrie:
+  lignes: 148
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: anneeacademique_id
+    reference: anneeacademique.id
+  - colonne: niveau_suivant_id
+    reference: "niveau.id (auto-référence)"
+  - colonne: site_id
+    reference: site.id
+colonnes_ambigues:
+  - nom: filiere_id
+    a_confirmer: "Colonne présente sans contrainte FOREIGN KEY déclarée alors que niveau_suivant_id et site_id le sont — à vérifier si activement utilisée."
+  - nom: type_filiere
+    type: varchar
+    a_confirmer: "Colonne texte, potentiellement redondante avec typefiliere/filiere.type_filiere_id."
+  - nom: niveau_suivant_id
+    sens: "Chaînage vers le niveau suivant du même parcours (progression académique)."
+pieges:
+  - "Comme classe, un niveau est recréé chaque année académique (voir CLAUDE.md : filiere permanente, niveau propre à l'année) — ne pas comparer des niveau_id d'années différentes comme équivalents."
+jointures_usuelles:
+  - sql: "tarif t JOIN niveau n ON n.id = t.niveau_id"
+  - sql: "etudiant e JOIN niveau n ON n.id = e.niveau_id"

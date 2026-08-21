@@ -1,0 +1,168 @@
+table: inscription_annuelle
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Position académique d'un étudiant POUR UNE ANNÉE ACADÉMIQUE DONNÉE (snapshot annuel),
+  avec résultats de semestres et décisions de passage. Complète etudiant (position
+  courante uniquement) pour permettre l'historisation par année. Voir CLAUDE.md
+  ("Historisation académique unique", vue_position_academique).
+
+granularite: "1 ligne = 1 étudiant x 1 année académique"
+
+volumetrie:
+  lignes: 7200
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees:
+  - colonne: annee_academique_id
+    reference: anneeacademique.id
+  - colonne: classe_id
+    reference: classe.id
+  - colonne: curcus_id
+    reference: curcus.id
+  - colonne: etudiant_id
+    reference: etudiant.id
+  - colonne: groupe_id
+    reference: groupe.id
+  - colonne: id_filiere
+    reference: filiere.id
+  - colonne: niveau_id
+    reference: niveau.id
+  - colonne: reinscription_source_id
+    reference: reinscription.id
+  - colonne: site_id
+    reference: site.id
+  - colonne: valide_par
+    reference: utilisateur.id
+
+contrainte_unique_cle: >
+  UNIQUE (etudiant_id, annee_academique_id) — RÈGLE MÉTIER CONFIRMÉE PAR LE SCHÉMA :
+  un étudiant ne peut avoir qu'une seule ligne d'inscription_annuelle par année
+  académique. C'est la garantie anti double-comptage pour cette table.
+
+colonnes:
+  - nom: id
+    type: integer
+    role: cle_primaire
+
+  - nom: etudiant_id
+    type: integer
+    cle_etrangere: etudiant.id
+
+  - nom: annee_academique_id
+    type: integer
+    cle_etrangere: anneeacademique.id
+
+  - nom: curcus_id
+    type: integer
+    cle_etrangere: curcus.id
+    valeurs_non_nulles: 0
+    piege: "COLONNE NON ALIMENTÉE : 100% NULL sur 7200 lignes locales, malgré une contrainte FOREIGN KEY déclarée."
+
+  - nom: statut_scolaire
+    type: varchar(50)
+    valeurs_observees: ["Affecté (5544)", "Non affecté (1656)"]
+
+  - nom: standing
+    type: varchar(50)
+    valeurs_observees: ["Inscrit (7198)", "chaîne vide '' (2)"]
+    piege: "2 lignes ont une chaîne vide plutôt que NULL ou une valeur métier — à distinguer d'un NULL dans les filtres (standing = '' vs IS NULL)."
+
+  - nom: moyenne_s1
+    type: numeric(5,2)
+    unite: "note sur 20 (à confirmer, cohérent avec note.note1/2/partiel)"
+
+  - nom: moyenne_s2
+    type: numeric(5,2)
+
+  - nom: moyenne_annuelle
+    type: numeric(5,2)
+    a_confirmer: "Formule de calcul exacte à partir de moyenne_s1/moyenne_s2 (moyenne simple ? pondérée par crédits ?)."
+
+  - nom: decision_s1
+    type: varchar(30)
+    a_confirmer: "Valeurs possibles (admis/ajourné/redouble ?) non contraintes par un CHECK — à confirmer par la couche applicative."
+
+  - nom: decision_s2
+    type: varchar(30)
+
+  - nom: decision_annuelle
+    type: varchar(30)
+
+  - nom: credits_s1_valides
+    type: integer
+  - nom: credits_s1_total
+    type: integer
+  - nom: credits_s2_valides
+    type: integer
+  - nom: credits_s2_total
+    type: integer
+  - nom: credits_annuels_valides
+    type: integer
+  - nom: credits_annuels_total
+    type: integer
+
+  - nom: matieres_a_reprendre
+    type: jsonb
+    a_confirmer: "Structure exacte du JSON (liste d'identifiants de matières ?) non déductible du schéma seul."
+
+  - nom: montant_scolarite
+    type: numeric(12,2)
+    unite: "XOF (à confirmer)"
+    a_confirmer: "Relation avec scolarite.montant_scolarite et tarif — colonne dupliquée ou source différente ?"
+
+  - nom: code_paiement
+    type: varchar(50)
+    a_confirmer: "À comparer avec etudiant.code_paiement (quasiment vide sur etudiant) — semble être la colonne réellement utilisée."
+
+  - nom: type_evenement
+    type: varchar(30)
+    nullable_declare: false
+    valeur_par_defaut: "'reinscription'"
+    valeurs_observees: ["migration_position_courante (7198)", "migration_historique (2)"]
+    piege: >
+      Aucune ligne locale n'a la valeur par défaut 'reinscription' : les données
+      actuelles proviennent d'une migration technique unique depuis l'ancienne
+      position de etudiant, pas encore du flux normal de réinscription. À garder en
+      tête pour toute analyse par type_evenement sur ce jeu de données.
+
+  - nom: reinscription_source_id
+    type: integer
+    cle_etrangere: reinscription.id
+    nullable_declare: true
+
+  - nom: valide_par
+    type: integer
+    cle_etrangere: utilisateur.id
+
+pieges:
+  - "curcus_id n'est jamais alimenté localement malgré sa contrainte FOREIGN KEY."
+  - "standing contient 2 lignes en chaîne vide '' plutôt que NULL."
+  - "type_evenement observé localement ne reflète pas encore le flux normal (données issues d'une migration technique)."
+  - "code_paiement existe ici ET sur etudiant (quasiment vide côté etudiant) : ne pas confondre les deux sources."
+
+jointures_usuelles:
+  - sql: "inscription_annuelle ia JOIN etudiant e ON e.id = ia.etudiant_id"
+  - sql: "inscription_annuelle ia JOIN anneeacademique a ON a.id = ia.annee_academique_id"
+  - sql: "inscription_annuelle ia JOIN classe c ON c.id = ia.classe_id"
+  - sql: "inscription_annuelle ia JOIN groupe g ON g.id = ia.groupe_id"
+
+questions_metier:
+  - "Quel a été le parcours d'un étudiant sur une année académique donnée ? -> filtrer sur (etudiant_id, annee_academique_id), garanti unique par la contrainte UNIQUE"
+  - "Combien d'étudiants inscrits par année académique ? -> COUNT(*) GROUP BY annee_academique_id (pas de double-comptage possible grâce à la contrainte UNIQUE)"
+
+synonymes:
+  moyenne_annuelle: ["moyenne générale de l'année"]
+  decision_annuelle: ["décision de passage", "verdict annuel"]
+
+a_confirmer:
+  - "inscription_annuelle.moyenne_annuelle (formule exacte)"
+  - "inscription_annuelle.matieres_a_reprendre (structure JSON)"
+  - "inscription_annuelle.decision_s1/s2/annuelle (liste de valeurs possibles)"
+  - "inscription_annuelle.montant_scolarite vs scolarite.montant_scolarite"

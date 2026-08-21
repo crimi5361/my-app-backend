@@ -1,0 +1,32 @@
+table: mouvement_stock
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Mouvement de stock d'un accessoire (réception, distribution, ajustement, transfert) dans un emplacement de stock."
+granularite: "1 ligne = 1 mouvement de stock"
+volumetrie:
+  lignes: 6
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: accessoire_id
+    reference: accessoire.id
+  - colonne: effectue_par
+    reference: utilisateur.id
+  - colonne: emplacement_stock_id
+    reference: emplacement_stock.id
+colonnes_ambigues:
+  - nom: type
+    contrainte_check: "ANY ('reception','distribution','ajustement_positif','ajustement_negatif','transfert_sortant','transfert_entrant')"
+  - nom: reference_type
+    contrainte_check: "ANY (NULL,'commande_fournisseur','reception_fournisseur','distribution','inventaire')"
+    a_confirmer: "Utilisé avec reference_id pour pointer vers la ligne d'origine du mouvement — pas de FK polymorphe déclarable en base, donc non contrainte."
+  - nom: quantite
+    contrainte_check: "> 0"
+    a_confirmer: "Le signe du mouvement (entrée/sortie) est porté par la colonne type, pas par le signe de quantite (toujours positive)."
+pieges:
+  - "Table quasiment vide localement (6 lignes) : peu représentative."
+  - "reference_type/reference_id forment une référence polymorphe non contrainte par une FOREIGN KEY (technique impossible en SQL standard sur plusieurs tables cibles)."
+jointures_usuelles:
+  - sql: "mouvement_stock ms JOIN accessoire a ON a.id = ms.accessoire_id"

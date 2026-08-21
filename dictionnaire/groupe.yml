@@ -1,0 +1,25 @@
+table: groupe
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Groupe d'étudiants au sein d'une classe (subdivision pour les enseignements/emplois du temps)."
+granularite: "1 ligne = 1 groupe"
+volumetrie:
+  lignes: 216
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: classe_id
+    reference: classe.id
+colonnes_ambigues:
+  - nom: est_primaire
+    type: boolean
+    valeur_par_defaut: false
+    a_confirmer: "Sens exact de 'groupe primaire' (groupe par défaut de la classe ?)."
+pieges:
+  - "etudiant.groupe_id référence cette table sans contrainte FOREIGN KEY ; 7 étudiants référencent un groupe_id inexistant (voir etudiant.yml)."
+jointures_usuelles:
+  - sql: "etudiant e JOIN groupe g ON g.id = e.groupe_id"
+    note: "Référence non contrainte, orphelins observés."
+  - sql: "enseignement en JOIN groupe g ON g.id = en.groupe_id"

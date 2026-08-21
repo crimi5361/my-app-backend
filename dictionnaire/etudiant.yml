@@ -1,0 +1,244 @@
+table: etudiant
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Position académique et administrative COURANTE d'un étudiant (une seule ligne par
+  étudiant, mise à jour en place à chaque changement de niveau/groupe/filière/standing).
+  Ce n'est PAS un historique : l'historique par année est porté par inscription_annuelle
+  et historique_inscription (voir CLAUDE.md, "Historisation académique unique" /
+  vue_position_academique).
+
+granularite: "1 ligne = 1 étudiant, position académique actuelle uniquement"
+
+volumetrie:
+  lignes: 7201
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees:
+  - colonne: verifie_par
+    reference: utilisateur.id
+
+references_non_contraintes:
+  # Colonnes qui référencent une autre table par convention de nom, sans contrainte
+  # FOREIGN KEY en base. Les jointures fonctionnent mais rien n'empêche une valeur
+  # orpheline.
+  - colonne: site_id
+    cible_supposee: site.id
+    orphelins_observes: 0
+  - colonne: annee_academique_id
+    cible_supposee: anneeacademique.id
+    orphelins_observes: "A CONFIRMER"
+  - colonne: groupe_id
+    cible_supposee: groupe.id
+    orphelins_observes: 7
+    note: "7 étudiants sur 7201 référencent un groupe_id qui n'existe plus dans groupe (piège réel, hors périmètre de correction pour cette étape)."
+  - colonne: niveau_id
+    cible_supposee: niveau.id
+    orphelins_observes: 0
+  - colonne: document_id
+    cible_supposee: document.id
+    orphelins_observes: "A CONFIRMER"
+  - colonne: scolarite_id
+    cible_supposee: scolarite.id
+    orphelins_observes: "A CONFIRMER"
+    note: >
+      7201 valeurs non nulles mais seulement 7199 valeurs distinctes : 2 valeurs de
+      scolarite_id sont partagées par plus d'un étudiant. Par ailleurs 41 lignes de
+      scolarite ne sont référencées par aucun etudiant.scolarite_id (relation
+      globalement 1:1 mais pas strictement garantie).
+  - colonne: curcus_id
+    cible_supposee: curcus.id
+  - colonne: id_filiere
+    cible_supposee: filiere.id
+
+colonnes:
+  - nom: id
+    type: integer
+    role: cle_primaire
+
+  - nom: matricule
+    type: varchar(50)
+    nullable_declare: true
+    nullable_observe: false
+    valeurs_non_nulles: 7201
+    valeurs_distinctes: 6613
+    piege: >
+      DOUBLONS CONFIRMÉS : 23 valeurs de matricule sont dupliquées, concernant 611
+      lignes sur 7201 (~8,5%). Aucune contrainte UNIQUE en base sur cette colonne.
+    regle: "NE PAS utiliser matricule comme identifiant unique d'un étudiant."
+
+  - nom: matricule_iipea
+    type: varchar(50)
+    nullable_declare: true
+    nullable_observe: false
+    valeurs_non_nulles: 7201
+    valeurs_distinctes: 7201
+    sens: "Identifiant interne fiable de l'étudiant (unique en pratique sur les données locales, bien qu'aucune contrainte UNIQUE ne soit déclarée en base)."
+    regle: "Identifiant à privilégier pour identifier un étudiant dans les requêtes métier."
+
+  - nom: code_unique
+    type: varchar(50)
+    nullable_declare: true
+    nullable_observe: false
+    valeurs_non_nulles: 7201
+    valeurs_distinctes: 7156
+    piege: "Malgré son nom, PAS strictement unique : 43 valeurs dupliquées sur 88 lignes. A CONFIRMER pour son usage métier réel."
+
+  - nom: code_paiement
+    type: varchar(30)
+    nullable_declare: true
+    valeurs_non_nulles: 1
+    piege: >
+      Colonne quasiment NON ALIMENTÉE au niveau étudiant (1 valeur non nulle sur 7201
+      lignes), malgré une contrainte UNIQUE déclarée. Une colonne homonyme
+      inscription_annuelle.code_paiement existe et semble être celle réellement
+      utilisée. A CONFIRMER laquelle fait foi.
+
+  - nom: numero_table
+    type: varchar(30)
+    nullable_declare: true
+    valeurs_non_nulles: 3067
+    valeurs_distinctes: 808
+    note: "Alimentée pour ~43% des étudiants seulement."
+
+  - nom: ip_ministere
+    type: varchar(50)
+    nullable_declare: true
+    valeurs_non_nulles: 6042
+    valeurs_distinctes: 4701
+    a_confirmer: "Sens métier exact (identifiant ministériel ?) non déductible avec certitude du schéma seul."
+
+  - nom: statut_scolaire
+    type: varchar(50)
+    nullable_declare: true
+    valeurs_observees: ["Affecté (5544)", "Non affecté (1657)"]
+    a_confirmer: "Sens métier précis de 'Affecté'/'Non affecté' (affectation à un groupe/classe ?), à distinguer de standing."
+
+  - nom: standing
+    type: varchar(50)
+    nullable_declare: true
+    valeur_par_defaut: "'en attente'"
+    valeurs_observees: ["Inscrit (7200)", "en attente (1)"]
+    regle: "Pour les effectifs étudiants : WHERE standing = 'Inscrit' (règle métier confirmée par les données)."
+
+  - nom: source_inscription
+    type: varchar(10)
+    nullable_declare: false
+    valeur_par_defaut: "'agent'"
+    contrainte_check: "ANY ('agent','web')"
+    valeurs_observees: ["agent (7200)", "web (1)"]
+    sens: "Canal de création du dossier : agent = saisie interne (Scolarité), web = portail public d'admission."
+
+  - nom: password
+    type: varchar(255)
+    nullable_declare: true
+    valeurs_non_nulles: 7201
+    interdit: "NE JAMAIS exposer ni documenter le contenu de cette colonne, même sous forme hachée. Ne doit apparaître dans aucun COMMENT ni aucune sortie destinée à l'assistante."
+
+  - nom: telephone
+    type: varchar(30)
+    donnee_personnelle: true
+    note: "Donnée personnelle — statistiques uniquement (7198/7201 alimentées), aucune valeur réelle dans cette documentation."
+
+  - nom: email
+    type: varchar(100)
+    donnee_personnelle: true
+    note: "Donnée personnelle — 7198/7201 alimentées."
+
+  - nom: email_personnel
+    type: varchar(150)
+    donnee_personnelle: true
+    valeurs_non_nulles: 1
+    note: "Quasiment non alimentée (1/7201)."
+
+  - nom: contact_etudiant
+    type: varchar(20)
+    donnee_personnelle: true
+    note: "Une des 4 colonnes de contact (contact_etudiant, contact_parent, contact_parent_2, telephone). A CONFIRMER lesquelles sont réellement utilisées par les écrans vs héritées."
+
+  - nom: contact_parent
+    type: varchar(100)
+    donnee_personnelle: true
+
+  - nom: contact_parent_2
+    type: varchar(20)
+    donnee_personnelle: true
+
+  - nom: engagement_accepte
+    type: boolean
+    nullable_declare: false
+    valeur_par_defaut: false
+
+  - nom: valide_scolarite
+    type: boolean
+    nullable_declare: false
+    valeur_par_defaut: true
+    a_confirmer: "Sens métier exact et usage réel dans les calculs de recettes."
+
+  - nom: verifie_par
+    type: integer
+    cle_etrangere: utilisateur.id
+    valeurs_non_nulles: 1
+    note: "Quasiment non alimentée localement (1/7201)."
+
+  - nom: nombre_versements_prevu
+    type: integer
+    nullable_declare: true
+    a_confirmer: "Usage métier exact dans le calcul du plan de paiement."
+
+colonnes_non_alimentees_ou_quasi:
+  - code_paiement
+  - email_personnel
+  - verifie_par
+  - date_verification
+  - observation_verification
+
+doublons_constates:
+  - colonne: matricule
+    valeurs_dupliquees: 23
+    lignes_concernees: 611
+  - colonne: code_unique
+    valeurs_dupliquees: 43
+    lignes_concernees: 88
+
+pieges:
+  - "matricule contient des doublons : ne jamais l'utiliser comme clé d'unicité, préférer matricule_iipea."
+  - "7 étudiants référencent un groupe_id inexistant dans groupe (FK non contrainte)."
+  - "etudiant.scolarite_id n'est pas strictement 1:1 avec scolarite (2 valeurs partagées, 41 lignes de scolarite orphelines)."
+  - "code_paiement est quasiment vide sur etudiant ; ne pas confondre avec inscription_annuelle.code_paiement."
+  - "password ne doit jamais être exposé, même haché."
+
+jointures_usuelles:
+  - sql: "paiement p JOIN etudiant e ON e.id = p.etudiant_id"
+    note: "Référence existant dans le nom de colonne, AUCUNE contrainte FOREIGN KEY déclarée sur paiement.etudiant_id."
+  - sql: "etudiant e JOIN inscription_annuelle ia ON ia.etudiant_id = e.id"
+  - sql: "etudiant e JOIN utilisateur u ON u.id::text = e.inscrit_par"
+    note: "inscrit_par est un varchar, pas un integer : jointure par cast de type, aucune FK possible techniquement."
+  - sql: "etudiant e JOIN filiere f ON f.id = e.id_filiere"
+    note: "Référence non contrainte."
+  - sql: "etudiant e JOIN niveau n ON n.id = e.niveau_id"
+    note: "Référence non contrainte, mais 0 orphelin observé localement."
+
+questions_metier:
+  - "Combien d'étudiants sont actuellement inscrits ? -> WHERE standing = 'Inscrit'"
+  - "Quel est l'identifiant fiable d'un étudiant pour le relier à ses paiements/notes ? -> matricule_iipea (ou id)"
+  - "Un étudiant a-t-il payé ses frais de scolarité ? -> voir scolarite via etudiant.scolarite_id (piège : relation non garantie 1:1)"
+
+synonymes:
+  matricule_iipea: ["matricule officiel", "identifiant étudiant IIPEA", "numéro étudiant"]
+  standing: ["statut d'inscription", "état d'inscription"]
+  id_filiere: ["filière de l'étudiant"]
+
+a_confirmer:
+  - "etudiant.statut_scolaire : sens métier précis de Affecté/Non affecté"
+  - "etudiant.ip_ministere : signification exacte"
+  - "etudiant.code_unique : usage métier réel malgré les doublons"
+  - "etudiant.code_paiement : pourquoi quasiment vide, à comparer avec inscription_annuelle.code_paiement"
+  - "etudiant.numero_table : usage (table d'examen ?) à confirmer"
+  - "les 4 colonnes de contact : lesquelles sont effectivement utilisées par les écrans actuels"

@@ -1,0 +1,98 @@
+table: scolarite
+schema: public
+rang: A
+mesure_le: "2026-08-15"
+base_mesuree: "db_iipea_20260721 (locale)"
+
+role_metier: >
+  Position financière de scolarité d'un étudiant (montant dû, versé, restant).
+  RÔLE CONFIRMÉ par la définition de la vue public.vue_position_academique
+  (LEFT JOIN scolarite s ON s.id = e.scolarite_id) : c'est la table de RÉFÉRENCE
+  pour le chiffre d'affaires / total encaissé de l'établissement, PAS paiement
+  (voir paiement.yml et le commentaire déjà en place sur assistant.v_paiements,
+  migration 2026-08-12b_assistant_commentaires.sql). scolarite_verse couvre
+  « toutes origines confondues, y compris l'historique repris », contrairement à
+  paiement qui ne couvre que le module Caisse.
+
+granularite: >
+  1 ligne par étudiant, RATTACHÉE VIA etudiant.scolarite_id (relation intentionnelle
+  1:1, confirmée par le LEFT JOIN de vue_position_academique). En pratique sur les
+  données locales : 41 lignes de scolarite ne sont référencées par aucun
+  etudiant.scolarite_id, et 2 valeurs de scolarite_id sont réutilisées par plus
+  d'un étudiant côté etudiant (voir etudiant.yml) — petits écarts d'intégrité à
+  connaître, la relation reste fiable pour l'écrasante majorité des lignes.
+
+volumetrie:
+  lignes: 7240
+
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+
+cles_etrangeres_declarees: []
+
+references_non_contraintes:
+  - colonne: prise_en_charge_id
+    cible_supposee: prise_en_charge.id
+    valeurs_non_nulles: 224
+    note: "Alimentée exactement pour le nombre total de lignes de prise_en_charge (224) — cohérent avec un lien 1:1 quand une prise en charge existe."
+
+colonnes:
+  - nom: id
+    type: integer
+    role: cle_primaire
+
+  - nom: montant_scolarite
+    type: numeric(10,2)
+    unite: "XOF (à confirmer)"
+    sens: "Montant total dû au titre de la scolarité."
+    a_confirmer: "Relation avec inscription_annuelle.montant_scolarite et tarif — source de vérité à clarifier."
+
+  - nom: scolarite_verse
+    type: numeric(10,2)
+    sens: >
+      Cumul RÉELLEMENT versé par l'étudiant, toutes origines confondues (y compris
+      l'historique repris hors module Caisse). RÉFÉRENCE OFFICIELLE pour « chiffre
+      d'affaires » / « recettes » / « total encaissé », à privilégier sur
+      SUM(paiement.montant) qui sous-estime largement ce total.
+    a_confirmer: "Mécanisme exact de mise à jour (recalcul automatique à chaque paiement, ou champ maintenu séparément) — non déductible du schéma seul."
+
+  - nom: scolarite_restante
+    type: numeric(12,2)
+    sens: "Solde restant dû — A CONFIRMER : colonne stockée (donc à tenir à jour) plutôt que calculée à la volée."
+
+  - nom: statut_etudiant
+    type: varchar(20)
+    contrainte_check: "ANY ('SOLDE','NON_SOLDE','en attente')"
+    valeurs_observees: ["SOLDE (6288)", "NON_SOLDE (948)", "en attente (4)"]
+    regle: "Indicateur du solde de scolarité — WHERE statut_etudiant = 'SOLDE' pour les dossiers soldés."
+
+  - nom: prise_en_charge_id
+    type: integer
+    cle_etrangere_non_contrainte: prise_en_charge.id
+    nullable_declare: true
+    valeurs_non_nulles: 224
+
+pieges:
+  - "Aucune FOREIGN KEY déclarée sur cette table, y compris pour rattacher une ligne à un étudiant : la seule voie d'accès est etudiant.scolarite_id (relation 1:1 voulue, mais avec quelques écarts observés, voir etudiant.yml)."
+  - "scolarite_verse et scolarite_restante : A CONFIRMER si ce sont des valeurs recalculées à chaque paiement ou des champs pouvant dériver de la réalité de paiement."
+  - "montant_scolarite existe à la fois ici et sur inscription_annuelle : ne pas supposer qu'elles sont toujours synchronisées sans vérification."
+
+jointures_usuelles:
+  - sql: "etudiant e JOIN scolarite s ON s.id = e.scolarite_id"
+    note: "Référence non contrainte, relation quasi 1:1 mais 41 lignes de scolarite orphelines observées."
+  - sql: "scolarite s JOIN prise_en_charge pec ON pec.id = s.prise_en_charge_id"
+    note: "Référence non contrainte."
+
+questions_metier:
+  - "Un étudiant a-t-il soldé sa scolarité ? -> etudiant JOIN scolarite, filtrer statut_etudiant = 'SOLDE'"
+  - "Quel est le reste à payer d'un étudiant ? -> scolarite.scolarite_restante"
+  - "Quel est le chiffre d'affaires / total encaissé de l'établissement ? -> SUM(scolarite_verse), pas paiement.montant"
+
+synonymes:
+  scolarite_restante: ["reste à payer", "solde dû"]
+  statut_etudiant: ["statut de solde", "statut de paiement de la scolarité"]
+
+a_confirmer:
+  - "Mode de calcul/mise à jour de scolarite_verse et scolarite_restante"
+  - "Relation entre scolarite.montant_scolarite et inscription_annuelle.montant_scolarite"

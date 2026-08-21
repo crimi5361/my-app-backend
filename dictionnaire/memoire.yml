@@ -1,0 +1,28 @@
+table: memoire
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Dépôt de mémoire de fin d'études d'un étudiant pour une année académique, avec circuit de validation."
+granularite: "1 ligne = 1 mémoire déposé par un étudiant pour une année académique"
+volumetrie:
+  lignes: 461
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: annee_academique_id
+    reference: anneeacademique.id
+  - colonne: etudiant_id
+    reference: etudiant.id
+references_non_contraintes:
+  - colonne: traite_par
+    cible_supposee: utilisateur.id
+colonnes_ambigues:
+  - nom: statut
+    valeur_par_defaut: "'EN_ATTENTE'"
+    a_confirmer: "Liste complète des valeurs possibles (pas de contrainte CHECK déclarée)."
+  - nom: rapport_analyse
+    type: text
+    a_confirmer: "Contenu exact (rapport d'anti-plagiat ? synthèse ?) non déductible du schéma."
+jointures_usuelles:
+  - sql: "memoire m JOIN etudiant e ON e.id = m.etudiant_id"

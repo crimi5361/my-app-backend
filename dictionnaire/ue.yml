@@ -1,0 +1,25 @@
+table: ue
+schema: public
+rang: B
+mesure_le: "2026-08-15"
+role_metier: "Unité d'Enseignement (UE), regroupement de matières au sein d'une maquette pédagogique."
+granularite: "1 ligne = 1 UE"
+volumetrie:
+  lignes: 684
+cle_primaire:
+  colonne: id
+  contrainte_declaree: true
+cles_etrangeres_declarees:
+  - colonne: maquette_id
+    reference: maquette.id
+references_non_contraintes:
+  - colonne: semestre_id
+    cible_supposee: semestre.id
+  - colonne: categorie_id
+    cible_supposee: categorie.id
+colonnes_ambigues:
+  - nom: code_ue
+    contrainte: "UNIQUE"
+jointures_usuelles:
+  - sql: "matiere m JOIN ue u ON u.id = m.ue_id"
+  - sql: "ue u JOIN maquette mq ON mq.id = u.maquette_id"
