@@ -12,6 +12,7 @@ const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
 const { getTotalInscrits, getInscriptionsValidees } = require('../services/statistiquesInscriptions.service');
+const { getStatistiquesKit } = require('../services/kitStatistiques.service');
 
 exports.getDashboardAdministrateur = async (req, res) => {
   const debutRequete = Date.now();
@@ -47,6 +48,7 @@ exports.getDashboardAdministrateur = async (req, res) => {
       journalDepartementsResult,
       dossiersEnAttente,
       inscriptionsValidees,
+      statistiquesKit,
     ] = await Promise.all([
       db.query(`
         SELECT r.nom AS role, u.statut, COUNT(*) AS total
@@ -146,6 +148,9 @@ exports.getDashboardAdministrateur = async (req, res) => {
       getDossiersEnAttenteParOrigine(db, { siteId, ecoleId, anneeAcademiqueId }),
 
       getInscriptionsValidees(db, { siteId, ecoleId, anneeAcademiqueId }),
+
+      // Chantier Kit étudiant — Phase statistiques (2026-08-21) : voir services/kitStatistiques.service.js.
+      getStatistiquesKit(db, { siteId, anneeAcademiqueId, ecoleId }),
     ]);
 
     const parRoleRaw = agentsParRole.rows;
@@ -239,6 +244,8 @@ exports.getDashboardAdministrateur = async (req, res) => {
         // Ajout — visibilité des dossiers en attente de paiement (admissions + réinscriptions),
         // même définition que le dashboard Caisse, avec répartition par origine (source_inscription).
         dossiersEnAttente,
+        // Chantier Kit étudiant — Phase statistiques (2026-08-21).
+        kit: statistiquesKit,
       },
     });
   } catch (error) {

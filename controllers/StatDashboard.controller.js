@@ -159,20 +159,23 @@ exports.getDashboardStats = async (req, res) => {
       // ✅ Filtre sur k.annee_academique_id (déjà capturé, immuable, à la création du kit) au lieu
       // de la position courante de l'étudiant. Les kits antérieurs à cette capture (annee_id NULL)
       // restent volontairement hors de tout total par année — aucune déduction par date.
+      // Chantier Kit étudiant, Phase 1 (2026-08-21) : k.deposer=true reste lu pour les lignes
+      // historiques (jamais réinterprétées) ; k.statut='KIT_PAYE' est la source pour toute ligne
+      // créée depuis cette phase — les deux conditions sont nécessaires pour ne perdre aucun total.
       db.query(`
         SELECT COALESCE(SUM(k.montant), 0) AS total
         FROM kit k
         JOIN etudiant e ON k.etudiant_id = e.id
-        WHERE k.annee_academique_id = $1 AND e.site_id = $2 AND k.deposer = true
+        WHERE k.annee_academique_id = $1 AND e.site_id = $2 AND (k.deposer = true OR k.statut = 'KIT_PAYE')
         ${ecoleCondAliasE}
       `, [anneeAcademiqueId, departementId, ...ecoleParams]),
 
-      // 9. Nombre total de kits
+      // 9. Nombre total de kits (payés — même condition dual ancien/nouveau que ci-dessus)
       db.query(`
         SELECT COUNT(*) AS total
         FROM kit k
         JOIN etudiant e ON k.etudiant_id = e.id
-        WHERE k.annee_academique_id = $1 AND e.site_id = $2 AND k.deposer = true
+        WHERE k.annee_academique_id = $1 AND e.site_id = $2 AND (k.deposer = true OR k.statut = 'KIT_PAYE')
         ${ecoleCondAliasE}
       `, [anneeAcademiqueId, departementId, ...ecoleParams]),
 

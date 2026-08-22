@@ -5,6 +5,7 @@
 // cumulatif via jointure etudiant→filiere→departement→ecole, paiement n'ayant pas ce lien direct).
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
+const { getStatistiquesKit } = require('../services/kitStatistiques.service');
 
 exports.getDashboardComptabilite = async (req, res) => {
   try {
@@ -43,6 +44,7 @@ exports.getDashboardComptabilite = async (req, res) => {
       enAttenteResult,
       financeResult,
       pecResult,
+      statistiquesKit,
     ] = await Promise.all([
       db.query(`
         SELECT COALESCE(SUM(p.montant), 0) AS total FROM paiement p JOIN caisse c ON c.id = p.caisse_id
@@ -138,6 +140,9 @@ exports.getDashboardComptabilite = async (req, res) => {
         FROM prise_en_charge p JOIN etudiant e ON e.id = p.etudiant_id
         WHERE p.statut = 'valide' AND p.annee_academique_id = $1 AND e.site_id = $2 ${ecoleCondEtudiant}
       `, baseParams),
+
+      // Chantier Kit étudiant — Phase statistiques (2026-08-21) : voir services/kitStatistiques.service.js.
+      getStatistiquesKit(db, { siteId, anneeAcademiqueId, ecoleId }),
     ]);
 
     res.status(200).json({
@@ -167,6 +172,8 @@ exports.getDashboardComptabilite = async (req, res) => {
           total_pec: parseFloat(pecResult.rows[0].total),
           nombre_pec: parseInt(pecResult.rows[0].nombre, 10),
         },
+        // Chantier Kit étudiant — Phase statistiques (2026-08-21).
+        kit: statistiquesKit,
       },
     });
   } catch (error) {

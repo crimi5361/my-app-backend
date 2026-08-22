@@ -37,6 +37,7 @@ const {
   getTotalInscrits, getInscriptionsValidees, getInscriptionsValideesPeriodes,
   getEvolutionInscriptionsQuotidienne, getEvolutionRecettesQuotidienne,
 } = require('../services/statistiquesInscriptions.service');
+const { getStatistiquesKit } = require('../services/kitStatistiques.service');
 
 exports.getDashboardFondateur = async (req, res) => {
   try {
@@ -77,6 +78,7 @@ exports.getDashboardFondateur = async (req, res) => {
       moyensGenerauxEtatStock,
       moyensGenerauxEvolution,
       dossiersEnAttente,
+      statistiquesKit,
     ] = await Promise.all([
       // ✅ Chantier Statistiques (2026-08-18) : source unique — voir
       // services/statistiquesInscriptions.service.js. Remplace l'ancien COUNT(*) sur
@@ -182,6 +184,10 @@ exports.getDashboardFondateur = async (req, res) => {
       // Visibilité des dossiers en attente (admissions + réinscriptions), même définition/périmètre
       // que le dashboard Caisse — voir services/dossiersEnAttente.service.js.
       getDossiersEnAttenteParOrigine(db, { siteId, ecoleId, anneeAcademiqueId }),
+
+      // Chantier Kit étudiant — Phase statistiques (2026-08-21) : source unique, voir
+      // services/kitStatistiques.service.js — réutilisée à l'identique par les 3 autres dashboards.
+      getStatistiquesKit(db, { siteId, anneeAcademiqueId, ecoleId }),
     ]);
 
     res.status(200).json({
@@ -261,6 +267,9 @@ exports.getDashboardFondateur = async (req, res) => {
         // Ajout — visibilité des dossiers en attente de paiement (admissions + réinscriptions),
         // même définition que le dashboard Caisse, avec répartition par origine (source_inscription).
         dossiersEnAttente,
+        // Chantier Kit étudiant — Phase statistiques (2026-08-21) — voir
+        // services/kitStatistiques.service.js.
+        kit: statistiquesKit,
       },
     });
   } catch (error) {
