@@ -1,32 +1,36 @@
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
+const { getPecActive } = require('../services/priseEnChargeResolution.service');
 
+// Chantier PEC — correction du rattachement par année (2026-08-21) : une prise en charge
+// n'appartient qu'à UNE année académique (voir audit). L'année pertinente est résolue côté
+// serveur — celle de la scolarité ACTUELLE de l'étudiant (e.annee_academique_id) — sauf si le
+// contexte appelant en fournit explicitement une autre (?anneeAcademiqueId=). Ne fait plus jamais
+// WHERE etudiant_id = ? seul : source unique services/priseEnChargeResolution.service.js.
 exports.getActivePECByEtudiant = async (req, res) => {
   try {
     const { id } = req.params;
-    
-    const pecResult = await db.query(
-      `SELECT * FROM prise_en_charge 
-       WHERE etudiant_id = $1 AND statut = 'valide'`,
-      [id]
-    );
-    
-    if (pecResult.rows.length === 0) {
-      return res.json({ 
-        success: true, 
-        data: null 
-      });
+    let anneeAcademiqueId = req.query.anneeAcademiqueId ? parseInt(req.query.anneeAcademiqueId, 10) : null;
+
+    if (!anneeAcademiqueId) {
+      const etudiantResult = await db.query('SELECT annee_academique_id FROM etudiant WHERE id = $1', [id]);
+      if (etudiantResult.rows.length === 0) {
+        return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
+      }
+      anneeAcademiqueId = etudiantResult.rows[0].annee_academique_id;
     }
-    
-    res.json({ 
-      success: true, 
-      data: pecResult.rows[0] 
-    });
+
+    if (!anneeAcademiqueId) {
+      return res.json({ success: true, data: null });
+    }
+
+    const pec = await getPecActive(db, { etudiantId: id, anneeAcademiqueId });
+    res.json({ success: true, data: pec });
   } catch (error) {
     console.error('Erreur récupération PEC:', error);
-    res.status(500).json({ 
-      success: false, 
-      message: 'Erreur lors de la récupération de la prise en charge' 
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la récupération de la prise en charge'
     });
   }
 };

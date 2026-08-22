@@ -9,6 +9,7 @@ const { v4: uuidv4 } = require('uuid');
 const { genererCodeCandidat } = require('../services/codePaiement.service');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { validerReferentielsIdentite } = require('../services/referentielIdentite.service');
+const { getPecActive } = require('../services/priseEnChargeResolution.service');
 
 const UPLOAD_DIR = path.join(__dirname, '../uploads/photos');
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -1279,6 +1280,7 @@ exports.getEtudiantById = async (req, res) => {
         f.sigle as filiere_sigle,
         n.libelle as niveau,
         a.annee as annee_academique,
+        e.annee_academique_id as annee_academique_id_brut,
         s.nom as site,
         dept.nom as departement,
         ec.nom as ecole,
@@ -1294,22 +1296,12 @@ exports.getEtudiantById = async (req, res) => {
         c.id as classe_id,
         c.nom as classe_nom,
         c.description as classe_description,
-        -- Informations sur le kit
+        -- Informations sur le kit (année courante de l'étudiant — cf. jointure ci-dessous)
         k.id as kit_id,
         k.montant as kit_montant,
         k.deposer as kit_deposer,
         k.date_enregistrement as kit_date_enregistrement,
-        -- Informations sur la prise en charge
-        pec.id as prise_en_charge_id,
-        pec.reference as prise_en_charge_reference,
-        pec.type_pec as prise_en_charge_type,
-        pec.pourcentage_reduction as prise_en_charge_pourcentage,
-        pec.montant_reduction as prise_en_charge_montant_reduction,
-        pec.statut as prise_en_charge_statut,
-        pec.date_demande as prise_en_charge_date_demande,
-        pec.date_validation as prise_en_charge_date_validation,
-        pec.valide_par as prise_en_charge_valide_par,
-        pec.motif_refus as prise_en_charge_motif_refus
+        k.statut as kit_statut
       FROM etudiant e
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
@@ -1323,8 +1315,10 @@ exports.getEtudiantById = async (req, res) => {
       LEFT JOIN scolarite sc ON e.scolarite_id = sc.id
       LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN classe c ON g.classe_id = c.id
-      LEFT JOIN kit k ON e.id = k.etudiant_id
-      LEFT JOIN prise_en_charge pec ON e.id = pec.etudiant_id
+      -- Chantier Kit étudiant, Phase 1 (2026-08-21) : un étudiant peut désormais avoir une ligne
+      -- kit PAR ANNÉE académique (kit_unique_etudiant_annee) — scopé sur son année courante pour
+      -- ne jamais dupliquer cette ligne (WHERE e.id=$1 attend exactement une ligne en retour).
+      LEFT JOIN kit k ON e.id = k.etudiant_id AND k.annee_academique_id = e.annee_academique_id
       WHERE e.id = $1
     `;
 
@@ -1339,7 +1333,15 @@ exports.getEtudiantById = async (req, res) => {
     }
 
     const etudiantData = result.rows[0];
-    
+
+    // Chantier PEC — correction du rattachement par année (2026-08-21) : la PEC affichée doit
+    // correspondre à l'année académique DE LA SCOLARITÉ AFFICHÉE (celle de l'étudiant, ici),
+    // jamais "la dernière PEC valide toutes années confondues" — source unique
+    // services/priseEnChargeResolution.service.js.
+    const pecActive = etudiantData.annee_academique_id_brut
+      ? await getPecActive(db, { etudiantId: id, anneeAcademiqueId: etudiantData.annee_academique_id_brut })
+      : null;
+
     // Formater les données de base
     const etudiant = {
       ...etudiantData,
@@ -1361,38 +1363,37 @@ exports.getEtudiantById = async (req, res) => {
         }
       },
       
-      // Informations sur le kit
+      // Informations sur le kit — statut absent (undefined/null) sur les lignes historiques
+      // (2025-2026, jamais réinterprétées) : le frontend replie alors sur `deposer`.
       kit: {
         id: etudiantData.kit_id,
         montant: etudiantData.kit_montant,
         deposer: etudiantData.kit_deposer,
-        date_enregistrement: etudiantData.kit_date_enregistrement
+        date_enregistrement: etudiantData.kit_date_enregistrement,
+        statut: etudiantData.kit_statut ?? null
       },
       
-      // Informations sur la prise en charge
-      prise_en_charge: {
-        id: etudiantData.prise_en_charge_id,
-        reference: etudiantData.prise_en_charge_reference,
-        type: etudiantData.prise_en_charge_type,
-        pourcentage_reduction: etudiantData.prise_en_charge_pourcentage,
-        montant_reduction: etudiantData.prise_en_charge_montant_reduction,
-        statut: etudiantData.prise_en_charge_statut,
-        date_demande: etudiantData.prise_en_charge_date_demande,
-        date_validation: etudiantData.prise_en_charge_date_validation,
-        valide_par: etudiantData.prise_en_charge_valide_par,
-        motif_refus: etudiantData.prise_en_charge_motif_refus
-      }
+      // Prise en charge — uniquement celle de l'année académique de cet étudiant (pecActive
+      // résolu ci-dessus), jamais une PEC historique d'une autre année.
+      prise_en_charge: pecActive ? {
+        id: pecActive.id,
+        reference: pecActive.reference,
+        type: pecActive.type_pec,
+        pourcentage_reduction: pecActive.pourcentage_reduction,
+        montant_reduction: pecActive.montant_reduction,
+        statut: pecActive.statut,
+        date_demande: pecActive.date_demande,
+        date_validation: pecActive.date_validation,
+        valide_par: pecActive.valide_par,
+        motif_refus: pecActive.motif_refus
+      } : null
     };
-    
+
     // Supprimer les champs temporaires
     const fieldsToDelete = [
       'groupe_id', 'groupe_nom', 'groupe_est_primaire', 'groupe_capacite', 'classe_id', 'classe_nom', 'classe_description',
       'kit_id', 'kit_montant', 'kit_deposer', 'kit_date_enregistrement',
-      'prise_en_charge_id', 'prise_en_charge_reference', 'prise_en_charge_type',
-      'prise_en_charge_pourcentage', 'prise_en_charge_montant_reduction',
-      'prise_en_charge_statut', 'prise_en_charge_date_demande',
-      'prise_en_charge_date_validation', 'prise_en_charge_valide_par',
-      'prise_en_charge_motif_refus', 'inscrit_par_email', 'inscrit_par_nom',
+      'annee_academique_id_brut', 'inscrit_par_email', 'inscrit_par_nom',
       'verifie_par_email', 'verifie_par_nom'
     ];
     
@@ -1411,11 +1412,6 @@ exports.getEtudiantById = async (req, res) => {
     // Gérer les cas où le kit n'est pas défini
     if (etudiant.kit.id === null) {
       etudiant.kit = null;
-    }
-
-    // Gérer les cas où la prise en charge n'est pas définie
-    if (etudiant.prise_en_charge.id === null) {
-      etudiant.prise_en_charge = null;
     }
 
     // Pièces justificatives détaillées (checkbox + fichier éventuel, cf. module archivage)
@@ -1658,11 +1654,7 @@ exports.getRecuData = async (req, res) => {
         p.id as paiement_id, p.montant as paiement_montant, p.date_paiement, p.methode,
         r.id as recu_id, r.numero_recu, r.date_emission, r.emetteur,
         k.montant as kit_montant, k.deposer as kit_deposer, k.date_enregistrement as kit_date,
-        k.annee_academique_id as kit_annee_academique_id,
-        pec.id as pec_id, pec.type_pec, pec.nature_pec, pec.pourcentage_reduction, pec.montant_reduction,
-        pec.statut as pec_statut, pec.reference as pec_reference,
-        pec.date_demande as pec_date_demande, pec.date_validation as pec_date_validation,
-        pec.valide_par as pec_valide_par, pec.motif_refus as pec_motif_refus
+        k.annee_academique_id as kit_annee_academique_id, k.statut as kit_statut
       FROM etudiant e
       JOIN filiere f ON e.id_filiere = f.id
       JOIN niveau n ON e.niveau_id = n.id
@@ -1686,11 +1678,13 @@ exports.getRecuData = async (req, res) => {
         AND c.annee_academique_id = e.annee_academique_id AND c.curcus_id IS NOT DISTINCT FROM e.curcus_id
       LEFT JOIN paiement p ON p.etudiant_id = e.id AND p.annee_academique_id = COALESCE($2::int, e.annee_academique_id)
       LEFT JOIN recu r ON p.recu_id = r.id
-      LEFT JOIN kit k ON k.etudiant_id = e.id
-      LEFT JOIN prise_en_charge pec ON pec.etudiant_id = e.id
-      LEFT JOIN utilisateur admin ON pec.valide_par = admin.id
+      -- Chantier Kit étudiant, Phase 1 (2026-08-21) : scopé sur la MÊME année que le paiement
+      -- ci-dessus (explicite via $2, sinon l'année courante de l'étudiant) — un étudiant peut
+      -- désormais avoir une ligne kit par année (kit_unique_etudiant_annee), le reçu doit montrer
+      -- celle de la campagne concernée, jamais une ligne arbitraire parmi plusieurs.
+      LEFT JOIN kit k ON k.etudiant_id = e.id AND k.annee_academique_id = COALESCE($2::int, e.annee_academique_id)
       WHERE e.id = $1
-      ORDER BY p.date_paiement DESC, pec.date_demande DESC
+      ORDER BY p.date_paiement DESC
     `;
 
     const result = await client.query(query, [id, anneeAcademiqueIdParam]);
@@ -1768,8 +1762,8 @@ exports.getRecuData = async (req, res) => {
     const nombreVersementsPrevu = modalites?.nombre_versements_prevu ?? etudiantData.nombre_versements_prevu;
     const dateDepart = modalites?.created_at || etudiantData.date_inscription || new Date();
 
-    // Paiements dédupliqués (la jointure paiement × prise_en_charge peut produire des doublons
-    // par ligne PEC) — nécessaire pour un calcul d'échéancier exact.
+    // Paiements dédupliqués (un même paiement peut apparaître plusieurs fois selon les jointures
+    // ci-dessus) — nécessaire pour un calcul d'échéancier exact.
     const paiementsUniques = Array.from(
       new Map(
         result.rows.filter(row => row.paiement_id !== null).map(row => [row.paiement_id, row])
@@ -1783,30 +1777,49 @@ exports.getRecuData = async (req, res) => {
       dateDepart,
     }) : null;
 
-    // Récupérer toutes les PEC (il peut y en avoir plusieurs)
-    const toutesLesPEC = result.rows
-      .filter(row => row.pec_id !== null)
-      .map(row => ({
-        id: row.pec_id,
+    // Chantier PEC — correction du rattachement par année (2026-08-21) : le reçu ne doit JAMAIS
+    // récupérer une PEC d'une autre année que celle affichée (§6 de la demande — point critique,
+    // cas réel DIALLO). anneeCiblee = l'année du reçu (celle demandée en paramètre, sinon l'année
+    // courante de l'étudiant) — exactement la même année que celle utilisée ci-dessus pour
+    // paiement/kit/historique_inscription, jamais une autre. pecActive vient exclusivement de la
+    // source unique services/priseEnChargeResolution.service.js — aucune deuxième définition de
+    // "PEC active" ici. Le repli en_attente/refusée (même comportement d'affichage qu'avant, cf.
+    // Chantier 2) est une simple lecture complémentaire, scopée à la même année, jamais une
+    // deuxième logique de résolution.
+    const anneeCiblee = anneeAcademiqueIdParam ? Number(anneeAcademiqueIdParam) : Number(etudiantData.annee_academique_id) || null;
+    const pecActive = anneeCiblee ? await getPecActive(client, { etudiantId: id, anneeAcademiqueId: anneeCiblee }) : null;
+
+    let toutesLesPEC = [];
+    let pecEnAttente = null;
+    let pecRefusee = null;
+    if (anneeCiblee) {
+      const pecAnneeResult = await client.query(
+        `SELECT p.*, admin.nom as admin_nom
+         FROM prise_en_charge p
+         LEFT JOIN utilisateur admin ON p.valide_par = admin.id
+         WHERE p.etudiant_id = $1 AND p.annee_academique_id = $2
+         ORDER BY p.date_demande DESC`,
+        [id, anneeCiblee]
+      );
+      toutesLesPEC = pecAnneeResult.rows.map(row => ({
+        id: row.id,
         type_pec: row.type_pec,
         nature_pec: row.nature_pec,
         pourcentage_reduction: row.pourcentage_reduction,
         montant_reduction: row.montant_reduction,
-        reference: row.pec_reference,
-        statut: row.pec_statut,
-        date_demande: row.pec_date_demande,
-        date_validation: row.pec_date_validation,
-        valide_par: row.pec_valide_par,
-        motif_refus: row.pec_motif_refus,
-        valide_par_nom: row.admin_nom ? `${row.admin_nom} ${row.admin_prenoms}` : null
+        reference: row.reference,
+        statut: row.statut,
+        date_demande: row.date_demande,
+        date_validation: row.date_validation,
+        valide_par: row.valide_par,
+        motif_refus: row.motif_refus,
+        valide_par_nom: row.admin_nom || null
       }));
-
-    // Trouver la PEC active (valide) ou la dernière en attente d'une décision (Chantier 2 :
-    // "initiee" = PEC institutionnelle initiée à la Caisse, décision Fondateur encore ouverte —
-    // même statut "à trancher" que "en_attente" du point de vue du reçu).
-    const pecActive = toutesLesPEC.find(pec => pec.statut === 'valide');
-    const pecEnAttente = toutesLesPEC.find(pec => pec.statut === 'en_attente' || pec.statut === 'initiee');
-    const pecRefusee = toutesLesPEC.find(pec => pec.statut === 'refuse');
+      // "initiee" (Chantier 2) : PEC institutionnelle créée à la Caisse, décision Fondateur
+      // encore ouverte — même statut "à trancher" que "en_attente" du point de vue du reçu.
+      pecEnAttente = toutesLesPEC.find(pec => pec.statut === 'en_attente' || pec.statut === 'initiee') || null;
+      pecRefusee = toutesLesPEC.find(pec => pec.statut === 'refuse') || null;
+    }
 
     // Le kit peut être suspendu pour la campagne à laquelle il se rattache (cf.
     // KIT_ANNEES_SUSPENDUES) — dans ce cas le bloc est entièrement masqué du reçu, jamais
@@ -1856,11 +1869,14 @@ exports.getRecuData = async (req, res) => {
           statut_etudiant: etudiantData.statut_etudiant || 'NON_SOLDE'
         },
         
-        // Kit (masqué si le module est suspendu pour l'année à laquelle ce kit se rattache)
+        // Kit (masqué si le module est suspendu pour l'année à laquelle ce kit se rattache).
+        // statut absent (null) sur les lignes historiques (2025-2026) : le frontend replie alors
+        // sur `deposer` — jamais réinterprété ici.
         kit: (etudiantData.kit_montant !== null && !kitSuspendu) ? {
           montant: etudiantData.kit_montant,
           deposer: etudiantData.kit_deposer,
-          date_enregistrement: etudiantData.kit_date
+          date_enregistrement: etudiantData.kit_date,
+          statut: etudiantData.kit_statut ?? null
         } : null,
         
         // Prise en charge - on prend la PEC active ou la dernière en attente

@@ -1,18 +1,18 @@
 const db = require('../config/db.config');
 const { affecterClasse } = require('../services/classeGroupe.service');
-const { isKitSuspenduPourAnnee } = require('../services/kitCampagne.service');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
+const { METHODES_VALIDES_NOUVEAU_PAIEMENT } = require('../services/methodesPaiement.service');
+const { getPecActive, getPecNonTerminalePourAnnee } = require('../services/priseEnChargeResolution.service');
 
 exports.createPaiement = async (req, res) => {
   const client = await db.connect();
-  
+
   try {
     await client.query('BEGIN');
-    const { etudiant_id, montant, methode, veut_kit_ecole, demande_pec, type_pec, pourcentage_reduction, reference_pec } = req.body;
+    const { etudiant_id, montant, methode, demande_pec, type_pec, pourcentage_reduction, reference_pec } = req.body;
     const userId = req.user.id;
     const userCode = req.user.code;
     const date_paiement = new Date();
-    const kitAmount = 5000;
 
     // Validation des données d'entrée
     if (!etudiant_id || !montant || !methode) {
@@ -23,26 +23,23 @@ exports.createPaiement = async (req, res) => {
       throw new Error('Le montant doit être un nombre positif');
     }
 
-    // Vérifier l'existence de kit et PEC active
-    const [kitResult, pecResult] = await Promise.all([
-      client.query('SELECT * FROM kit WHERE etudiant_id = $1', [etudiant_id]),
-      client.query(
-        `SELECT * FROM prise_en_charge 
-         WHERE etudiant_id = $1 AND statut = 'valide'`,
-        [etudiant_id]
-      )
-    ]);
-
-    const hasKit = kitResult.rows.length > 0;
-    const hasActivePEC = pecResult.rows.length > 0;
-    const pecActive = hasActivePEC ? pecResult.rows[0] : null;
+    // ✅ Fermeture de porte dérobée (2026-08-18) : ce endpoint n'avait aucune whitelist sur
+    // `methode`, contrairement aux 3 endpoints équivalents de caisse.controller.js — n'importe
+    // quelle chaîne pouvait être insérée en base. Même règle centralisée qu'eux désormais.
+    if (!METHODES_VALIDES_NOUVEAU_PAIEMENT.includes(methode)) {
+      throw new Error(`Méthode de paiement invalide. Valeurs acceptées : ${METHODES_VALIDES_NOUVEAU_PAIEMENT.join(', ')}.`);
+    }
 
     // Année académique courante de l'étudiant, tracée sur le paiement pour permettre de
     // filtrer l'historique par année (les transitions d'année ne sont pas déductibles après coup).
-    // Récupérée ici (avant le bloc kit ci-dessous) pour être réutilisée sans requête dupliquée
-    // lors de l'enregistrement du paiement plus bas.
     const anneeResult = await client.query('SELECT annee_academique_id FROM etudiant WHERE id = $1', [etudiant_id]);
     const anneeAcademiqueId = anneeResult.rows[0]?.annee_academique_id || null;
+
+    // Chantier PEC — correction du rattachement par année (2026-08-21) : une prise en charge
+    // n'est JAMAIS applicable à une autre année que la sienne — voir audit. Source unique :
+    // services/priseEnChargeResolution.service.js, jamais une deuxième requête locale.
+    const pecActive = anneeAcademiqueId ? await getPecActive(client, { etudiantId: etudiant_id, anneeAcademiqueId }) : null;
+    const hasActivePEC = !!pecActive;
 
     // 1. Vérifier si c'est le premier paiement
     const checkPremierPaiement = await client.query(
@@ -51,28 +48,11 @@ exports.createPaiement = async (req, res) => {
     );
     const isPremierPaiement = parseInt(checkPremierPaiement.rows[0].count) === 0;
 
-    // Gestion du kit pour le premier paiement - TOUJOURS créer une entrée kit
-    // (le kit peut être suspendu pour la campagne en cours — cf. KIT_ANNEES_SUSPENDUES — auquel
-    // cas l'entrée est tout de même créée, à 0/non déposé, sans jamais tenir compte de la case
-    // "veut_kit_ecole", conformément à la suspension du module et non à sa suppression)
-    const kitSuspendu = await isKitSuspenduPourAnnee(client, anneeAcademiqueId);
-    if (isPremierPaiement && !hasKit) {
-      let kitMontant = 0;
-      let kitDeposer = false;
-
-      if (veut_kit_ecole && !kitSuspendu) {
-        // Cas 1: Case cochée - a payé le kit à l'école
-        kitMontant = kitAmount;
-        kitDeposer = true;
-      }
-      // Cas 2: Case non cochée (ou module suspendu) - montant 0 et deposer false
-
-      await client.query(
-        `INSERT INTO kit (etudiant_id, montant, deposer, date_enregistrement, annee_academique_id)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [etudiant_id, kitMontant, kitDeposer, date_paiement, anneeAcademiqueId]
-      );
-    }
+    // Chantier Kit étudiant, Phase 1 (2026-08-21) : ce endpoint ne crée plus AUCUNE ligne `kit` —
+    // c'était l'ancienne logique ambiguë (case "veut_kit_ecole" cachée dans ce même paiement,
+    // jamais une vraie transaction Caisse distincte, cf. audit). Le Kit est désormais un
+    // traitement totalement indépendant (POST /api/kit/traiter), par (étudiant, année
+    // académique), déclenché depuis l'écran Caisse après ce paiement — jamais mêlé à son montant.
 
     // Gestion de la demande de prise en charge
     if (demande_pec && !hasActivePEC) {
@@ -152,15 +132,13 @@ exports.createPaiement = async (req, res) => {
         s.scolarite_restante,
         s.id as scolarite_id,
         s.statut_etudiant,
-        e.statut_scolaire,
-        p.montant_reduction
+        e.statut_scolaire
       FROM etudiant e
 	    JOIN curcus c ON e.curcus_id = c.id
       JOIN scolarite s ON e.scolarite_id = s.id
       JOIN filiere f ON e.id_filiere = f.id
       JOIN typefiliere tf ON f.type_filiere_id = tf.id
       JOIN niveau n ON e.niveau_id = n.id
-      LEFT JOIN prise_en_charge p ON p.etudiant_id = e.id AND p.statut = 'valide'
       WHERE e.id = $1
     `;
     const etudiantResult = await client.query(etudiantQuery, [etudiant_id]);
@@ -181,9 +159,11 @@ exports.createPaiement = async (req, res) => {
     let currentRestante;
     
     if (hasActivePEC) {
-      // LOGIQUE CORRECTE: Utiliser le montant_reduction de la PEC
-      montantReductionPEC = parseFloat(etudiant.montant_reduction) || 0;
-      
+      // Chantier PEC — correction du rattachement par année (2026-08-21) : montant_reduction
+      // vient exclusivement de pecActive, déjà résolu ci-dessus STRICTEMENT pour l'année de cet
+      // étudiant (services/priseEnChargeResolution.service.js) — jamais une PEC d'une autre année.
+      montantReductionPEC = parseFloat(pecActive.montant_reduction) || 0;
+
       // Calcul du restant selon votre logique: total - (verse + réduction)
       const totalVerseVirtuel = currentVerse + montantReductionPEC;
       currentRestante = totalScolarite - totalVerseVirtuel;
@@ -283,7 +263,6 @@ exports.createPaiement = async (req, res) => {
         scolarite_restante: newScolariteRestante,
         statut_etudiant: statutEtudiant,
         is_premier_paiement: isPremierPaiement,
-        kit_ajoute: isPremierPaiement && veut_kit_ecole && !kitSuspendu,
         demande_pec_envoyee: demande_pec && !hasActivePEC,
         reduction_appliquee: hasActivePEC ? montantReductionPEC : 0,
         total_scolarite: totalScolarite,
@@ -296,7 +275,9 @@ exports.createPaiement = async (req, res) => {
     await client.query('ROLLBACK');
     console.error('Erreur lors de l\'enregistrement du paiement:', error);
     
-    res.status(error.message.includes('Données manquantes') ? 400 : 500).json({
+    res.status(
+      error.message.includes('Données manquantes') || error.message.includes('Méthode de paiement invalide') ? 400 : 500
+    ).json({
       success: false,
       message: error.message || 'Erreur lors de l\'enregistrement du paiement'
     });
@@ -322,28 +303,6 @@ exports.demanderPECSeule = async (req, res) => {
       throw new Error('Le pourcentage de réduction doit être un nombre entre 1 et 100');
     }
 
-    // Vérifier s'il y a déjà une PEC active
-    const pecActiveResult = await client.query(
-      `SELECT * FROM prise_en_charge 
-       WHERE etudiant_id = $1 AND statut = 'valide'`,
-      [etudiant_id]
-    );
-
-    if (pecActiveResult.rows.length > 0) {
-      throw new Error('Une prise en charge active existe déjà pour cet étudiant');
-    }
-
-    // Vérifier s'il y a déjà une PEC en attente
-    const pecEnAttenteResult = await client.query(
-      `SELECT * FROM prise_en_charge 
-       WHERE etudiant_id = $1 AND statut = 'en_attente'`,
-      [etudiant_id]
-    );
-
-    if (pecEnAttenteResult.rows.length > 0) {
-      throw new Error('Une demande de prise en charge est déjà en attente pour cet étudiant');
-    }
-
     // Récupérer le montant de la scolarité (pour calculer la réduction) et l'année académique
     // courante de l'étudiant (capturée immuablement à la création de la PEC).
     const scolariteResult = await client.query(
@@ -360,6 +319,21 @@ exports.demanderPECSeule = async (req, res) => {
     const montantScolarite = parseFloat(scolariteResult.rows[0].montant_scolarite);
     const montantReduction = (montantScolarite * pourcentage_reduction) / 100;
     const anneeAcademiqueId = scolariteResult.rows[0].annee_academique_id;
+
+    // Chantier PEC — correction du rattachement par année (2026-08-21) : le contrôle de doublon
+    // est désormais scopé par annee_academique_id (services/priseEnChargeResolution.service.js) —
+    // une PEC valide/en attente d'une ANCIENNE année ne doit plus jamais bloquer une nouvelle
+    // demande pour la nouvelle année.
+    if (anneeAcademiqueId) {
+      const existante = await getPecNonTerminalePourAnnee(client, { etudiantId: etudiant_id, anneeAcademiqueId });
+      if (existante) {
+        throw new Error(
+          existante.statut === 'valide'
+            ? 'Une prise en charge active existe déjà pour cet étudiant pour cette année académique'
+            : 'Une demande de prise en charge est déjà en attente pour cet étudiant pour cette année académique'
+        );
+      }
+    }
 
     // Créer la demande de prise en charge AVEC le montant_reduction calculé
     const pecResult = await client.query(
@@ -423,6 +397,8 @@ exports.validerPEC = async (req, res) => {
          p.statut,
          p.reference,
          p.date_demande,
+         p.annee_academique_id AS pec_annee_academique_id,
+         e.annee_academique_id AS etudiant_annee_academique_id,
          s.montant_scolarite,
          s.scolarite_verse,
          s.scolarite_restante,
@@ -447,6 +423,22 @@ exports.validerPEC = async (req, res) => {
     // du point de vue de cet écran.
     if (!['en_attente', 'initiee'].includes(pec.statut)) {
       throw new Error('Cette prise en charge a déjà été traitée');
+    }
+
+    // Chantier PEC — correction du rattachement par année (2026-08-21) : une PEC ne peut être
+    // validée/refusée que si l'étudiant est ENCORE sur l'année académique à laquelle cette PEC se
+    // rattache. Sans ce contrôle, une demande restée en_attente/initiee traitée tardivement (après
+    // réinscription de l'étudiant vers une nouvelle année) appliquerait sa réduction à la
+    // scolarité de la NOUVELLE année via e.scolarite_id (pointeur courant) — interdit par l'audit
+    // ("il est interdit de valider une PEC 2025-2026 et de l'appliquer à une scolarité
+    // 2026-2027"). Aucune écriture sur `scolarite`/`prise_en_charge` dans ce cas : l'agent doit
+    // traiter la demande comme obsolète (la refuser) plutôt que de la voir appliquée à tort.
+    if (pec.pec_annee_academique_id !== pec.etudiant_annee_academique_id) {
+      const err = new Error(
+        "Cette prise en charge concerne une année académique différente de l'année académique actuelle de l'étudiant (probablement réinscrit depuis) : elle ne peut plus être validée ni refusée avec effet sur la scolarité. Traitez-la comme obsolète."
+      );
+      err.code = 'PEC_ANNEE_OBSOLETE';
+      throw err;
     }
 
     const estInstitutionnelle = pec.nature_pec === 'institutionnelle';
@@ -581,10 +573,14 @@ exports.validerPEC = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Erreur lors de la validation PEC:', error);
-    
-    res.status(error.message.includes('Données manquantes') ? 400 : 500).json({
+
+    const status = error.code === 'PEC_ANNEE_OBSOLETE' ? 409
+      : error.message.includes('Données manquantes') ? 400
+      : 500;
+    res.status(status).json({
       success: false,
-      message: error.message || 'Erreur lors de la validation de la prise en charge'
+      message: error.message || 'Erreur lors de la validation de la prise en charge',
+      code: error.code,
     });
   } finally {
     client.release();
