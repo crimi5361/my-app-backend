@@ -16,8 +16,12 @@
 // direct depuis `etudiant`, car stables et protégées par la même contrainte FK.
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
-const { enregistrerMouvementStock, getEmplacementStockPourSite } = require('../services/stockMoyensGeneraux.service');
+const { enregistrerMouvementStock, getEmplacementStockPourSite, getSoldeStock } = require('../services/stockMoyensGeneraux.service');
 
+// Chantier Moyens Généraux, Phase 2C (2026-08-19) : la distribution gratuite standard ne laisse
+// plus le client fixer la quantité — elle est TOUJOURS celle de la règle applicable
+// (quantite_standard), imposée côté backend (cf. getAccessoiresEligibles/creerDistribution
+// ci-dessous). Une ligne du corps de requête n'a donc plus besoin de porter de quantité du tout.
 function validerLignes(lignes) {
   if (!Array.isArray(lignes) || lignes.length === 0) {
     return 'Sélectionnez au moins un accessoire à remettre.';
@@ -27,15 +31,75 @@ function validerLignes(lignes) {
     if (!Number.isInteger(ligne.accessoire_id)) {
       return 'Chaque ligne doit référencer un accessoire valide.';
     }
-    if (!Number.isInteger(ligne.quantite) || ligne.quantite <= 0) {
-      return 'Chaque ligne doit avoir une quantité entière et positive.';
-    }
     accessoireIds.push(ligne.accessoire_id);
   }
   if (new Set(accessoireIds).size !== accessoireIds.length) {
-    return 'Un même accessoire ne peut apparaître qu\'une seule fois — regroupez les quantités sur une seule ligne.';
+    return 'Un même accessoire ne peut apparaître qu\'une seule fois.';
   }
   return null;
+}
+
+// Résout la liste des accessoires éligibles pour CET étudiant précis (son niveau, son année) —
+// jamais `SELECT * FROM accessoire` (règle explicite Phase 2C §4). Une règle est applicable si :
+//   (a) regle.annee_academique_id = année de l'étudiant
+//   (b) regle.niveau_libelle = niveau de l'étudiant OU regle.tous_niveaux = true
+//   (c) accessoire.distribuable_etudiant = true ET accessoire.actif = true
+// Partagée par getFicheEtudiant (lecture, pour l'écran) ET creerDistribution (réécriture complète
+// de la même résolution au moment de la validation — jamais une confiance dans ce que le frontend
+// a affiché), pour ne jamais laisser diverger les deux calculs.
+async function getAccessoiresEligibles(dbClient, { etudiantId, niveauLibelle, anneeAcademiqueId, emplacementStockId }) {
+  const reglesResult = await dbClient.query(
+    `SELECT r.id AS regle_id, r.accessoire_id, r.quantite_standard, r.niveau_libelle, r.tous_niveaux,
+       a.nom AS accessoire_nom, a.code, a.categorie_id, c.nom AS categorie_nom
+     FROM regle_distribution_accessoire r
+     JOIN accessoire a ON a.id = r.accessoire_id
+     LEFT JOIN categorie_accessoire c ON c.id = a.categorie_id
+     WHERE r.annee_academique_id = $1 AND r.actif = true
+       AND a.distribuable_etudiant = true AND a.actif = true
+       AND (r.tous_niveaux = true OR r.niveau_libelle = $2)
+     ORDER BY a.nom`,
+    [anneeAcademiqueId, niveauLibelle]
+  );
+
+  // Chantier Moyens Généraux, Phase 2D (2026-08-19) : ld.est_supplementaire = false — une remise
+  // surplus payante (est_supplementaire = true) ne doit JAMAIS être comptée comme la dotation
+  // gratuite déjà consommée, sinon un étudiant ayant acheté un surplus verrait à tort son
+  // entitlement gratuit du même accessoire marqué "déjà distribué" alors qu'il ne l'a jamais reçu
+  // gratuitement.
+  const dejaDistribueResult = await dbClient.query(
+    `SELECT ld.accessoire_id, ld.quantite, d.date_remise, d.numero_recu
+     FROM ligne_distribution ld
+     JOIN distribution d ON d.id = ld.distribution_id
+     WHERE ld.etudiant_id = $1 AND ld.annee_academique_id = $2 AND ld.est_supplementaire = false`,
+    [etudiantId, anneeAcademiqueId]
+  );
+  const dejaDistribueParAccessoire = new Map(dejaDistribueResult.rows.map((r) => [r.accessoire_id, r]));
+
+  const accessoires = [];
+  for (const regle of reglesResult.rows) {
+    const dejaDistribue = dejaDistribueParAccessoire.get(regle.accessoire_id);
+    const solde = await getSoldeStock(dbClient, { emplacementStockId, accessoireId: regle.accessoire_id });
+
+    let etat;
+    if (dejaDistribue) etat = 'deja_distribue';
+    else if (solde < regle.quantite_standard) etat = 'indisponible';
+    else etat = 'disponible';
+
+    accessoires.push({
+      regle_id: regle.regle_id,
+      accessoire_id: regle.accessoire_id,
+      accessoire_nom: regle.accessoire_nom,
+      code: regle.code,
+      categorie_nom: regle.categorie_nom,
+      niveau_libelle: regle.tous_niveaux ? 'Tous les niveaux' : regle.niveau_libelle,
+      quantite_standard: regle.quantite_standard,
+      stock_disponible: solde,
+      etat,
+      deja_distribue_le: dejaDistribue ? dejaDistribue.date_remise : null,
+      deja_distribue_numero_recu: dejaDistribue ? dejaDistribue.numero_recu : null,
+    });
+  }
+  return accessoires;
 }
 
 async function getDistributionDetail(dbClient, distributionId, siteId) {
@@ -167,19 +231,21 @@ exports.getFicheEtudiant = async (req, res) => {
     }
     const etudiant = etudiantResult.rows[0];
 
-    const distributionResult = await db.query(
-      'SELECT id FROM distribution WHERE etudiant_id = $1 AND annee_academique_id = $2',
-      [etudiant.id, anneeAcademiqueId]
-    );
-
-    let remise = null;
-    if (distributionResult.rows.length > 0) {
-      remise = await getDistributionDetail(db, distributionResult.rows[0].id, siteId);
-    }
+    // Chantier Moyens Généraux, Phase 2C (2026-08-19) : remplace l'ancien "deja_remis"/"remise"
+    // (une seule remise possible par étudiant/année, tout ou rien) par la liste des accessoires
+    // réellement éligibles pour ce niveau/cette année, chacun avec son propre état — un étudiant
+    // peut désormais avoir certains articles déjà remis et d'autres encore à distribuer.
+    const emplacementStockId = await getEmplacementStockPourSite(db, siteId);
+    const accessoiresEligibles = await getAccessoiresEligibles(db, {
+      etudiantId: etudiant.id,
+      niveauLibelle: etudiant.niveau,
+      anneeAcademiqueId: etudiant.annee_academique_id,
+      emplacementStockId,
+    });
 
     res.status(200).json({
       success: true,
-      data: { ...etudiant, deja_remis: remise !== null, remise },
+      data: { ...etudiant, accessoires_eligibles: accessoiresEligibles },
     });
   } catch (error) {
     console.error('Erreur getFicheEtudiant:', error);
@@ -202,9 +268,110 @@ exports.getDistributionById = async (req, res) => {
   }
 };
 
+// ─── Reçu de remise CONSOLIDÉ (Chantier Moyens Généraux, Phase 2D — ajustements, 2026-08-19) ───
+// Distinct de getDistributionById : celui-ci retourne UNE session précise (un passage), volontairement
+// inchangé (continue de servir HistoriqueDistributions.tsx — "que s'est-il passé lors de CE
+// passage précis"). Celui-ci agrège, pour un étudiant et une année donnés, TOUTES les sessions —
+// gratuites ET surplus — en un document unique reflétant l'état COMPLET des remises à cet étudiant
+// (§3/§4 : "le reçu doit représenter l'historique complet", "ne pas remplacer/détruire l'ancien
+// historique" — rien n'est supprimé ici, cette vue est un agrégat en lecture seule).
+// Jamais confondu avec le reçu d'inscription (Etudiant/Recu_Payement, scolarité) — ce document
+// reste exclusivement "REÇU DE REMISE D'ACCESSOIRES", inchangé dans son principe (§1/§5).
+exports.getRecuConsolideEtudiant = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { anneeAcademiqueId } = req.query;
+    const siteId = req.user.departement_id;
+    if (!anneeAcademiqueId) {
+      return res.status(400).json({ success: false, message: "L'ID de l'année académique est requis." });
+    }
+
+    const etudiantResult = await db.query(
+      `SELECT e.id, e.nom, e.prenoms, e.matricule, e.matricule_iipea, e.sexe, e.photo_url
+       FROM etudiant e WHERE e.id = $1 AND e.site_id = $2`,
+      [id, siteId]
+    );
+    if (etudiantResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
+    }
+    const etudiant = etudiantResult.rows[0];
+
+    // Instantané académique + référence de document : celui de la session la plus récente pour cet
+    // étudiant/année — mêmes valeurs figées qu'un reçu de session (§1, jamais recalculées depuis
+    // l'état actuel de l'étudiant).
+    const snapshotResult = await db.query(
+      `SELECT numero_recu, date_remise, ecole_nom, filiere_nom, niveau_nom, classe_nom, site_nom,
+         aa.annee AS annee_academique
+       FROM distribution d
+       JOIN anneeacademique aa ON aa.id = d.annee_academique_id
+       WHERE d.etudiant_id = $1 AND d.annee_academique_id = $2
+       ORDER BY d.date_remise DESC LIMIT 1`,
+      [id, anneeAcademiqueId]
+    );
+    if (snapshotResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Aucune remise enregistrée pour cet étudiant sur cette année académique.' });
+    }
+    const snapshot = snapshotResult.rows[0];
+
+    const lignesOffertesResult = await db.query(
+      `SELECT ld.accessoire_id, a.code, a.nom, ld.quantite
+       FROM ligne_distribution ld
+       JOIN accessoire a ON a.id = ld.accessoire_id
+       JOIN distribution d ON d.id = ld.distribution_id
+       WHERE d.etudiant_id = $1 AND d.annee_academique_id = $2 AND ld.est_supplementaire = false
+       ORDER BY a.nom`,
+      [id, anneeAcademiqueId]
+    );
+
+    const lignesSurplusResult = await db.query(
+      `SELECT ld.accessoire_id, a.code, a.nom, ld.quantite,
+         dsa.reference, dsa.prix_unitaire_vente, dsa.montant_total, dsa.date_distribution,
+         pay.methode AS methode_paiement, pay.date_paiement, pr.numero_recu AS paiement_numero_recu,
+         ucaiss.nom AS caissier_nom
+       FROM ligne_distribution ld
+       JOIN accessoire a ON a.id = ld.accessoire_id
+       JOIN distribution d ON d.id = ld.distribution_id
+       JOIN demande_surplus_accessoire dsa ON dsa.id = ld.demande_surplus_id
+       LEFT JOIN paiement pay ON pay.id = dsa.paiement_id
+       LEFT JOIN recu pr ON pr.id = pay.recu_id
+       LEFT JOIN utilisateur ucaiss ON ucaiss.id::text = pay.effectue_par
+       WHERE d.etudiant_id = $1 AND d.annee_academique_id = $2 AND ld.est_supplementaire = true
+       ORDER BY dsa.date_distribution`,
+      [id, anneeAcademiqueId]
+    );
+
+    res.status(200).json({
+      success: true,
+      data: {
+        etudiant,
+        annee_academique: snapshot.annee_academique,
+        ecole_nom: snapshot.ecole_nom,
+        filiere_nom: snapshot.filiere_nom,
+        niveau_nom: snapshot.niveau_nom,
+        classe_nom: snapshot.classe_nom,
+        site_nom: snapshot.site_nom,
+        numero_recu_reference: snapshot.numero_recu,
+        date_derniere_remise: snapshot.date_remise,
+        lignes_offertes: lignesOffertesResult.rows,
+        lignes_surplus: lignesSurplusResult.rows,
+        total_offerts: lignesOffertesResult.rows.reduce((s, l) => s + l.quantite, 0),
+        total_surplus_paye: lignesSurplusResult.rows.reduce((s, l) => s + parseFloat(l.montant_total), 0),
+      },
+    });
+  } catch (error) {
+    console.error('Erreur getRecuConsolideEtudiant:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
 // Sous-phase 11 — historique des distributions. Toutes les colonnes académiques affichées et
 // filtrées (école/filière/niveau) proviennent de l'instantané figé sur `distribution`, jamais des
 // tables etudiant/filiere/ecole actuelles — cohérent avec le reçu (sous-phase 10).
+//
+// etudiant_id/annee_academique_id ajoutés (Chantier Moyens Généraux, Phase 2D — diagnostic reçu,
+// 2026-08-19) : nécessaires pour que chaque ligne de l'historique puisse ouvrir directement le reçu
+// de remise CONSOLIDÉ (GET /etudiant/:id/recu-consolide) plutôt que l'ancien reçu par session —
+// HistoriqueDistributions.tsx ne les avait pas et retombait donc sur l'ancienne route.
 exports.getHistorique = async (req, res) => {
   try {
     const siteId = req.user.departement_id;
@@ -271,7 +438,7 @@ exports.getHistorique = async (req, res) => {
     );
 
     const dataResult = await db.query(
-      `SELECT d.id, d.numero_recu, d.date_remise,
+      `SELECT d.id, d.numero_recu, d.date_remise, d.etudiant_id, d.annee_academique_id,
          d.ecole_nom, d.filiere_nom, d.niveau_nom, d.classe_nom,
          e.nom, e.prenoms, e.matricule, e.matricule_iipea,
          u.nom AS agent_nom,
@@ -388,32 +555,45 @@ exports.creerDistribution = async (req, res) => {
     const { ecole_nom: ecoleNom, filiere_nom: filiereNom, niveau_nom: niveauNom, classe_nom: classeNom } = etudiantResult.rows[0];
     const anneeAcademiqueId = anneeAcademiqueIdBody;
 
-    // Blocage ergonomique explicite (en plus de la contrainte UNIQUE en base, qui reste le
-    // filet de sécurité définitif contre toute course entre deux requêtes concurrentes — cf.
-    // le handler 23505 plus bas).
-    const dejaRemis = await client.query(
-      'SELECT numero_recu FROM distribution WHERE etudiant_id = $1 AND annee_academique_id = $2',
-      [etudiant_id, anneeAcademiqueId]
-    );
-    if (dejaRemis.rows.length > 0) {
-      await client.query('ROLLBACK');
-      return res.status(409).json({
-        success: false,
-        message: `Cet étudiant a déjà reçu ses accessoires pour cette année académique (reçu ${dejaRemis.rows[0].numero_recu}).`,
-      });
-    }
-
-    const accessoireIds = lignes.map((l) => l.accessoire_id);
-    const accessoiresResult = await client.query(
-      'SELECT id FROM accessoire WHERE id = ANY($1::int[]) AND actif = true',
-      [accessoireIds]
-    );
-    if (accessoiresResult.rows.length !== new Set(accessoireIds).size) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({ success: false, message: 'Un ou plusieurs accessoires sont introuvables ou désactivés.' });
-    }
-
     const emplacementStockId = await getEmplacementStockPourSite(client, siteId);
+
+    // Chantier Moyens Généraux, Phase 2C (2026-08-19) : revalidation COMPLÈTE des règles au moment
+    // de l'écriture — jamais une confiance dans ce que le frontend a affiché (§9/§15 du cahier des
+    // charges). Même résolution que getFicheEtudiant, réexécutée ici pour ne jamais diverger.
+    // Remplace l'ancien blocage "une seule remise par étudiant/année" par un blocage PAR ARTICLE.
+    const accessoiresEligibles = await getAccessoiresEligibles(client, {
+      etudiantId: etudiant_id,
+      niveauLibelle: niveauNom,
+      anneeAcademiqueId,
+      emplacementStockId,
+    });
+    const eligiblesParAccessoire = new Map(accessoiresEligibles.map((a) => [a.accessoire_id, a]));
+
+    for (const ligne of lignes) {
+      const eligible = eligiblesParAccessoire.get(ligne.accessoire_id);
+      if (!eligible) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          message: `Aucune règle de distribution active ne couvre l'accessoire #${ligne.accessoire_id} pour le niveau de cet étudiant, pour cette année académique.`,
+        });
+      }
+      if (eligible.etat === 'deja_distribue') {
+        await client.query('ROLLBACK');
+        return res.status(409).json({
+          success: false,
+          message: `« ${eligible.accessoire_nom} » a déjà été distribué gratuitement à cet étudiant (reçu ${eligible.deja_distribue_numero_recu}).`,
+        });
+      }
+      if (eligible.etat === 'indisponible') {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          message: `Stock insuffisant pour « ${eligible.accessoire_nom} » (disponible : ${eligible.stock_disponible}, requis : ${eligible.quantite_standard}).`,
+        });
+      }
+    }
+
     const siteResult = await client.query('SELECT nom FROM site WHERE id = $1', [siteId]);
     const siteNom = siteResult.rows[0]?.nom ?? null;
     const numeroRecu = `REM-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -428,34 +608,50 @@ exports.creerDistribution = async (req, res) => {
           ecoleNom, filiereNom, niveauNom, classeNom, siteNom]
       );
       distributionId = distributionResult.rows[0].id;
-    } catch (erreurUnicite) {
+    } catch (erreurEcriture) {
       await client.query('ROLLBACK');
-      if (erreurUnicite.code === '23505') {
-        return res.status(409).json({ success: false, message: 'Cet étudiant a déjà reçu ses accessoires pour cette année académique.' });
+      if (erreurEcriture.code === '23505') {
+        return res.status(409).json({ success: false, message: 'Conflit lors de la création du reçu — merci de réessayer.' });
       }
-      throw erreurUnicite;
+      throw erreurEcriture;
     }
 
     try {
       for (const ligne of lignes) {
+        const eligible = eligiblesParAccessoire.get(ligne.accessoire_id);
         // SEUL point d'écriture sur le grand-livre — jamais d'INSERT direct sur mouvement_stock.
+        // Le verrou FOR UPDATE posé dans enregistrerMouvementStock (Phase 2C, correction §G5) est
+        // le filet de sécurité définitif contre une course concurrente sur le dernier exemplaire —
+        // la vérification eligible.etat ci-dessus n'est qu'une pré-validation ergonomique.
         await enregistrerMouvementStock(client, {
           accessoireId: ligne.accessoire_id,
           emplacementStockId,
           type: 'distribution',
-          quantite: ligne.quantite,
+          quantite: eligible.quantite_standard,
           referenceType: 'distribution',
           referenceId: distributionId,
           effectuePar: req.user.id,
           motif: `Remise à l'étudiant #${etudiant_id} — reçu ${numeroRecu}`,
         });
+        // etudiant_id/annee_academique_id dénormalisés (migration 032) : c'est cette ligne, pas
+        // plus l'en-tête distribution, qui porte désormais la garantie "jamais deux fois
+        // gratuitement" (index unique ligne_distribution_unique_gratuit — filet de sécurité
+        // définitif contre une course concurrente sur le MÊME étudiant/accessoire, cf. handler
+        // 23505 ci-dessous).
         await client.query(
-          'INSERT INTO ligne_distribution (distribution_id, accessoire_id, quantite) VALUES ($1, $2, $3)',
-          [distributionId, ligne.accessoire_id, ligne.quantite]
+          `INSERT INTO ligne_distribution (distribution_id, accessoire_id, quantite, etudiant_id, annee_academique_id, regle_distribution_id)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [distributionId, ligne.accessoire_id, eligible.quantite_standard, etudiant_id, anneeAcademiqueId, eligible.regle_id]
         );
       }
     } catch (erreurMetier) {
       await client.query('ROLLBACK');
+      if (erreurMetier.code === '23505') {
+        return res.status(409).json({
+          success: false,
+          message: 'Un ou plusieurs accessoires sélectionnés viennent d\'être distribués par une autre opération concurrente — veuillez rouvrir la fiche de l\'étudiant.',
+        });
+      }
       return res.status(400).json({ success: false, message: erreurMetier.message });
     }
 
