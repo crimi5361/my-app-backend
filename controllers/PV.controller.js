@@ -2357,8 +2357,6 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
                 ues: uesFusionnees
             };
 
-            const totalCreditsMaquette = calculerTotalCreditsMaquette(structureAcademique.ues);
-
             const uesS1 = structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === 1);
             const uesS2 = structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === 2);
             const totalCreditsS1 = uesS1.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
@@ -2406,23 +2404,27 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
                         : (uesS2RepecheesMap.get(ue.ue_id) || ue)
                 );
 
-                // ✅ Totaux : sur le semestre demandé si précisé, sinon annuel
-                let totaux;
-                let uesPourEcue = uesAvecResultats;
-                if (semestreNum) {
-                    const uesSemestre = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === semestreNum);
-                    const totalCreditsSemestre = uesSemestre.reduce((sum, ue) => sum + ue.credits, 0);
-                    totaux = calculerTotauxFonction(uesSemestre, typeTraitement, totalCreditsSemestre);
-                    uesPourEcue = uesSemestre;
-                } else {
-                    totaux = calculerTotauxFonction(uesAvecResultats, typeTraitement, totalCreditsMaquette);
-                }
-
-                // ✅ UTILISER LA NOUVELLE FONCTION DE DÉCISION (avec le fix moyenne >= 10 pour DÉROGÉ)
-                const decision = determinerDecisionFonction(
-                    totaux.creditsValides, totaux.creditsTotal, typeTraitement,
-                    totaux.moyenneGenerale, totaux.uesAvecNotes
+                // ✅ SOURCE UNIQUE DE VÉRITÉ pour crédits/moyennes/décisions S1, S2, annuel —
+                // identique au Bulletin/PV/Réinscription (calculerRecapitulatifComplet), y compris
+                // le repêchage annuel BTS et la règle officielle moyenne annuelle = (S1+S2)/2.
+                // Remplace l'ancien calcul ad-hoc (calculerTotauxFonction direct sur les UE S1+S2
+                // combinées, sans jamais appliquer le repêchage annuel BTS) qui pouvait afficher une
+                // moyenne/décision différente de celle du Bulletin pour un même étudiant — cause
+                // des divergences observées sur Statistique_Resultat (ex. 8.65/AJOURNÉ au lieu de
+                // 10.00/ADMIS pour un étudiant BTS admis au Bulletin).
+                const recap = calculerRecapitulatifComplet(
+                    uesAvecResultats, typeTraitement, etudiant.niveau_libelle_etudiant || '', groupeInfo.nom
                 );
+                uesAvecResultats = recap.ues;
+
+                // ✅ Totaux : sur le semestre demandé si précisé, sinon annuel — mêmes valeurs que
+                // le Bulletin pour ce même étudiant/semestre/année (recap.s1/s2/annuel.decision est
+                // déjà calculée via determinerDecisionFonction à l'intérieur de calculerRecapitulatifComplet).
+                const totaux = semestreNum === 1 ? recap.s1 : semestreNum === 2 ? recap.s2 : recap.annuel;
+                const decision = totaux.decision;
+                const uesPourEcue = semestreNum
+                    ? uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === semestreNum)
+                    : uesAvecResultats;
 
                 const ecueAReprendre = _collecterEcueAReprendre(uesPourEcue);
 
@@ -2431,8 +2433,8 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
                 if (isAdmis) admis++;
                 else ajournes++;
 
-                if (totaux.moyenneGenerale > 0) {
-                    sommeMoyennes += totaux.moyenneGenerale;
+                if (totaux.moyenne > 0) {
+                    sommeMoyennes += totaux.moyenne;
                     totalAvecMoyenne++;
                 }
 
@@ -2441,33 +2443,17 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
                     totalEtudiantsAReprendre++;
                 }
 
-                // ✅ Éligibilité classe supérieure : calculée sur l'année, indépendamment du filtre semestre
-                let eligibleClasseSuperieure = false;
-                if (groupeInfo.nom && groupeInfo.nom.toUpperCase().includes('BTS')) {
-                    let sPS1 = 0, sCS1 = 0, sPS2 = 0, sCS2 = 0;
-                    uesS1Repechees.forEach(ue => {
-                        const moy = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
-                        sPS1 += moy * (ue.credits || 0); sCS1 += ue.credits || 0;
-                    });
-                    uesS2Repechees.forEach(ue => {
-                        const moy = ue.moyenne_affichage !== undefined ? ue.moyenne_affichage : (ue.moyenne || 0);
-                        sPS2 += moy * (ue.credits || 0); sCS2 += ue.credits || 0;
-                    });
-                    const moyenneAnnuelle = (sCS1 + sCS2) > 0 ? (sPS1 + sPS2) / (sCS1 + sCS2) : 0;
-                    eligibleClasseSuperieure = moyenneAnnuelle >= 10 && isAdmis;
-                } else {
-                    const totauxAnnuel = calculerTotauxFonction(uesAvecResultats, typeTraitement, totalCreditsMaquette);
-                    const decisionAnnuelle = determinerDecisionFonction(
-                        totauxAnnuel.creditsValides, totauxAnnuel.creditsTotal, typeTraitement,
-                        totauxAnnuel.moyenneGenerale, totauxAnnuel.uesAvecNotes
-                    );
-                    eligibleClasseSuperieure = totauxAnnuel.creditsValides >= 60 && decisionAnnuelle === 'ADMIS';
-                }
+                // ✅ Éligibilité classe supérieure : toujours calculée sur l'ANNÉE COMPLÈTE
+                // (recap.annuel), indépendamment du filtre semestre demandé — même source que la
+                // décision affichée, plus de recalcul ad-hoc parallèle (BTS "à plat" ou universitaire).
+                const eligibleClasseSuperieure = groupeInfo.nom && groupeInfo.nom.toUpperCase().includes('BTS')
+                    ? recap.annuel.moyenne >= 10 && (recap.annuel.decision === 'ADMIS' || recap.annuel.decision === 'DÉROGÉ')
+                    : recap.annuel.creditsValides >= 60 && recap.annuel.decision === 'ADMIS';
 
                 resultats.push({
                     ...etudiant,
                     photo_url: etudiant.photo_url || null,
-                    moyenne_generale: totaux.moyenneGenerale,
+                    moyenne_generale: totaux.moyenne,
                     credits_valides: totaux.creditsValides,
                     credits_total: totaux.creditsTotal,
                     decision,
