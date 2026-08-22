@@ -1,21 +1,28 @@
 const db = require('../config/db.config');
 const { affecterClasse } = require('../services/classeGroupe.service');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
+const { METHODES_VALIDES_NOUVEAU_PAIEMENT } = require('../services/methodesPaiement.service');
+const { getSessionOuverte } = require('../services/sessionCaisse.service');
+const { resoudrePositionFinanciere, PositionFinanciereError } = require('../services/scolariteResolution.service');
+const { appliquerPaiementValide, enregistrerPaiementEtRecu } = require('../services/paiementEcriture.service');
+const { getStatistiquesKit } = require('../services/kitStatistiques.service');
+const { getPecNonTerminalePourAnnee } = require('../services/priseEnChargeResolution.service');
 
-const METHODES_VALIDES = ['Espèces', 'Mobile Money', 'Orange Money', 'Wave'];
+const METHODES_VALIDES = METHODES_VALIDES_NOUVEAU_PAIEMENT;
 
 // ─── PEC institutionnelle 100 % initiée à la Caisse (Chantier 2) ───────────
 // Réutilise entièrement prise_en_charge (aucune nouvelle table). Garde-fou "une seule PEC
-// active/en attente à la fois par étudiant" — même règle que demanderPECSeule
-// (paiyement.controller.js), pas une nouvelle règle. pourcentage_reduction est toujours 100 à
-// l'initiation (seule option proposée au caissier) ; seul le Fondateur peut ensuite l'ajuster
-// (validerPEC, même fichier que demanderPECSeule).
+// active/en attente à la fois par étudiant POUR CETTE ANNÉE ACADÉMIQUE" — même règle que
+// demanderPECSeule (paiyement.controller.js), pas une nouvelle règle. pourcentage_reduction est
+// toujours 100 à l'initiation (seule option proposée au caissier) ; seul le Fondateur peut ensuite
+// l'ajuster (validerPEC, même fichier que demanderPECSeule).
+// Chantier PEC — correction du rattachement par année (2026-08-21) : le contrôle de doublon est
+// désormais scopé par annee_academique_id (services/priseEnChargeResolution.service.js) — une PEC
+// valide/en attente d'une ANCIENNE année ne doit plus jamais bloquer une nouvelle demande pour la
+// nouvelle année (ex. admission/réinscription 2026-2027 alors qu'une PEC 2025-2026 est valide).
 const creerPecInstitutionnelle = async (client, { etudiantId, montantScolarite, referencePec, userId, caisseId, anneeAcademiqueId }) => {
-  const existante = await client.query(
-    `SELECT 1 FROM prise_en_charge WHERE etudiant_id = $1 AND statut IN ('en_attente', 'initiee', 'valide')`,
-    [etudiantId]
-  );
-  if (existante.rows.length > 0) {
+  const existante = await getPecNonTerminalePourAnnee(client, { etudiantId, anneeAcademiqueId });
+  if (existante) {
     const err = new Error('Une prise en charge est déjà active ou en attente pour cet étudiant.');
     err.code = 'PEC_DEJA_EXISTANTE';
     throw err;
@@ -27,18 +34,6 @@ const creerPecInstitutionnelle = async (client, { etudiantId, montantScolarite, 
      VALUES ($1, 'institution', 'institutionnelle', 100, $2, $3, 'initiee', now(), $4, $5, now(), $6)`,
     [etudiantId, montantScolarite, referencePec, userId, caisseId, anneeAcademiqueId]
   );
-};
-
-// Résout la caisse du site du caissier connecté, et sa session ouverte (s'il y en a une).
-const getSessionOuverte = async (dbClient, userId, siteId) => {
-  const result = await dbClient.query(
-    `SELECT sc.* FROM session_caisse sc
-     JOIN caisse c ON c.id = sc.caisse_id
-     WHERE sc.caissier_id = $1 AND c.site_id = $2 AND sc.statut = 'OUVERTE'
-     ORDER BY sc.date_ouverture DESC LIMIT 1`,
-    [userId, siteId]
-  );
-  return result.rows[0] || null;
 };
 
 // ─── GET session de caisse active du caissier connecté ─────────────────────
@@ -801,86 +796,42 @@ exports.enregistrerPaiementAnneeEtudiant = async (req, res) => {
       return res.status(409).json({ success: false, code: 'CAISSE_FERMEE', message: 'Ouvrez votre caisse avant d\'encaisser un paiement.' });
     }
 
-    // Cloisonnement par école (Chantier 3) — cumulatif avec le filtre site (site_id) existant.
-    const ecoleCondEnreg = ecoleId !== null ? 'AND id_filiere IN (SELECT id FROM filiere WHERE departement_id IN (SELECT id FROM departement WHERE ecole_id = $3))' : '';
-    const etudiantGuardParams = ecoleId !== null ? [id, req.user.departement_id, ecoleId] : [id, req.user.departement_id];
-
-    const etudiantResult = await client.query(
-      `SELECT id, annee_academique_id, scolarite_id FROM etudiant WHERE id = $1 AND site_id = $2 ${ecoleCondEnreg} FOR UPDATE`,
-      etudiantGuardParams
-    );
-    if (etudiantResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ success: false, message: 'Étudiant introuvable.' });
-    }
-    const etudiant = etudiantResult.rows[0];
-    const isAnneeCourante = Number(etudiant.annee_academique_id) === anneeId;
+    const etudiantId = parseInt(id, 10);
     const montantPaye = parseFloat(montant);
 
-    let nouveauVerse, nouveauRestant, nouveauStatut;
-
-    if (isAnneeCourante) {
-      if (!etudiant.scolarite_id) {
-        await client.query('ROLLBACK');
-        return res.status(500).json({ success: false, message: 'Aucune scolarité active pour cet étudiant.' });
+    // ✅ Phase 4 (2026-08-18) : résolution de la position financière extraite dans
+    // services/scolariteResolution.service.js — même verrouillage FOR UPDATE, même bascule
+    // scolarité courante / historique_inscription qu'avant ce refactor, comportement inchangé.
+    let position;
+    try {
+      position = await resoudrePositionFinanciere(client, {
+        etudiantId, siteId: req.user.departement_id, ecoleId, anneeAcademiqueId: anneeId,
+      });
+    } catch (err) {
+      await client.query('ROLLBACK');
+      if (err instanceof PositionFinanciereError) {
+        return res.status(err.status).json({ success: false, message: err.message });
       }
-      const scolariteResult = await client.query('SELECT * FROM scolarite WHERE id = $1 FOR UPDATE', [etudiant.scolarite_id]);
-      const scolarite = scolariteResult.rows[0];
-      const scolariteRestante = parseFloat(scolarite.scolarite_restante);
-      if (scolariteRestante <= 0) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({ success: false, message: 'Cette année est déjà soldée.' });
-      }
-      if (montantPaye > scolariteRestante) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ success: false, message: 'Le montant dépasse le solde restant.' });
-      }
-      nouveauVerse = parseFloat(scolarite.scolarite_verse) + montantPaye;
-      nouveauRestant = scolariteRestante - montantPaye;
-      nouveauStatut = Math.abs(nouveauRestant) < 0.01 ? 'SOLDE' : 'NON_SOLDE';
-      await client.query(
-        `UPDATE scolarite SET scolarite_verse = $1, scolarite_restante = $2, statut_etudiant = $3 WHERE id = $4`,
-        [nouveauVerse, nouveauRestant, nouveauStatut, scolarite.id]
-      );
-    } else {
-      const historiqueResult = await client.query(
-        `SELECT * FROM historique_inscription WHERE etudiant_id = $1 AND annee_academique_id = $2 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
-        [id, anneeId]
-      );
-      if (historiqueResult.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({ success: false, message: 'Aucun historique trouvé pour cette année académique.' });
-      }
-      const historique = historiqueResult.rows[0];
-      const scolariteRestante = parseFloat(historique.scolarite_restante);
-      if (scolariteRestante <= 0) {
-        await client.query('ROLLBACK');
-        return res.status(409).json({ success: false, message: 'Cette année est déjà soldée.' });
-      }
-      if (montantPaye > scolariteRestante) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ success: false, message: 'Le montant dépasse le solde restant.' });
-      }
-      nouveauVerse = parseFloat(historique.scolarite_verse) + montantPaye;
-      nouveauRestant = scolariteRestante - montantPaye;
-      nouveauStatut = Math.abs(nouveauRestant) < 0.01 ? 'SOLDE' : 'NON_SOLDE';
-      await client.query(
-        `UPDATE historique_inscription SET scolarite_verse = $1, scolarite_restante = $2, statut_paiement = $3 WHERE id = $4`,
-        [nouveauVerse, nouveauRestant, nouveauStatut, historique.id]
-      );
+      throw err;
     }
 
-    const datePaiement = new Date();
-    const numeroRecu = `RECU-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const recuResult = await client.query(
-      `INSERT INTO recu (numero_recu, date_emission, montant, emetteur) VALUES ($1, $2, $3, $4) RETURNING id`,
-      [numeroRecu, datePaiement, montantPaye, req.user?.code || null]
-    );
-    const paiementResult = await client.query(
-      `INSERT INTO paiement (montant, date_paiement, methode, effectue_par, etudiant_id, recu_id, annee_academique_id, session_caisse_id, caisse_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-      [montantPaye, datePaiement, methode, req.user?.id || null, id, recuResult.rows[0].id, anneeId, session.id, session.caisse_id]
-    );
+    if (position.scolariteRestante <= 0) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, message: 'Cette année est déjà soldée.' });
+    }
+    if (montantPaye > position.scolariteRestante) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: 'Le montant dépasse le solde restant.' });
+    }
+
+    // ✅ Écriture extraite dans services/paiementEcriture.service.js — désormais partagée à
+    // l'identique avec la confirmation d'un paiement Wave (Phase 4). Mêmes valeurs, mêmes
+    // colonnes, même ordre de calcul qu'avant ce refactor.
+    const resultat = await appliquerPaiementValide(client, {
+      position, montant: montantPaye, methode,
+      effectueParId: req.user?.id || null, emetteurCode: req.user?.code || null,
+      etudiantId, anneeAcademiqueId: anneeId, sessionCaisseId: session.id, caisseId: session.caisse_id,
+    });
 
     await client.query('COMMIT');
 
@@ -888,20 +839,136 @@ exports.enregistrerPaiementAnneeEtudiant = async (req, res) => {
       success: true,
       message: 'Paiement enregistré.',
       data: {
-        etudiant_id: parseInt(id, 10),
+        etudiant_id: etudiantId,
         annee_academique_id: anneeId,
-        paiement_id: paiementResult.rows[0].id,
-        recu_id: recuResult.rows[0].id,
-        numero_recu: numeroRecu,
-        scolarite_verse: nouveauVerse,
-        scolarite_restante: nouveauRestant,
-        statut_etudiant: nouveauStatut
+        paiement_id: resultat.paiementId,
+        recu_id: resultat.recuId,
+        numero_recu: resultat.numeroRecu,
+        scolarite_verse: resultat.nouveauVerse,
+        scolarite_restante: resultat.nouveauRestant,
+        statut_etudiant: resultat.nouveauStatut
       }
     });
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Erreur enregistrerPaiementAnneeEtudiant:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.', details: error.message });
+  } finally {
+    client.release();
+  }
+};
+
+// ─── Surplus d'accessoires Moyens Généraux (Chantier Moyens Généraux, Phase 2D, 2026-08-19) ───
+// Demandes EN_ATTENTE_PAIEMENT du site du caissier — jamais toutes les demandes de tous les sites
+// (même filtre implicite par site que le reste de ce contrôleur, via req.user.departement_id).
+exports.getSurplusEnAttente = async (req, res) => {
+  try {
+    const siteId = req.user.departement_id;
+    const result = await db.query(
+      `SELECT d.id, d.reference, d.quantite, d.prix_unitaire_vente, d.montant_total, d.date_demande,
+         a.nom AS accessoire_nom,
+         e.id AS etudiant_id, e.nom AS etudiant_nom, e.prenoms AS etudiant_prenoms, e.matricule_iipea,
+         aa.annee AS annee_academique,
+         u.nom AS demande_par_nom
+       FROM demande_surplus_accessoire d
+       JOIN etudiant e ON e.id = d.etudiant_id
+       JOIN accessoire a ON a.id = d.accessoire_id
+       JOIN anneeacademique aa ON aa.id = d.annee_academique_id
+       JOIN utilisateur u ON u.id = d.demande_par
+       WHERE d.statut = 'EN_ATTENTE_PAIEMENT' AND e.site_id = $1
+       ORDER BY d.date_demande`,
+      [siteId]
+    );
+    res.status(200).json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error('Erreur getSurplusEnAttente:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// Encaisse une demande de surplus EN_ATTENTE_PAIEMENT — jamais de montant accepté depuis le client
+// (le montant encaissé est TOUJOURS demande.montant_total, figé à la création, cf. §5) : élimine
+// structurellement tout risque de rattachement à un mauvais montant. Identifiable comme "Paiement
+// pour accessoire supplémentaire" via type_frais='accessoire_supplementaire' (même mécanisme que
+// pec_institutionnelle, cf. Supervision des caisses / Bilan des dépenses qui regroupent déjà
+// dynamiquement par type_frais — aucun nouvel écran de rapport nécessaire).
+exports.encaisserSurplus = async (req, res) => {
+  const client = await db.connect();
+  try {
+    const { id } = req.params;
+    const { methode } = req.body;
+    if (!methode || !METHODES_VALIDES.includes(methode)) {
+      return res.status(400).json({ success: false, message: `Méthode de paiement invalide. Valeurs acceptées : ${METHODES_VALIDES.join(', ')}.` });
+    }
+
+    await client.query('BEGIN');
+
+    const session = await getSessionOuverte(client, req.user.id, req.user.departement_id);
+    if (!session) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, code: 'CAISSE_FERMEE', message: 'Ouvrez votre caisse avant d\'encaisser un paiement.' });
+    }
+
+    const demandeResult = await client.query(
+      `SELECT d.*, e.site_id
+       FROM demande_surplus_accessoire d
+       JOIN etudiant e ON e.id = d.etudiant_id
+       WHERE d.id = $1 FOR UPDATE OF d`,
+      [id]
+    );
+    if (demandeResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Demande de surplus introuvable.' });
+    }
+    const demande = demandeResult.rows[0];
+    if (demande.site_id !== req.user.departement_id) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Demande de surplus introuvable.' });
+    }
+    if (demande.statut !== 'EN_ATTENTE_PAIEMENT') {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        success: false,
+        message: `Cette demande n'est plus en attente de paiement (statut actuel : ${demande.statut}).`,
+      });
+    }
+
+    const { paiementId, recuId, numeroRecu } = await enregistrerPaiementEtRecu(client, {
+      montant: parseFloat(demande.montant_total),
+      methode,
+      effectueParId: req.user.id,
+      emetteurCode: req.user.code,
+      etudiantId: demande.etudiant_id,
+      anneeAcademiqueId: demande.annee_academique_id,
+      sessionCaisseId: session.id,
+      caisseId: session.caisse_id,
+      referenceTransaction: demande.reference,
+      typeFrais: 'accessoire_supplementaire',
+    });
+
+    const misAJour = await client.query(
+      `UPDATE demande_surplus_accessoire SET statut = 'PAYE', paiement_id = $1, date_paiement = now()
+       WHERE id = $2 AND statut = 'EN_ATTENTE_PAIEMENT' RETURNING id`,
+      [paiementId, id]
+    );
+    if (misAJour.rows.length === 0) {
+      // Filet de sécurité définitif contre une course concurrente (deux caissiers encaissant la
+      // même demande au même instant) — le verrou FOR UPDATE ci-dessus la rend en pratique
+      // improbable, cette clause WHERE reste la garantie ultime.
+      await client.query('ROLLBACK');
+      return res.status(409).json({ success: false, message: 'Cette demande vient d\'être encaissée par une autre opération.' });
+    }
+
+    await client.query('COMMIT');
+    res.status(200).json({
+      success: true,
+      message: 'Paiement encaissé — distribution désormais autorisée côté Moyens Généraux.',
+      data: { demande_id: parseInt(id, 10), paiement_id: paiementId, recu_id: recuId, numero_recu: numeroRecu },
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Erreur encaisserSurplus:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
   } finally {
     client.release();
   }
@@ -978,11 +1045,30 @@ exports.getDashboardStats = async (req, res) => {
 
     // Point 6 : exploiter des données déjà modélisées mais jamais affichées côté caisse (kit, PEC)
     // — informations opérationnelles partagées, non rattachées à un caissier en particulier.
+    // Chantier Kit étudiant, Phase 1 (2026-08-21) : `deposer` reste lu pour compatibilité avec les
+    // lignes historiques (2025-2026, jamais réinterprétées), mais le nouveau code n'écrit plus
+    // jamais deposer=true — statut='KIT_PAYE' est la source pour toute ligne créée depuis cette
+    // phase. Les deux conditions sont donc nécessaires pour ne perdre aucun total, ancien ou nouveau.
     const kitPecJourResult = await db.query(
       `SELECT
-         (SELECT COUNT(*) FROM kit WHERE deposer = true AND date_enregistrement::date = CURRENT_DATE) AS kits_deposes,
+         (SELECT COUNT(*) FROM kit WHERE (deposer = true OR statut = 'KIT_PAYE') AND date_enregistrement::date = CURRENT_DATE) AS kits_deposes,
          (SELECT COUNT(*) FROM prise_en_charge WHERE statut IN ('en_attente', 'initiee')) AS pec_en_attente`
     );
+
+    // Chantier Kit étudiant — Phase statistiques (2026-08-21) : ce dashboard n'a pas de sélecteur
+    // d'année académique (contrairement aux 3 autres) — on utilise l'année "en cour" du site,
+    // même résolution que annee.controller.js::getAnneeEnCoursForSite. Pas de cloisonnement école
+    // ici : cet endpoint n'en applique déjà à aucune autre de ses requêtes (activité personnelle du
+    // caissier, jamais restreinte par école).
+    const anneeCouranteResult = await db.query(
+      `SELECT a.id FROM anneeacademique a
+       JOIN anneeacademique_site s ON s.anneeacademique_id = a.id
+       WHERE s.site_id = $1 AND s.etat = 'en cour' LIMIT 1`,
+      [siteId]
+    );
+    const statistiquesKit = anneeCouranteResult.rows.length > 0
+      ? await getStatistiquesKit(db, { siteId, anneeAcademiqueId: anneeCouranteResult.rows[0].id })
+      : null;
 
     res.status(200).json({
       success: true,
@@ -1004,6 +1090,9 @@ exports.getDashboardStats = async (req, res) => {
         evolution_encaissements: evolutionResult.rows.map(r => ({ jour: r.jour, total: parseFloat(r.total) })),
         kits_deposes_aujourdhui: parseInt(kitPecJourResult.rows[0].kits_deposes, 10),
         pec_en_attente: parseInt(kitPecJourResult.rows[0].pec_en_attente, 10),
+        // Chantier Kit étudiant — Phase statistiques (2026-08-21) — null si aucune année "en cour"
+        // n'est configurée pour ce site (cas déjà géré ailleurs, ex. getAnneeEnCoursForSite).
+        kit: statistiquesKit,
       }
     });
   } catch (error) {
@@ -1114,6 +1203,110 @@ exports.getSupervisionCaisse = async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur getSupervisionCaisse:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// ─── Supervision PAR CAISSIER (Chantier Moyens Généraux, Phase 2D — ajustements, 2026-08-19) ───
+// Complète getSupervisionCaisse (centrée caisse) SANS le remplacer — "le besoin métier est en
+// réalité : supervision des caissiers", entrée par caissier plutôt que par caisse. Basée
+// EXCLUSIVEMENT sur les paiements réellement enregistrés (p.effectue_par), jamais sur l'état d'une
+// session_caisse — une caisse fermée n'empêche jamais de consulter l'historique de son caissier
+// (règle explicite du cahier des charges), contrairement à getSessionActive/getDashboardStats qui,
+// eux, sont volontairement scopés à la session ouverte du jour (besoin différent : "que se passe-
+// t-il MAINTENANT", pas "historique complet").
+exports.listerCaissiersSite = async (req, res) => {
+  try {
+    const siteId = req.user.departement_id;
+    const result = await db.query(
+      `SELECT u.id, u.nom, u.email FROM utilisateur u JOIN role r ON r.id = u.role_id
+       WHERE u.site_id = $1 AND r.nom = 'caissier' ORDER BY u.nom`,
+      [siteId]
+    );
+    res.status(200).json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error('Erreur listerCaissiersSite:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+exports.getSupervisionCaissier = async (req, res) => {
+  try {
+    const { caissierId } = req.params;
+    const siteId = req.user.departement_id;
+    const { anneeAcademiqueId, dateDebut, dateFin } = req.query;
+
+    const caissierResult = await db.query('SELECT id, nom FROM utilisateur WHERE id = $1 AND site_id = $2', [caissierId, siteId]);
+    if (caissierResult.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Caissier introuvable.' });
+    }
+
+    // Même alias `c` (caisse) dans les 5 requêtes ci-dessous : la clause WHERE est construite une
+    // seule fois et partagée telle quelle entre toutes — toute divergence d'alias la casserait.
+    const whereClauses = ['p.effectue_par = $1', 'c.site_id = $2'];
+    const params = [String(caissierId), siteId];
+    if (anneeAcademiqueId) {
+      whereClauses.push(`p.annee_academique_id = $${params.length + 1}`);
+      params.push(parseInt(anneeAcademiqueId, 10));
+    }
+    if (dateDebut) {
+      whereClauses.push(`p.date_paiement >= $${params.length + 1}`);
+      params.push(dateDebut);
+    }
+    if (dateFin) {
+      whereClauses.push(`p.date_paiement <= $${params.length + 1}`);
+      params.push(dateFin);
+    }
+    const where = whereClauses.join(' AND ');
+
+    const [totauxResult, parMethodeResult, evolutionResult, detailResult] = await Promise.all([
+      db.query(`SELECT COUNT(*) AS nb, COALESCE(SUM(p.montant), 0) AS total FROM paiement p JOIN caisse c ON c.id = p.caisse_id WHERE ${where}`, params),
+
+      db.query(
+        `SELECT p.methode, COUNT(*) AS nb, COALESCE(SUM(p.montant), 0) AS total
+         FROM paiement p JOIN caisse c ON c.id = p.caisse_id WHERE ${where}
+         GROUP BY p.methode ORDER BY total DESC`,
+        params
+      ),
+
+      db.query(
+        `SELECT p.date_paiement::date AS jour, COUNT(*) AS nb, COALESCE(SUM(p.montant), 0) AS total
+         FROM paiement p JOIN caisse c ON c.id = p.caisse_id WHERE ${where}
+         GROUP BY p.date_paiement::date ORDER BY jour`,
+        params
+      ),
+
+      db.query(
+        `SELECT p.id, p.date_paiement, e.nom AS etudiant_nom, e.prenoms AS etudiant_prenoms,
+           COALESCE(NULLIF(p.type_frais, ''), 'scolarite') AS type_paiement, p.montant, p.methode,
+           r.numero_recu, aa.annee AS annee_academique, c.libelle AS caisse_libelle,
+           p.session_caisse_id, sc.date_ouverture AS session_date_ouverture, sc.statut AS session_statut
+         FROM paiement p
+         JOIN caisse c ON c.id = p.caisse_id
+         LEFT JOIN etudiant e ON e.id = p.etudiant_id
+         LEFT JOIN recu r ON r.id = p.recu_id
+         LEFT JOIN anneeacademique aa ON aa.id = p.annee_academique_id
+         LEFT JOIN session_caisse sc ON sc.id = p.session_caisse_id
+         WHERE ${where}
+         ORDER BY p.date_paiement DESC, p.id DESC
+         LIMIT 500`,
+        params
+      ),
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        caissier: caissierResult.rows[0],
+        total_encaisse: parseFloat(totauxResult.rows[0].total),
+        nb_operations: parseInt(totauxResult.rows[0].nb, 10),
+        par_methode: parMethodeResult.rows.map((r) => ({ methode: r.methode, nb: parseInt(r.nb, 10), total: parseFloat(r.total) })),
+        evolution_quotidienne: evolutionResult.rows.map((r) => ({ jour: r.jour, nb: parseInt(r.nb, 10), total: parseFloat(r.total) })),
+        operations: detailResult.rows.map((r) => ({ ...r, montant: parseFloat(r.montant) })),
+      },
+    });
+  } catch (error) {
+    console.error('Erreur getSupervisionCaissier:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.' });
   }
 };
@@ -1374,17 +1567,12 @@ exports.validerPaiementAdmission = async (req, res) => {
       [montantPaye, datePaiement, pec_institutionnelle ? 'Prise en charge institutionnelle' : methode, req.user?.id || null, etudiant.id, recuResult.rows[0].id, etudiant.annee_academique_id, session.id, session.caisse_id, pec_institutionnelle ? 'pec_institutionnelle' : null]
     );
 
-    // Une seule entrée kit par étudiant (comme dans createPaiement) — non déposé par défaut,
-    // le caissier n'a pas de case "kit" dans ce parcours minimal ; ajustable plus tard sur le dossier.
-    // annee_academique_id tracé pour permettre à getRecuData de savoir à quelle campagne ce kit
-    // se rattache (utilisé notamment pour la suspension du module par année, cf. kitCampagne.service.js).
-    const hasKit = await client.query('SELECT 1 FROM kit WHERE etudiant_id = $1', [etudiant.id]);
-    if (hasKit.rows.length === 0) {
-      await client.query(
-        `INSERT INTO kit (etudiant_id, montant, deposer, date_enregistrement, annee_academique_id) VALUES ($1, 0, false, $2, $3)`,
-        [etudiant.id, datePaiement, etudiant.annee_academique_id]
-      );
-    }
+    // Chantier Kit étudiant, Phase 1 (2026-08-21) : ce parcours ne crée plus AUCUNE ligne `kit`
+    // (l'ancienne logique créait systématiquement un placeholder à 0/non déposé, jamais proposé au
+    // caissier — cf. audit). Le Kit est désormais un traitement indépendant (POST /api/kit/traiter),
+    // par (étudiant, année académique), déclenché depuis l'écran Caisse après validation du
+    // paiement d'admission — unifié avec paiyement.controller.js::createPaiement, plus aucune
+    // divergence entre les deux parcours.
 
     await client.query('COMMIT');
 

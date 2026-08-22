@@ -26,6 +26,12 @@ router.get('/etudiant/:id/annees/:anneeAcademiqueId/paiements', authenticateToke
 router.post('/etudiant/:id/annees/:anneeAcademiqueId/paiements', authenticateToken, caisseOnly, caisseController.enregistrerPaiementAnneeEtudiant);
 router.get('/dashboard/stats', authenticateToken, caisseOnly, caisseController.getDashboardStats);
 router.get('/paiements', authenticateToken, caisseOnly, caisseController.getPaiements);
+
+// Surplus d'accessoires Moyens Généraux (Chantier Moyens Généraux, Phase 2D, 2026-08-19) — la
+// demande est créée côté Moyens Généraux (routes/demandeSurplus.routes.js) ; seul l'encaissement,
+// qui écrit dans paiement/recu, vit ici, au même endroit que tout autre encaissement de la Caisse.
+router.get('/surplus/en-attente', authenticateToken, caisseOnly, caisseController.getSurplusEnAttente);
+router.post('/surplus/:id/encaisser', authenticateToken, caisseOnly, caisseController.encaisserSurplus);
 router.get('/inscriptions-en-attente', authenticateToken, caisseOuScolariteLecture, caisseController.getInscriptionsEnAttente);
 
 // Supervision (Chantier Comptabilité, priorité 1, point 2) — réservée à la comptabilité/admin,
@@ -33,6 +39,11 @@ router.get('/inscriptions-en-attente', authenticateToken, caisseOuScolariteLectu
 const comptabiliteOnly = authorizeRoles('admin', 'comptabilite');
 router.get('/supervision/caisses', authenticateToken, comptabiliteOnly, caisseController.listerCaissesSite);
 router.get('/supervision/caisses/:caisseId', authenticateToken, comptabiliteOnly, caisseController.getSupervisionCaisse);
+
+// Supervision par CAISSIER (Chantier Moyens Généraux, Phase 2D — ajustements, 2026-08-19) —
+// complète la supervision par caisse ci-dessus, ne la remplace pas.
+router.get('/supervision/caissiers', authenticateToken, comptabiliteOnly, caisseController.listerCaissiersSite);
+router.get('/supervision/caissiers/:caissierId', authenticateToken, comptabiliteOnly, caisseController.getSupervisionCaissier);
 
 router.get('/admission/recherche', authenticateToken, caisseOnly, caisseController.rechercherDossierAdmissionParCode);
 router.post('/admission/:code/valider', authenticateToken, caisseOnly, caisseController.validerPaiementAdmission);
