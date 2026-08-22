@@ -1,5 +1,6 @@
 const db = require('../config/db.config');
 const bcrypt = require('bcrypt');
+const { getPermissionsDisponiblesPourRole } = require('../services/permission.service');
 
 // Valide qu'une école existe et est active avant de l'affecter à un agent (Chantier 3 —
 // convention documentée dans docs/architecture-permissions-ecole.md, jamais codée jusqu'ici).
@@ -186,5 +187,106 @@ exports.reactivateUser = async (req, res) => {
   } catch (error) {
     console.error('Erreur lors de la réactivation de l’utilisateur:', error);
     res.status(500).json({ message: 'Erreur serveur lors de la réactivation de l’utilisateur.' });
+  }
+};
+
+//============================================================================================================
+// Permissions PAR RÔLE (Chantier Moyens Généraux, Phase 1, corrigé le 2026-08-19) — réservé à
+// admin, comme le reste de ce fichier (routes/user.routes.js). La création de compte reste
+// exclusivement admin (inchangé) ; ces deux endpoints ne font qu'attribuer, à un compte déjà créé,
+// des permissions parmi celles disponibles pour SON rôle (voir services/permission.service.js
+// pour la distinction rolepermission = catalogue / utilisateur_permission = accès réel).
+
+// Catalogue des permissions disponibles pour le RÔLE de cet utilisateur, avec pour chacune si
+// CET utilisateur l'a déjà — jamais les permissions d'un autre rôle. Catalogue vide (rôle sans
+// permission configurée, ex. scolarite aujourd'hui) → tableau vide, pas une erreur.
+exports.getPermissionsUtilisateur = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const userResult = await db.query(
+      `SELECT u.id, r.id AS role_id, r.nom AS role_nom
+       FROM utilisateur u JOIN role r ON r.id = u.role_id
+       WHERE u.id = $1`,
+      [id]
+    );
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+    const { role_id: roleId, role_nom: roleNom } = userResult.rows[0];
+
+    const catalogue = await getPermissionsDisponiblesPourRole(db, roleId);
+    const accordeesResult = await db.query(
+      'SELECT permission_id FROM utilisateur_permission WHERE utilisateur_id = $1',
+      [id]
+    );
+    const accordeesIds = new Set(accordeesResult.rows.map((r) => r.permission_id));
+
+    res.status(200).json({
+      role: roleNom,
+      permissions: catalogue.map((p) => ({ ...p, accorde: accordeesIds.has(p.id) })),
+    });
+  } catch (error) {
+    console.error('Erreur lors de la récupération des permissions de l’utilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  }
+};
+
+// Remplace intégralement l'ensemble des permissions accordées à un utilisateur — même geste que
+// rolepermission.controller.js::attribuerPermissionsARole (DELETE puis ré-insertion), mais au
+// grain utilisateur plutôt que rôle, et transactionnel (jamais un état intermédiaire visible).
+// Validation stricte : seules des permissions appartenant au catalogue du RÔLE de cet utilisateur
+// peuvent être accordées — le catalogue (rolepermission) est la seule source de vérité de ce qui
+// est configurable pour lui, jamais une confiance aveugle dans la liste envoyée par le frontend.
+exports.setPermissionsUtilisateur = async (req, res) => {
+  const { id } = req.params;
+  const { permission_ids } = req.body;
+
+  if (!Array.isArray(permission_ids)) {
+    return res.status(400).json({ message: 'permission_ids (tableau) est requis.' });
+  }
+
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+
+    const userResult = await client.query(
+      `SELECT u.id, r.id AS role_id
+       FROM utilisateur u JOIN role r ON r.id = u.role_id
+       WHERE u.id = $1 FOR UPDATE OF u`,
+      [id]
+    );
+    if (userResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Utilisateur introuvable.' });
+    }
+    const roleId = userResult.rows[0].role_id;
+
+    const catalogue = await getPermissionsDisponiblesPourRole(client, roleId);
+    const catalogueIds = new Set(catalogue.map((p) => p.id));
+    const idsHorsCatalogue = permission_ids.filter((pid) => !catalogueIds.has(pid));
+    if (idsHorsCatalogue.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({
+        message: `Permission(s) non disponible(s) pour le rôle de cet utilisateur : ${idsHorsCatalogue.join(', ')}.`,
+      });
+    }
+
+    await client.query('DELETE FROM utilisateur_permission WHERE utilisateur_id = $1', [id]);
+    for (const permissionId of permission_ids) {
+      await client.query(
+        `INSERT INTO utilisateur_permission (utilisateur_id, permission_id, accorde_par)
+         VALUES ($1, $2, $3)`,
+        [id, permissionId, req.user.id]
+      );
+    }
+
+    await client.query('COMMIT');
+    res.status(200).json({ message: 'Permissions mises à jour avec succès.' });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('Erreur lors de la mise à jour des permissions de l’utilisateur:', error);
+    res.status(500).json({ message: 'Erreur serveur.' });
+  } finally {
+    client.release();
   }
 };

@@ -11,5 +11,9 @@ router.put('/:id', authenticateToken, authorizeRoles('admin'), utilisateurContro
 router.patch('/:id/desactiver', authenticateToken, authorizeRoles('admin'), utilisateurController.deactivateUser);
 router.patch('/:id/reactiver', authenticateToken, authorizeRoles('admin'), utilisateurController.reactivateUser);
 
+// Permissions individuelles (Chantier Moyens Généraux, Phase 1) — réservé à admin, même principe
+// que la création de compte : seul admin gère qui peut faire quoi.
+router.get('/:id/permissions', authenticateToken, authorizeRoles('admin'), utilisateurController.getPermissionsUtilisateur);
+router.put('/:id/permissions', authenticateToken, authorizeRoles('admin'), utilisateurController.setPermissionsUtilisateur);
 
 module.exports = router;

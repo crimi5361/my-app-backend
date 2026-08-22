@@ -2,6 +2,7 @@
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/auth.controller');
+const authenticateToken = require('../middleware/auth.middleware');
 
 /**
  * @swagger
@@ -72,5 +73,28 @@ const authController = require('../controllers/auth.controller');
  *         description: Erreur serveur
  */
 router.post('/login', authController.login);
+
+/**
+ * @swagger
+ * /api/auth/me:
+ *   get:
+ *     summary: Identité et permissions ACTUELLES de l'utilisateur connecté
+ *     tags:
+ *       - Auth
+ *     description: |
+ *       Correction 2026-08-21 — recalcule les permissions depuis utilisateur_permission (jamais
+ *       depuis le JWT, figé jusqu'à expiration). Le frontend l'appelle périodiquement pour se
+ *       resynchroniser sans reconnexion après une modification de permission par un admin.
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Identité et permissions actuelles
+ *       401:
+ *         description: Token manquant, invalide ou expiré
+ *       403:
+ *         description: Compte désactivé entre-temps
+ */
+router.get('/me', authenticateToken, authController.me);
 
 module.exports = router;

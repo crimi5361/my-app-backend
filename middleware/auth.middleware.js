@@ -51,7 +51,11 @@ const authenticateToken = (req, res, next) => {
           // Cloisonnement par école (Chantier 3) — normalisé à null si absent du token (ex.
           // anciens tokens émis avant ce chantier, ou compte etudiant) : null = vue globale,
           // jamais confondu avec "non renseigné" côté consommateur.
-          ecole_id: decoded.ecole_id ?? null
+          ecole_id: decoded.ecole_id ?? null,
+          // Permissions individuelles (Chantier Moyens Généraux, Phase 1) — normalisé à [] si
+          // absent (anciens tokens émis avant ce chantier, ou compte etudiant). Consommé par
+          // middleware/permission.middleware.js. Un admin n'en a jamais besoin (bypass explicite).
+          permissions: Array.isArray(decoded.permissions) ? decoded.permissions : []
         };
         
         console.log('Utilisateur authentifié:', req.user);

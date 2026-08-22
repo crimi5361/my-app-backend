@@ -7,8 +7,13 @@
 const db = require('../config/db.config');
 
 // GET /api/admin/dossiers-en-attente — liste les deux familles de dossiers jamais finalisés.
+//
+// Cloisonnement par site (correctif 2026-08-20) : un dossier "en attente" appartient au site où le
+// candidat/étudiant s'est inscrit (etudiant.site_id) — même principe que le reste du projet (un
+// admin du site ABOBO ne doit pas voir/gérer les dossiers en attente du site COCODY).
 exports.listerDossiersEnAttente = async (req, res) => {
   try {
+    const siteId = req.user.departement_id;
     const admissions = await db.query(`
       SELECT e.id, e.nom, e.prenoms, e.code_paiement, e.source_inscription, e.date_inscription,
              f.nom AS filiere, n.libelle AS niveau, aa.annee AS annee_academique,
@@ -17,9 +22,9 @@ exports.listerDossiersEnAttente = async (req, res) => {
       LEFT JOIN filiere f ON f.id = e.id_filiere
       LEFT JOIN niveau n ON n.id = e.niveau_id
       LEFT JOIN anneeacademique aa ON aa.id = e.annee_academique_id
-      WHERE e.standing = 'en attente'
+      WHERE e.standing = 'en attente' AND e.site_id = $1
       ORDER BY e.date_inscription ASC
-    `);
+    `, [siteId]);
 
     const reinscriptions = await db.query(`
       SELECT r.id, r.etudiant_id, r.statut, r.created_at, r.code_paiement,
@@ -30,9 +35,9 @@ exports.listerDossiersEnAttente = async (req, res) => {
       JOIN etudiant e ON e.id = r.etudiant_id
       LEFT JOIN niveau n ON n.id = r.niveau_retenu_id
       LEFT JOIN anneeacademique aa ON aa.id = r.anneeacademique_id
-      WHERE r.statut IN ('en_attente_paiement', 'non_eligible')
+      WHERE r.statut IN ('en_attente_paiement', 'non_eligible') AND e.site_id = $1
       ORDER BY r.created_at ASC
-    `);
+    `, [siteId]);
 
     res.status(200).json({
       success: true,
@@ -54,11 +59,15 @@ exports.supprimerAdmissionEnAttente = async (req, res) => {
   const client = await db.connect();
   try {
     const etudiantId = parseInt(req.params.etudiantId, 10);
+    const siteId = req.user.departement_id;
     if (!Number.isInteger(etudiantId)) {
       return res.status(400).json({ success: false, message: 'Identifiant invalide.' });
     }
 
-    const etu = await client.query('SELECT id, scolarite_id, document_id FROM etudiant WHERE id = $1', [etudiantId]);
+    // Cloisonnement par site (correctif 2026-08-20) — sans ce filtre, un admin pouvait supprimer un
+    // dossier d'un autre site en appelant directement l'API avec son id, même après correction de la
+    // liste (qui ne l'aurait plus laissé le découvrir, mais ne l'empêchait pas de le cibler).
+    const etu = await client.query('SELECT id, scolarite_id, document_id FROM etudiant WHERE id = $1 AND site_id = $2', [etudiantId, siteId]);
     if (etu.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Dossier introuvable.' });
     }
@@ -71,8 +80,8 @@ exports.supprimerAdmissionEnAttente = async (req, res) => {
     // vidées AVANT `etudiant` (contrainte de clé étrangère de document_etudiant notamment) — la
     // ligne reste donc volontairement en place jusqu'à la fin, protégée par ce verrou.
     const verrou = await client.query(
-      `SELECT id FROM etudiant WHERE id = $1 AND standing = 'en attente' FOR UPDATE`,
-      [etudiantId]
+      `SELECT id FROM etudiant WHERE id = $1 AND standing = 'en attente' AND site_id = $2 FOR UPDATE`,
+      [etudiantId, siteId]
     );
     if (verrou.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -123,16 +132,23 @@ exports.supprimerAdmissionEnAttente = async (req, res) => {
 exports.supprimerReinscriptionEnAttente = async (req, res) => {
   try {
     const reinscriptionId = parseInt(req.params.reinscriptionId, 10);
+    const siteId = req.user.departement_id;
     if (!Number.isInteger(reinscriptionId)) {
       return res.status(400).json({ success: false, message: 'Identifiant invalide.' });
     }
 
+    // Cloisonnement par site (correctif 2026-08-20) — même raison que supprimerAdmissionEnAttente.
     const suppression = await db.query(
-      `DELETE FROM reinscription WHERE id = $1 AND statut != 'inscrit' RETURNING id`,
-      [reinscriptionId]
+      `DELETE FROM reinscription r USING etudiant e
+       WHERE r.id = $1 AND r.statut != 'inscrit' AND e.id = r.etudiant_id AND e.site_id = $2
+       RETURNING r.id`,
+      [reinscriptionId, siteId]
     );
     if (suppression.rowCount === 0) {
-      const existe = await db.query('SELECT id FROM reinscription WHERE id = $1', [reinscriptionId]);
+      const existe = await db.query(
+        `SELECT r.id FROM reinscription r JOIN etudiant e ON e.id = r.etudiant_id WHERE r.id = $1 AND e.site_id = $2`,
+        [reinscriptionId, siteId]
+      );
       if (existe.rows.length === 0) {
         return res.status(404).json({ success: false, message: 'Dossier introuvable.' });
       }
