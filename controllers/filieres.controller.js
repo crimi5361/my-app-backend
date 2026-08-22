@@ -1,5 +1,5 @@
 const db = require('../config/db.config');
-const { ensureTarifForNiveau } = require('./tarif.controller');
+const { ensureTarifForNiveau, getMontantAffecteStandard } = require('./tarif.controller');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 // ─── Helper : Récupérer l'année académique en cours pour un site ──────────────
@@ -242,6 +242,7 @@ exports.getAllFilieresTablePreparation = async (req, res) => {
               'ordre',             n.ordre,
               'niveau_suivant_id', n.niveau_suivant_id,
               'tarif', json_build_object(
+                'id',                            t.id,
                 'montant_affecte',              t.montant_affecte,
                 'montant_affecte_reinscription', t.montant_affecte_reinscription,
                 'montant_non_affecte',          t.montant_non_affecte,
@@ -271,6 +272,17 @@ exports.getAllFilieresTablePreparation = async (req, res) => {
       GROUP BY f.id, f.nom, f.sigle, f.departement_id, f.filiere_mere_id, fm.nom, tf.id, tf.libelle, tf.description
       ORDER BY f.nom
     `, [anneeAcademiqueId, siteId, ecoleId]);
+
+    // Chantier tarification PRO — administration (2026-08-21) : enrichit chaque niveau du tarif
+    // Affecté STANDARD (avant toute surcharge filière), calculé côté backend uniquement (voir
+    // tarif.controller.js::getMontantAffecteStandard) — jamais dupliqué côté frontend. Permet à
+    // l'écran d'administration d'afficher "Tarif standard : 250 000 FCFA" à titre de repère,
+    // tout en éditant la valeur réellement configurée (tarif.montant_affecte).
+    result.rows.forEach((f) => {
+      (f.niveaux || []).forEach((n) => {
+        if (n.tarif) n.tarif.montant_affecte_standard = getMontantAffecteStandard(n.libelle);
+      });
+    });
 
     res.status(200).json(result.rows);
   } catch (error) {
@@ -621,6 +633,17 @@ const dupliquerNiveauxDeFiliere = async (client, filiereId, typeFiliereId, siteS
 
   if (niveauxSource.rows.length === 0) return [];
 
+  // Chantier tarification PRO (2026-08-21) §8 : tarifs des niveaux sources, pour reporter une
+  // configuration Affecté spécifique par filière lors de la duplication vers la nouvelle année
+  // (voir ensureTarifForNiveau — jamais perdue silencieusement, jamais ré-inventée si le tarif
+  // source n'était que le standard).
+  const tarifsSourceResult = await client.query(
+    `SELECT niveau_id, montant_affecte, montant_affecte_reinscription, toujours_non_affecte
+     FROM public.tarif WHERE niveau_id = ANY($1::int[])`,
+    [niveauxSource.rows.map(n => n.id)]
+  );
+  const tarifParNiveauSource = new Map(tarifsSourceResult.rows.map(t => [t.niveau_id, t]));
+
   const maquettesSource = await client.query(
     `SELECT niveau_id, parcour FROM public.maquette WHERE filiere_id = $1 AND anneeacademique_id = $2`,
     [filiereId, anneeSourceId]
@@ -637,7 +660,7 @@ const dupliquerNiveauxDeFiliere = async (client, filiereId, typeFiliereId, siteS
     `, [niv.libelle, niv.prix_formation, filiereId, siteCibleId, anneeCibleId, String(typeFiliereId), niv.ordre]);
     const nouveauNiveau = r.rows[0];
     ancienVersNouveau.set(niv.id, nouveauNiveau.id);
-    await ensureTarifForNiveau(nouveauNiveau.id, nouveauNiveau.libelle, nouveauNiveau.prix_formation, client);
+    await ensureTarifForNiveau(nouveauNiveau.id, nouveauNiveau.libelle, nouveauNiveau.prix_formation, client, tarifParNiveauSource.get(niv.id) || null);
 
     const parcour = parcourParNiveau.get(niv.id);
     if (parcour) {
