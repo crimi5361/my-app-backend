@@ -12,15 +12,31 @@
 // par rien de ce module.
 const NIVEAUX_PREMIERE_ANNEE = ['LICENCE 1', 'BTS 1', 'LICENCE 1 PRO'];
 
+// Typée (plutôt qu'une Error générique) pour que les appelants (kit.controller.js) puissent la
+// distinguer d'une panne serveur imprévue et répondre 404/422 avec un message diagnosticable, au
+// lieu de la laisser remonter en 500 "Erreur serveur." opaque — cas réel rencontré en audit : un
+// niveau_id ne résolvant plus vers aucune ligne `niveau` masquait entièrement la cause derrière un
+// message générique, aussi bien sur GET /etat que sur POST /traiter.
+class KitEligibiliteError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'KitEligibiliteError';
+    this.code = code;
+  }
+}
+
 // executor : pool `db` ou client de transaction déjà ouvert (même interface `.query()`), sur le
 // même modèle que kitCampagne.service.js::isKitSuspenduPourAnnee.
 async function estPremiereAnnee(executor, niveauId) {
   const result = await executor.query('SELECT libelle FROM niveau WHERE id = $1', [niveauId]);
   if (result.rows.length === 0) {
-    throw new Error('Niveau introuvable.');
+    throw new KitEligibiliteError(
+      `Niveau introuvable (niveau_id=${niveauId}) pour cet étudiant — sa fiche académique semble incohérente.`,
+      'NIVEAU_INTROUVABLE'
+    );
   }
   const libelle = (result.rows[0].libelle || '').trim().toUpperCase();
   return NIVEAUX_PREMIERE_ANNEE.includes(libelle);
 }
 
-module.exports = { NIVEAUX_PREMIERE_ANNEE, estPremiereAnnee };
+module.exports = { NIVEAUX_PREMIERE_ANNEE, estPremiereAnnee, KitEligibiliteError };

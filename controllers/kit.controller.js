@@ -6,7 +6,7 @@
 // logique de paiement.
 const db = require('../config/db.config');
 const { isKitSuspenduPourAnnee } = require('../services/kitCampagne.service');
-const { estPremiereAnnee, NIVEAUX_PREMIERE_ANNEE } = require('../services/kitEligibilite.service');
+const { estPremiereAnnee, NIVEAUX_PREMIERE_ANNEE, KitEligibiliteError } = require('../services/kitEligibilite.service');
 const { getSessionOuverte } = require('../services/sessionCaisse.service');
 const { enregistrerPaiementEtRecu } = require('../services/paiementEcriture.service');
 const { METHODES_VALIDES_NOUVEAU_PAIEMENT } = require('../services/methodesPaiement.service');
@@ -120,6 +120,10 @@ exports.getEtatKitEtudiant = async (req, res) => {
       data: { concerne, suspendu, statut, annee_academique_id: anneeAcademiqueId, kit: kitRow },
     });
   } catch (error) {
+    if (error instanceof KitEligibiliteError) {
+      console.warn(`getEtatKitEtudiant — ${error.code} : ${error.message}`);
+      return res.status(404).json({ success: false, code: error.code, message: error.message });
+    }
     console.error('Erreur getEtatKitEtudiant:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.' });
   }
@@ -320,6 +324,10 @@ exports.traiterKit = async (req, res) => {
     });
   } catch (error) {
     await client.query('ROLLBACK');
+    if (error instanceof KitEligibiliteError) {
+      console.warn(`traiterKit — ${error.code} : ${error.message}`);
+      return res.status(404).json({ success: false, code: error.code, message: error.message });
+    }
     console.error('Erreur traiterKit:', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.' });
   } finally {
