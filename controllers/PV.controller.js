@@ -2308,7 +2308,7 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
     try {
         const groupeInfo = await _getGroupeInfo(groupeId);
         if (!groupeInfo) {
-            return { etudiants: [], admis: 0, ajournes: 0, sommeMoyennes: 0, totalAvecMoyenne: 0, totalECUEAReprendre: 0, totalEtudiantsAReprendre: 0 };
+            return { etudiants: [], admis: 0, deroges: 0, ajournes: 0, sommeMoyennes: 0, totalAvecMoyenne: 0 };
         }
 
         // ✅ Normaliser le semestre demandé (1, 2, ou null = annuel)
@@ -2333,11 +2333,10 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
 
         const resultats = [];
         let admis = 0;
+        let deroges = 0;
         let ajournes = 0;
         let sommeMoyennes = 0;
         let totalAvecMoyenne = 0;
-        let totalECUEAReprendre = 0;
-        let totalEtudiantsAReprendre = 0;
 
         // ✅ Traiter chaque combo (filiere/niveau/curcus) séparément avec SA propre maquette
         for (const { filiereId, niveauId, curcusId, etudiants: etudiantsCombo } of etudiantsParCombo.values()) {
@@ -2422,25 +2421,21 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
                 // déjà calculée via determinerDecisionFonction à l'intérieur de calculerRecapitulatifComplet).
                 const totaux = semestreNum === 1 ? recap.s1 : semestreNum === 2 ? recap.s2 : recap.annuel;
                 const decision = totaux.decision;
-                const uesPourEcue = semestreNum
-                    ? uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === semestreNum)
-                    : uesAvecResultats;
-
-                const ecueAReprendre = _collecterEcueAReprendre(uesPourEcue);
-
-                // ✅ DÉROGÉ compte comme admis
-                const isAdmis = decision === 'ADMIS' || decision === 'DÉROGÉ';
-                if (isAdmis) admis++;
+                // ✅ Présentation métier (2026-08-24) : Total / Admis / Dérogés / Ajournés — plus de
+                // notion de "à reprendre" dans Statistique_Resultat (Dashboard ni Excel). L'ancienne
+                // métrique ECUE (_collecterEcueAReprendre) restait de toute façon calculée à tort
+                // pour le professionnel avant le correctif précédent (argument typeTraitement
+                // manquant) — elle n'a jamais été une catégorie de décision distincte, seulement un
+                // décompte de matières individuelles, ce qui expliquait déjà l'incohérence
+                // arithmétique remontée (41+2+4≠43). Le Bulletin/PV conservent leur propre calcul
+                // d'ECUE à reprendre (affichage individuel), totalement indépendant de cet agrégat.
+                if (decision === 'ADMIS') admis++;
+                else if (decision === 'DÉROGÉ') deroges++;
                 else ajournes++;
 
                 if (totaux.moyenne > 0) {
                     sommeMoyennes += totaux.moyenne;
                     totalAvecMoyenne++;
-                }
-
-                if (ecueAReprendre.length > 0) {
-                    totalECUEAReprendre += ecueAReprendre.length;
-                    totalEtudiantsAReprendre++;
                 }
 
                 // ✅ Éligibilité classe supérieure : toujours calculée sur l'ANNÉE COMPLÈTE
@@ -2457,18 +2452,17 @@ const traiterUnGroupe = async (groupeId, groupeData, typeTraitement, semestreId 
                     credits_valides: totaux.creditsValides,
                     credits_total: totaux.creditsTotal,
                     decision,
-                    ecue_a_reprendre: ecueAReprendre,
                     eligible_classe_superieure: eligibleClasseSuperieure,
                     ues: uesAvecResultats
                 });
             }
         }
 
-        return { etudiants: resultats, admis, ajournes, sommeMoyennes, totalAvecMoyenne, totalECUEAReprendre, totalEtudiantsAReprendre };
+        return { etudiants: resultats, admis, deroges, ajournes, sommeMoyennes, totalAvecMoyenne };
 
     } catch (error) {
         console.error(`❌ Erreur traitement groupe ${groupeId}:`, error.message);
-        return { etudiants: [], admis: 0, ajournes: 0, sommeMoyennes: 0, totalAvecMoyenne: 0, totalECUEAReprendre: 0, totalEtudiantsAReprendre: 0 };
+        return { etudiants: [], admis: 0, deroges: 0, ajournes: 0, sommeMoyennes: 0, totalAvecMoyenne: 0 };
     }
 };
 
@@ -2568,9 +2562,8 @@ exports.getStatsResultats = async (req, res) => {
                 semestre: semestreId || null,
                 stats: {
                     admis: 0,
+                    deroges: 0,
                     ajournes: 0,
-                    total_ecue_a_reprendre: 0,
-                    etudiants_a_reprendre: 0,
                     moyenne_generale: 0,
                     taux_reussite: 0
                 },
@@ -2630,20 +2623,18 @@ exports.getStatsResultats = async (req, res) => {
         // ✅ Fusionner les résultats
         const resultatsEtudiants = [];
         let totalAdmis = 0;
+        let totalDeroges = 0;
         let totalAjournes = 0;
         let sommeMoyennes = 0;
         let totalAvecMoyenne = 0;
-        let totalECUEAReprendre = 0;
-        let totalEtudiantsAReprendre = 0;
 
         for (const resultat of resultatsParGroupe) {
             resultatsEtudiants.push(...resultat.etudiants);
             totalAdmis += resultat.admis;
+            totalDeroges += resultat.deroges;
             totalAjournes += resultat.ajournes;
             sommeMoyennes += resultat.sommeMoyennes;
             totalAvecMoyenne += resultat.totalAvecMoyenne;
-            totalECUEAReprendre += resultat.totalECUEAReprendre;
-            totalEtudiantsAReprendre += resultat.totalEtudiantsAReprendre;
         }
 
         // ✅ TOP 3 GÉNÉRAL (inclut DÉROGÉ et ADMIS)
@@ -2663,8 +2654,9 @@ exports.getStatsResultats = async (req, res) => {
             }));
 
         const moyenneGenerale = totalAvecMoyenne > 0 ? sommeMoyennes / totalAvecMoyenne : 0;
-        const tauxReussite = resultatsEtudiants.length > 0 
-            ? parseFloat(((totalAdmis / resultatsEtudiants.length) * 100).toFixed(2)) 
+        // ✅ Le taux de réussite inclut les dérogés (ils passent bien en classe supérieure).
+        const tauxReussite = resultatsEtudiants.length > 0
+            ? parseFloat((((totalAdmis + totalDeroges) / resultatsEtudiants.length) * 100).toFixed(2))
             : 0;
 
         res.json({
@@ -2673,9 +2665,8 @@ exports.getStatsResultats = async (req, res) => {
             semestre: semestreId || null,
             stats: {
                 admis: totalAdmis,
+                deroges: totalDeroges,
                 ajournes: totalAjournes,
-                total_ecue_a_reprendre: totalECUEAReprendre,
-                etudiants_a_reprendre: totalEtudiantsAReprendre,
                 moyenne_generale: parseFloat(moyenneGenerale.toFixed(2)),
                 taux_reussite: tauxReussite
             },
@@ -2839,24 +2830,26 @@ exports.getRecapFiliereNiveau = async (req, res) => {
                         niveau: niveauLibelle,
                         total: 0,
                         admis: 0,
+                        deroges: 0,
                         ajournes: 0,
                         sommeMoyennes: 0,
-                        totalAvecMoyenne: 0,
-                        etudiants_a_reprendre: 0
+                        totalAvecMoyenne: 0
                     });
                 }
 
                 const rec = recapMap.get(cle);
                 rec.total += 1;
-                // ✅ DÉROGÉ compte comme admis
-                if (e.decision === 'ADMIS' || e.decision === 'DÉROGÉ') rec.admis += 1;
+                // ✅ Présentation métier (2026-08-24) : Total / Admis / Dérogés / Ajournés — trois
+                // catégories DISTINCTES et mutuellement exclusives (somme = Total), plus de notion
+                // de "à reprendre" dans ce récapitulatif (ancienne métrique ECUE, jamais une
+                // catégorie de décision — cf. audit précédent). DÉROGÉ reste un cas universitaire
+                // uniquement (jamais renvoyé pour typeTraitement 'professionnel').
+                if (e.decision === 'ADMIS') rec.admis += 1;
+                else if (e.decision === 'DÉROGÉ') rec.deroges += 1;
                 else rec.ajournes += 1;
                 if (e.moyenne_generale > 0) {
                     rec.sommeMoyennes += e.moyenne_generale;
                     rec.totalAvecMoyenne += 1;
-                }
-                if (e.ecue_a_reprendre && e.ecue_a_reprendre.length > 0) {
-                    rec.etudiants_a_reprendre += 1;
                 }
             });
         });
@@ -2868,9 +2861,11 @@ exports.getRecapFiliereNiveau = async (req, res) => {
                 niveau: r.niveau,
                 total: r.total,
                 admis: r.admis,
+                deroges: r.deroges,
                 ajournes: r.ajournes,
-                etudiants_a_reprendre: r.etudiants_a_reprendre,
-                taux_reussite: r.total > 0 ? parseFloat(((r.admis / r.total) * 100).toFixed(2)) : 0,
+                // ✅ Le taux de réussite inclut les dérogés (ils passent bien en classe supérieure),
+                // conformément au sens métier inchangé de cet indicateur.
+                taux_reussite: r.total > 0 ? parseFloat((((r.admis + r.deroges) / r.total) * 100).toFixed(2)) : 0,
                 moyenne_generale: r.totalAvecMoyenne > 0 ? parseFloat((r.sommeMoyennes / r.totalAvecMoyenne).toFixed(2)) : 0
             }))
             .sort((a, b) => a.filiere.localeCompare(b.filiere) || a.niveau.localeCompare(b.niveau));
