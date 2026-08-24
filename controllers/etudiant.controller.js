@@ -785,6 +785,12 @@ exports.getEtudiantsByDepartement = async (req, res) => {
         e.statut_scolaire,
         e.etablissement_origine,
         e.date_inscription,
+        -- ✅ Date d'inscription POUR CETTE ANNÉE académique précisément (admission ou
+        -- réinscription réellement validée à la caisse pour l'année consultée) — jamais
+        -- e.date_inscription seule, qui reste la date du tout premier dossier de l'étudiant et
+        -- n'est jamais mise à jour lors d'une réinscription (voir 041_vue_position_academique_
+        -- date_inscription_annee.sql). C'est cette colonne que la liste/l'export doivent utiliser.
+        e.date_inscription_annee,
         e.nationalite,
         e.standing,
         e.sexe,
@@ -966,10 +972,14 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
         e.matricule_iipea,
         e.statut_scolaire,
         e.date_inscription,
+        -- ✅ Même source que getEtudiantsByDepartement — voir commentaire ci-dessus dans ce
+        -- fichier et 041_vue_position_academique_date_inscription_annee.sql. Jamais une
+        -- deuxième logique de calcul entre affichage et export.
+        e.date_inscription_annee,
         e.nationalite,
         e.standing,
         e.sexe,
-        
+
         f.nom AS filiere,
         f.sigle AS filiere_sigle,
         
