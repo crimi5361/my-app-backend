@@ -1,4 +1,5 @@
 const { Pool } = require("pg");
+const { protegerPool } = require("./poolResilient");
 // Le chargement des variables d'environnement (.env.local / .env.production) est fait une
 // seule fois, par server.js, avant que ce module ne soit require — pas ici, pour éviter que
 // ce module ne retombe sur un éventuel .env générique (obsolète) et écrase le bon fichier.
@@ -10,10 +11,17 @@ const { Pool } = require("pg");
 // endpoint "-pooler" (PgBouncer), qui absorbe cette hausse côté base). connectionTimeoutMillis
 // passe de 0 (attente indéfinie) à 5000 : si le pool est saturé, une requête échoue proprement
 // après 5s au lieu de rester bloquée sans limite. idleTimeoutMillis explicité mais inchangé.
+// connectionTimeoutMillis : 5 000 était trop court. MESURÉ le 2026-08-21 depuis
+// Abidjan, ouvrir une connexion vers l'endpoint Neon prend 2 400 à 3 900 ms — un
+// simple pic dépassait donc le délai et faisait échouer la requête. À 20 000 ms
+// on couvre aussi le réveil du compute mis en veille par Neon.
+// idleTimeoutMillis relevé à 30 000 : recycler une connexion toutes les 10 s
+// obligeait à repayer ces ~3 s en permanence.
 const poolConfig = {
   max: 20,
-  idleTimeoutMillis: 10000,
-  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 20000,
+  keepAlive: true,
 };
 
 const pool = process.env.DATABASE_URL
@@ -31,6 +39,12 @@ const pool = process.env.DATABASE_URL
       port: parseInt(process.env.DB_PORT) || 5432,
     });
 
+
+// ⚠️ NE PAS RETIRER — voir config/poolResilient.js. Sans cette ligne, une
+// connexion coupée par Neon (mise en veille du compute, redémarrage, réseau)
+// fait tomber TOUT le processus backend, quelle que soit la requête en cours.
+// Constaté le 2026-08-21 : « server conn crashed? », code 08P01, severity FATAL.
+protegerPool(pool, "base");
 
 pool.on("connect", (client) => {
   client.query("SET search_path TO public").catch((err) => {

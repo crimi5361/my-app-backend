@@ -19,12 +19,48 @@ const {
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-// Aligné sur geminiAssistant.service.js : l'alias "-latest" évite qu'un retrait de
-// modèle daté casse la production (déjà vécu avec gemini-2.5-flash le 2026-08-07).
-const MODELE_ANALYSTE = 'gemini-flash-latest';
+// MODÈLE ÉPINGLÉ, et c'est un revirement assumé. On visait « gemini-flash-latest »
+// pour qu'un retrait de modèle daté ne casse pas la production (vécu avec
+// gemini-2.5-flash le 2026-08-07). Mais un alias suit la demande : le 2026-08-21,
+// « gemini-flash-latest » répondait 503 « high demand » sur toutes les requêtes,
+// pendant que gemini-3.6-flash répondait normalement. Un alias indisponible coûte
+// plus cher qu'un modèle retiré : le retrait se voit et se corrige, l'indisponibilité
+// intermittente se confond avec une assistante défaillante.
+// La variable d'environnement permet de changer de modèle sans redéployer le code.
+const MODELE_ANALYSTE = process.env.ASSISTANT_MODELE_TEXTE || 'gemini-3.6-flash';
 
 // Nombre d'appels d'outils autorises dans un tour.
 const MAX_OUTILS = 8;
+
+/**
+ * Envoi au modèle, avec reprise sur indisponibilité passagère.
+ *
+ * POURQUOI. Le 2026-08-21, l'API Gemini répondait 503 « This model is currently
+ * experiencing high demand » de façon intermittente. Sans reprise, chacune de ces
+ * secondes de surcharge se traduisait pour le fondateur par une assistante en
+ * panne — alors que le même appel passe à la tentative suivante.
+ *
+ * Uniquement sur 503 et 429 : une erreur de quota définitive, une clé invalide ou
+ * une requête malformée ne se réparent pas en attendant. L'attente double à chaque
+ * essai (1 s, 2 s) pour ne pas aggraver la surcharge qu'on subit.
+ */
+async function envoyerAuModele(chat, message) {
+  const ATTENTES = [1000, 2000];
+  for (let essai = 0; ; essai += 1) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      return await chat.sendMessage(message);
+    } catch (erreur) {
+      const texte = String(erreur?.message || '');
+      const passager = /\b(503|429)\b/.test(texte)
+        || /UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand/i.test(texte);
+      if (!passager || essai >= ATTENTES.length) throw erreur;
+      console.warn(`[assistant] modele indisponible, reprise ${essai + 1}/${ATTENTES.length}`);
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise((r) => { setTimeout(r, ATTENTES[essai]); });
+    }
+  }
+}
 
 // Declares une seule fois dans assistantOutils.service.js : le canal vocal utilise
 // exactement les memes, sans quoi une capacite existerait au clavier et pas a l'oral.
@@ -222,7 +258,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
     usage: extraireUsage(r?.usageMetadata),
   });
 
-  let reponse = await chat.sendMessage({ message: question });
+  let reponse = await envoyerAuModele(chat, { message: question });
   await comptabiliser(reponse);
 
   const requetes = [];        // trace de ce qui a été exécuté, montrée au fondateur
@@ -253,7 +289,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
     }
 
     // eslint-disable-next-line no-await-in-loop
-    reponse = await chat.sendMessage({
+    reponse = await envoyerAuModele(chat, {
       message: reponsesOutils.map((r) => ({ functionResponse: r })),
     });
     // eslint-disable-next-line no-await-in-loop

@@ -707,7 +707,34 @@ const NOMS_GOOGLE = new Set([
  *   `reponse` repart au modèle ; `trace` et `fichier` sont destinés à l'écran du
  *   fondateur et ne sont jamais relus par le modèle.
  */
-async function executerOutil(nom, args = {}, { siteId, ecoleId = null, utilisateurId = null }) {
+/**
+ * Enveloppe non contournable : AUCUN outil ne doit lever d'exception.
+ *
+ * POURQUOI. La boucle vocale appelle cette fonction puis envoie la reponse au
+ * modele. Si l'appel levait, la reponse d'outil n'etait jamais envoyee : le
+ * modele restait sans resultat et enchainait en inventant un chiffre. Le
+ * fondateur voyait une assistante sure d'elle et fausse, sans aucune trace
+ * d'erreur. Constate le 2026-08-21 sur une coupure de connexion Neon.
+ *
+ * Une panne se dit ; elle ne se devine pas.
+ */
+async function executerOutil(nom, args = {}, contexteAppel = {}) {
+  try {
+    return await executerOutilInterne(nom, args, contexteAppel);
+  } catch (erreur) {
+    console.error(`[assistant] outil ${nom} en echec :`, erreur.message);
+    return {
+      reponse: {
+        erreur: `L'outil ${nom} n'a pas abouti (${String(erreur.message).slice(0, 160)}).`,
+        instruction: "Cet outil a echoue. N'invente RIEN pour combler le vide : "
+          + "dis simplement au fondateur que tu n'as pas pu obtenir la donnee, "
+          + 'et propose de reessayer.',
+      },
+    };
+  }
+}
+
+async function executerOutilInterne(nom, args = {}, { siteId, ecoleId = null, utilisateurId = null }) {
   const contexte = { siteId, ecoleId, utilisateurId };
 
   if (nom === 'afficher_fiche_personne') {

@@ -540,126 +540,149 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       if (msg.toolCall?.functionCalls?.length) {
         const reponses = [];
 
-        for (const appel of msg.toolCall.functionCalls) {
-          // La forme 3D suit ce que l'assistante FAIT, pas ce qui a ete dit :
-          // elle est deduite de l'outil appele et de la vue interrogee.
-          envoyer('forme', { forme: formePour(appel.name) });
+        // GARANTIE : le modele Live attend UNE reponse par appel d'outil. S'il
+        // n'en recoit pas, il ne signale rien — il enchaine, et comble le vide
+        // avec un chiffre de son cru. Le `finally` plus bas garantit donc qu'une
+        // reponse part toujours, meme si le traitement casse en cours de route.
+        const attendus = msg.toolCall.functionCalls;
+        try {
+          for (const appel of attendus) {
+            // La forme 3D suit ce que l'assistante FAIT, pas ce qui a ete dit :
+            // elle est deduite de l'outil appele et de la vue interrogee.
+            envoyer('forme', { forme: formePour(appel.name) });
 
-          // Le graphique est le seul outil propre au canal vocal : il a besoin du
-          // dernier resultat SQL, que seul ce service conserve.
-          if (appel.name === 'afficher_graphique') {
-            const visualisation = validerVisualisation(appel.args, dernierResultat);
-            if (visualisation) {
-              envoyer('graphique', { visualisation, donnees: dernierResultat.lignes });
-              reponses.push({ id: appel.id, name: appel.name, response: {
-                affiche: true, nb_points: dernierResultat.lignes.length,
-              } });
-            } else {
-              reponses.push({ id: appel.id, name: appel.name, response: {
-                erreur: "Impossible d'afficher : les colonnes citees n'existent pas dans le dernier resultat, "
-                  + "ou aucune requete n'a encore ete executee.",
-              } });
-            }
-            continue;
-          }
-
-          // Débriefing de la veille. La décision — accord, refus, hésitation —
-          // est prise ICI, par une fonction déterministe et testée, et non par
-          // le modèle : il ne fait que transmettre la réponse et lire le résumé.
-          if (appel.name === 'debriefing_veille') {
-            const intention = intentionOuiNon(appel.args?.reponse);
-
-            if (intention === 'non') {
-              relancesAccueil = 0;
-              reponses.push({ id: appel.id, name: appel.name, response: {
-                accepte: false,
-                instruction: "Le fondateur ne souhaite pas de débriefing. Dis-lui simplement que "
-                  + "tu restes à sa disposition, en une phrase, et attends sa question.",
-              } });
-              continue;
-            }
-
-            if (intention === 'ambigu') {
-              if (relancesAccueil === 0) {
-                relancesAccueil += 1;
+            // Le graphique est le seul outil propre au canal vocal : il a besoin du
+            // dernier resultat SQL, que seul ce service conserve.
+            if (appel.name === 'afficher_graphique') {
+              const visualisation = validerVisualisation(appel.args, dernierResultat);
+              if (visualisation) {
+                envoyer('graphique', { visualisation, donnees: dernierResultat.lignes });
                 reponses.push({ id: appel.id, name: appel.name, response: {
-                  ambigu: true,
-                  instruction: "Sa réponse n'est pas claire. Repose la question UNE SEULE FOIS, "
-                    + "brièvement : « Voulez-vous que je vous présente les mouvements d'hier ? »",
+                  affiche: true, nb_points: dernierResultat.lignes.length,
                 } });
               } else {
-                // Deuxième hésitation : on n'insiste pas davantage.
-                relancesAccueil = 0;
                 reponses.push({ id: appel.id, name: appel.name, response: {
-                  accepte: false,
-                  instruction: "La réponse reste incertaine. N'insiste pas : dis que tu restes "
-                    + "disponible s'il veut le débriefing, et passe à autre chose.",
+                  erreur: "Impossible d'afficher : les colonnes citees n'existent pas dans le dernier resultat, "
+                    + "ou aucune requete n'a encore ete executee.",
                 } });
               }
               continue;
             }
 
-            relancesAccueil = 0;
-            // eslint-disable-next-line no-await-in-loop
-            const brief = await debriefingVeille({ siteId, ecoleId });
+            // Débriefing de la veille. La décision — accord, refus, hésitation —
+            // est prise ICI, par une fonction déterministe et testée, et non par
+            // le modèle : il ne fait que transmettre la réponse et lire le résumé.
+            if (appel.name === 'debriefing_veille') {
+              const intention = intentionOuiNon(appel.args?.reponse);
 
-            // Les graphiques partent à l'écran, pas au modèle : il choisit de
-            // déclencher le débriefing, il n'en fabrique jamais les chiffres.
-            if (brief.graphiques.length) {
-              envoyer('debriefing', {
-                date: brief.date,
-                phrases: brief.phrases,
-                graphiques: brief.graphiques,
-              });
-              envoyer('forme', { forme: 'graphe' });
+              if (intention === 'non') {
+                relancesAccueil = 0;
+                reponses.push({ id: appel.id, name: appel.name, response: {
+                  accepte: false,
+                  instruction: "Le fondateur ne souhaite pas de débriefing. Dis-lui simplement que "
+                    + "tu restes à sa disposition, en une phrase, et attends sa question.",
+                } });
+                continue;
+              }
+
+              if (intention === 'ambigu') {
+                if (relancesAccueil === 0) {
+                  relancesAccueil += 1;
+                  reponses.push({ id: appel.id, name: appel.name, response: {
+                    ambigu: true,
+                    instruction: "Sa réponse n'est pas claire. Repose la question UNE SEULE FOIS, "
+                      + "brièvement : « Voulez-vous que je vous présente les mouvements d'hier ? »",
+                  } });
+                } else {
+                  // Deuxième hésitation : on n'insiste pas davantage.
+                  relancesAccueil = 0;
+                  reponses.push({ id: appel.id, name: appel.name, response: {
+                    accepte: false,
+                    instruction: "La réponse reste incertaine. N'insiste pas : dis que tu restes "
+                      + "disponible s'il veut le débriefing, et passe à autre chose.",
+                  } });
+                }
+                continue;
+              }
+
+              relancesAccueil = 0;
+              // eslint-disable-next-line no-await-in-loop
+              const brief = await debriefingVeille({ siteId, ecoleId });
+
+              // Les graphiques partent à l'écran, pas au modèle : il choisit de
+              // déclencher le débriefing, il n'en fabrique jamais les chiffres.
+              if (brief.graphiques.length) {
+                envoyer('debriefing', {
+                  date: brief.date,
+                  phrases: brief.phrases,
+                  graphiques: brief.graphiques,
+                });
+                envoyer('forme', { forme: 'graphe' });
+              }
+
+              reponses.push({ id: appel.id, name: appel.name, response: {
+                accepte: true,
+                aucune_activite: brief.aucune_activite,
+                resume: brief.phrases,
+                instruction: brief.aucune_activite
+                  ? "Lis ce résumé tel quel. N'invente aucun chiffre et ne cherche pas à combler le vide."
+                  : "Lis ce résumé tel quel, dans l'ordre, sans y ajouter aucun chiffre. Les graphiques "
+                    + "sont déjà affichés à son écran : mentionne-les en une phrase à la fin.",
+                limite: "Ce débriefing ne couvre que les CRÉATIONS tracées (inscriptions, encaissements, "
+                  + "prises en charge, sessions de caisse, mouvements de stock). Les connexions, "
+                  + "consultations, modifications et suppressions ne sont enregistrées nulle part dans "
+                  + "cette base. Si le fondateur demande plus, dis-le-lui franchement.",
+              } });
+              continue;
             }
 
-            reponses.push({ id: appel.id, name: appel.name, response: {
-              accepte: true,
-              aucune_activite: brief.aucune_activite,
-              resume: brief.phrases,
-              instruction: brief.aucune_activite
-                ? "Lis ce résumé tel quel. N'invente aucun chiffre et ne cherche pas à combler le vide."
-                : "Lis ce résumé tel quel, dans l'ordre, sans y ajouter aucun chiffre. Les graphiques "
-                  + "sont déjà affichés à son écran : mentionne-les en une phrase à la fin.",
-              limite: "Ce débriefing ne couvre que les CRÉATIONS tracées (inscriptions, encaissements, "
-                + "prises en charge, sessions de caisse, mouvements de stock). Les connexions, "
-                + "consultations, modifications et suppressions ne sont enregistrées nulle part dans "
-                + "cette base. Si le fondateur demande plus, dis-le-lui franchement.",
-            } });
-            continue;
+            // eslint-disable-next-line no-await-in-loop
+            const sortie = await executerOutil(appel.name, appel.args, { siteId, ecoleId, utilisateurId });
+
+            // Trace d'exploitation. Le modele ANNONCE parfois une action qu'il n'a
+            // pas demandee — « j'affiche la fiche » sans appeler l'outil. Sans
+            // cette ligne, impossible de distinguer un outil qui echoue d'un outil
+            // qui n'a jamais ete appele, et on en est reduit a supposer.
+            console.log(`[vocal] outil ${appel.name}`, JSON.stringify(appel.args || {}).slice(0, 120),
+              sortie.fiche ? '-> FICHE ENVOYEE' : sortie.fichier ? '-> fichier' : '');
+
+            if (sortie.trace) envoyer('requete', sortie.trace);
+            if (sortie.traces) sortie.traces.forEach((t) => envoyer('requete', t));
+            if (sortie.resultat?.ok) dernierResultat = sortie.resultat;
+            // Le fichier remonte a l'ecran : a l'oral, un classeur sans bouton de
+            // telechargement visible n'existe pas pour le fondateur.
+            if (sortie.fichier) envoyer('fichier', sortie.fichier);
+            // La fiche se dessine a l'ecran : elle ne repasse jamais par le modele,
+            // qui n'en connait que le nom et l'identifiant.
+            if (sortie.fiche) envoyer('fiche', { fiche: sortie.fiche });
+
+            // Redirection : le message part, la reponse d'outil est renvoyee pour
+            // que l'assistante annonce le depart, puis la session se ferme d'
+            // elle-meme apres sa phrase — la fermeture est declenchee cote
+            // navigateur, quand il a fini de l'entendre parler.
+            if (sortie.navigation) envoyer('navigation', sortie.navigation);
+
+            reponses.push({ id: appel.id, name: appel.name, response: sortie.reponse });
           }
-
-          // eslint-disable-next-line no-await-in-loop
-          const sortie = await executerOutil(appel.name, appel.args, { siteId, ecoleId, utilisateurId });
-
-          // Trace d'exploitation. Le modele ANNONCE parfois une action qu'il n'a
-          // pas demandee — « j'affiche la fiche » sans appeler l'outil. Sans
-          // cette ligne, impossible de distinguer un outil qui echoue d'un outil
-          // qui n'a jamais ete appele, et on en est reduit a supposer.
-          console.log(`[vocal] outil ${appel.name}`, JSON.stringify(appel.args || {}).slice(0, 120),
-            sortie.fiche ? '-> FICHE ENVOYEE' : sortie.fichier ? '-> fichier' : '');
-
-          if (sortie.trace) envoyer('requete', sortie.trace);
-          if (sortie.traces) sortie.traces.forEach((t) => envoyer('requete', t));
-          if (sortie.resultat?.ok) dernierResultat = sortie.resultat;
-          // Le fichier remonte a l'ecran : a l'oral, un classeur sans bouton de
-          // telechargement visible n'existe pas pour le fondateur.
-          if (sortie.fichier) envoyer('fichier', sortie.fichier);
-          // La fiche se dessine a l'ecran : elle ne repasse jamais par le modele,
-          // qui n'en connait que le nom et l'identifiant.
-          if (sortie.fiche) envoyer('fiche', { fiche: sortie.fiche });
-
-          // Redirection : le message part, la reponse d'outil est renvoyee pour
-          // que l'assistante annonce le depart, puis la session se ferme d'
-          // elle-meme apres sa phrase — la fermeture est declenchee cote
-          // navigateur, quand il a fini de l'entendre parler.
-          if (sortie.navigation) envoyer('navigation', sortie.navigation);
-
-          reponses.push({ id: appel.id, name: appel.name, response: sortie.reponse });
+        } catch (erreur) {
+          console.error("[vocal] boucle d'outils interrompue :", erreur.message);
+        } finally {
+          // Tout appel resté sans reponse en recoit une, explicite : mieux vaut
+          // une assistante qui dit « je n'ai pas pu lire » qu'une assistante qui
+          // invente.
+          const repondus = new Set(reponses.map((r) => r.id));
+          for (const appel of attendus) {
+            if (repondus.has(appel.id)) continue;
+            reponses.push({ id: appel.id, name: appel.name, response: {
+              erreur: 'Outil interrompu : aucune donnee obtenue.',
+              instruction: "Tu n'as PAS obtenu cette donnee. N'avance aucun chiffre, aucune "
+                + 'estimation, aucun ordre de grandeur. Dis au fondateur que la lecture a '
+                + 'echoue et propose de reessayer.',
+            } });
+          }
+          try { sessionLive.sendToolResponse({ functionResponses: reponses }); }
+          catch (e) { console.error("[vocal] envoi des reponses d'outils :", e.message); }
         }
-
-        sessionLive.sendToolResponse({ functionResponses: reponses });
         return;
       }
 

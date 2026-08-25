@@ -23,6 +23,7 @@
 // et surtout d'où l'ordre ci-dessus.
 const { Pool } = require('pg');
 const { Parser } = require('node-sql-parser');
+const { protegerPool } = require('../config/poolResilient');
 
 const parser = new Parser();
 
@@ -60,10 +61,19 @@ function getPool() {
   pool = new Pool({
     connectionString: process.env.ASSISTANT_DATABASE_URL,
     ssl: { rejectUnauthorized: false },
-    max: 5,
-    idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 5000,
+    max: 10,
+    idleTimeoutMillis: 30000,
+    // MESURÉ le 2026-08-21 : ouvrir une connexion vers l'endpoint Neon prend
+    // 2 400 à 3 900 ms depuis Abidjan, et davantage quand le compute sort de
+    // veille. À 5 000 ms, un pic ordinaire suffisait à faire échouer la lecture —
+    // et le modèle, privé de résultat, répondait de tête. Ne pas redescendre.
+    connectionTimeoutMillis: 20000,
+    keepAlive: true,
   });
+  // Sans cette protection, une connexion coupée par Neon fait tomber TOUT le
+  // serveur Express — y compris pendant qu'elle est empruntée. Voir
+  // config/poolResilient.js pour le détail du mécanisme.
+  protegerPool(pool, 'assistant');
   return pool;
 }
 
@@ -199,7 +209,7 @@ function validerRequete(sqlBrut, { limiteLignes = LIMITE_LIGNES_DEFAUT } = {}) {
  *
  * siteId/ecoleId viennent du JWT — jamais de la requête du modèle.
  */
-async function executerRequete(sqlBrut, { siteId, ecoleId = null, limiteLignes } = {}) {
+async function executerRequeteUneFois(sqlBrut, { siteId, ecoleId = null, limiteLignes } = {}) {
   if (!siteId) throw new Error('Site absent : impossible de cloisonner la requête.');
 
   const validation = validerRequete(sqlBrut, { limiteLignes });
@@ -217,7 +227,31 @@ async function executerRequete(sqlBrut, { siteId, ecoleId = null, limiteLignes }
     ecole = String(e);
   }
 
-  const client = await getPool().connect();
+  // L'ouverture de connexion est le point de fragilité : elle traverse
+  // l'Atlantique et réveille parfois un compute en veille. Un échec ici doit
+  // produire un `{ok:false}` PROPRE — jamais une exception. Une exception
+  // remonte jusqu'à la boucle d'outils, qui n'envoie alors aucune réponse au
+  // modèle : privé de résultat, il improvise un chiffre. C'est précisément le
+  // défaut qu'on corrige. Un second essai couvre la coupure de connexion
+  // isolée, qui est la panne la plus courante avec Neon.
+  let client;
+  try {
+    client = await getPool().connect();
+  } catch (premier) {
+    try {
+      client = await getPool().connect();
+    } catch (second) {
+      console.warn('[assistant] connexion de lecture impossible :', second.message);
+      return {
+        ok: false,
+        indisponible: true,
+        motif: "La base de données n'a pas répondu (connexion impossible). "
+          + "Ne donne AUCUN chiffre : dis au fondateur que la base est momentanément "
+          + 'injoignable et propose de réessayer.',
+      };
+    }
+  }
+
   const debut = Date.now();
 
   try {
@@ -277,6 +311,27 @@ async function executerRequete(sqlBrut, { siteId, ecoleId = null, limiteLignes }
     };
   } catch (error) {
     try { await client.query('ROLLBACK'); } catch { /* transaction déjà avortée */ }
+
+    // Une panne de transport (connexion coupée, compute en veille, délai
+    // dépassé) n'est pas une erreur dont le modèle peut se corriger : lui
+    // renvoyer « corrige ta requête » l'amène à en écrire une autre, à échouer
+    // encore, puis à répondre de tête. On la nomme donc pour ce qu'elle est.
+    // 25P03 : Neon coupe une transaction restee inactive. 57P01/57P03 : le
+    // compute s'arrete ou redemarre. 08xxx : la connexion elle-meme a laché.
+    // Aucune de ces pannes ne se corrige en reecrivant le SQL.
+    const transport = !error.code
+      || ['08P01', '08006', '08003', '08000', '08007', '57P01', '57P02', '57P03', '25P03',
+        'ECONNRESET', 'ETIMEDOUT', 'EPIPE'].includes(error.code);
+    if (transport) {
+      console.warn('[assistant] lecture interrompue :', error.code || '', error.message);
+      return {
+        ok: false,
+        indisponible: true,
+        motif: "La base de données a interrompu la lecture. Ne donne AUCUN chiffre : "
+          + 'dis au fondateur que la base est momentanément injoignable et propose de réessayer.',
+        code: error.code,
+      };
+    }
 
     // L'erreur PostgreSQL est renvoyée au modèle : c'est ce qui lui permet de
     // corriger un nom de colonne ou une jointure sans intervention humaine.
@@ -357,6 +412,36 @@ async function decrireTable(nom, { siteId, ecoleId = null }) {
     objet: `assistant.${propre}`,
     description: r.lignes[0].description || null,
     colonnes: r.lignes.map((l) => `${l.colonne} (${l.type})`),
+  };
+}
+
+/**
+ * Exécute la requête, avec UNE reprise en cas de panne de transport.
+ *
+ * POURQUOI UNE REPRISE. Les pannes rencontrées avec Neon sont transitoires par
+ * nature : une connexion coupée, un compute qui sort de veille, une transaction
+ * expirée. Le deuxième essai réussit presque toujours — et il coûte trois
+ * secondes, là où l'échec coûtait une réponse fausse : privée de résultat,
+ * l'assistante répondait de tête.
+ *
+ * UNE SEULE, et seulement sur le transport. Une requête refusée par le
+ * validateur ou par PostgreSQL (colonne inexistante, jointure fautive) échoue
+ * pour une raison que la relance ne changera pas : la relancer ne ferait que
+ * doubler l'attente avant de dire la même chose.
+ */
+async function executerRequete(sqlBrut, options = {}) {
+  const premier = await executerRequeteUneFois(sqlBrut, options);
+  if (premier.ok || !premier.indisponible) return premier;
+
+  console.warn('[assistant] lecture reprise apres panne de transport');
+  const second = await executerRequeteUneFois(sqlBrut, options);
+  if (second.ok) return second;
+
+  return {
+    ...second,
+    motif: "La base de données n'a pas répondu, malgré une seconde tentative. "
+      + "Ne donne AUCUN chiffre et n'avance aucune estimation : dis au fondateur que la "
+      + 'base est momentanément injoignable, et propose de réessayer dans un instant.',
   };
 }
 

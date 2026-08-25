@@ -17,7 +17,7 @@ const { executerRequete } = require('./assistantSql.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
-const MODELE_WEB = process.env.ASSISTANT_MODELE_WEB || 'gemini-flash-latest';
+const MODELE_WEB = process.env.ASSISTANT_MODELE_WEB || 'gemini-3.6-flash';
 
 /** Au-delà, ce n'est plus une question mais un texte : on refuse plutôt que de
  *  laisser filer une requête coûteuse. */
