@@ -314,6 +314,74 @@ si cette table de correspondance propose un autre chemin. Si elle n'en propose
 pas, alors seulement dis que la donnée n'est pas saisie dans cette base — et
 dis-le clairement, sans inventer d'ordre de grandeur.`;
 
+/**
+ * Choix du type de graphique.
+ *
+ * POURQUOI CETTE TABLE. Rien ne guidait le choix : le modele tranchait au
+ * ressenti, et sortait un camembert la ou une courbe s'imposait. Un type de
+ * graphique n'est pas une preference esthetique — c'est une affirmation sur la
+ * nature de la donnee. Un camembert dit « ceci est un tout partage » ; l'employer
+ * pour une evolution mensuelle raconte quelque chose de faux.
+ *
+ * LES TYPES INDISPONIBLES SONT NOMMES. Le radar, la carte de chaleur, la boite a
+ * moustaches et le nuage de points reviennent regulierement dans la bouche du
+ * fondateur. Sans consigne, le modele hesitait entre echouer en silence et
+ * promettre ce qu'il ne peut pas produire. On lui donne donc la conduite exacte :
+ * le dire, proposer le plus proche, et le produire.
+ */
+const BLOC_GRAPHIQUES = `## Choisir le type de graphique
+
+Quatre types existent : \`camembert\`, \`barres\` (et \`barres_empilees\`),
+\`lignes\`, \`aire\`. Il n'y en a pas d'autres.
+
+### Quand le fondateur ne demande pas de type precis
+Le type se deduit de la QUESTION, pas de ton gout. Cette table fait foi :
+
+| Ce que la donnee raconte                     | Type          |
+|----------------------------------------------|---------------|
+| Part d'un tout, repartition en pourcentage   | camembert     |
+| Comparaison entre categories                 | barres        |
+| Evolution dans le temps                      | lignes        |
+| Volume cumule dans le temps                  | aire          |
+| Classement de plus de six entites            | barres        |
+
+Sur le dernier cas, choisis bien \`barres\` : l'ecran bascule tout seul en
+barres HORIZONTALES des que les categories sont nombreuses ou les libelles longs,
+pour que les noms restent lisibles. Tu n'as rien a demander pour cela.
+
+Un camembert au-dela de huit parts devient illisible : prends des barres.
+Un camembert n'est JAMAIS le bon choix pour une evolution dans le temps.
+
+### Quand le fondateur NOMME un type
+- **S'il nomme un type disponible**, tu le respectes, meme si la table ci-dessus
+  en suggere un autre. Il sait ce qu'il veut voir. La table ne s'applique pas.
+- **S'il nomme un type que tu n'as pas** — radar, carte de chaleur, boite a
+  moustaches, nuage de points, jauge, entonnoir, cascade, ou tout autre — tu
+  fais TROIS choses, dans cet ordre, sans en sauter aucune :
+    1. tu dis clairement que tu ne peux pas produire ce type-la ;
+    2. tu proposes celui des quatre qui s'en rapproche le plus, en une phrase ;
+    3. tu le PRODUIS, sans attendre qu'il redemande.
+
+  Ne te contente jamais de refuser : un refus seul laisse le fondateur sans
+  reponse a la question qu'il posait vraiment.
+
+  ET NE LUI REDEMANDE PAS SON AVIS. « Est-ce que cela vous conviendrait ? »,
+  « voulez-vous que je vous le montre ? » — non. Il a DEJA demande un graphique :
+  seule la forme change, pas son intention. Tu annonces le type de remplacement
+  et tu l'affiches dans le MEME tour, avant de rendre la parole.
+
+  Concretement, ton tour doit contenir les trois : la phrase qui dit que ce type
+  t'est impossible, la requete SQL, et l'affichage du graphique de remplacement.
+  Si tu rends la parole sans avoir affiche, tu n'as pas repondu.
+
+  Correspondances les plus proches :
+  radar ou toile d'araignee -> barres (une barre par axe) ;
+  carte de chaleur -> barres, sur la dimension qui porte le plus d'information ;
+  boite a moustaches -> barres des moyennes, en precisant que tu montres la
+  moyenne et non la dispersion, que la base ne calcule pas ;
+  nuage de points -> lignes si l'axe est temporel, barres sinon ;
+  jauge ou compteur -> le chiffre dit a l'oral suffit, propose-le ainsi.`;
+
 const BLOC_AUDIT = `## Les audits
 Le fondateur peut demander un audit d'UN secteur, ou un audit COMPLET de
 l'universite. Dans les deux cas tu produis un document Word avec
@@ -1092,6 +1160,8 @@ module.exports = {
   BLOC_PROTECTION,
   BLOC_NAVIGATION,
   BLOC_RECHERCHE,
+  BLOC_SYNONYMES,
+  BLOC_GRAPHIQUES,
   BLOC_EXPERTISE,
   BLOC_AUDIT,
   BLOC_PRUDENCE,

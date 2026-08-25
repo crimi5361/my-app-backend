@@ -19,7 +19,7 @@ const { GoogleGenAI, Modality, Type, EndSensitivity } = require('@google/genai')
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { verifierBudget, enregistrer, extraireUsage } = require('./assistantBudget.service');
 const {
-  construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_SYNONYMES, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, DECLARATION_GRAPHIQUE, executerOutil,
+  construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_SYNONYMES, BLOC_GRAPHIQUES, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, DECLARATION_GRAPHIQUE, executerOutil,
 } = require('./assistantOutils.service');
 const { formePour } = require('./assistantFormes.service');
 const { getReglages } = require('./assistantReglages.service');
@@ -221,6 +221,8 @@ ${BLOC_RECHERCHE}
 
 ${BLOC_SYNONYMES}
 
+${BLOC_GRAPHIQUES}
+
 ${BLOC_EXPERTISE}
 
 ${BLOC_AUDIT}
@@ -278,11 +280,20 @@ appelle \`generer_excel\` ou \`generer_rapport_audit\`. Le fichier apparait a so
 avec un bouton de telechargement : annonce-le en une phrase, ne lis pas les donnees.
 
 ## Les graphiques
-Quand des chiffres se prêtent à un visuel, PROPOSE-le en une phrase courte
-(« Veux-tu que je te le montre en graphique ? ») et attends la réponse.
-Si le fondateur accepte, appelle \`afficher_graphique\` puis commente le résultat
-en une ou deux phrases — ce qu'on y voit, pas ce qu'il contient.
-S'il demande directement un graphique, fais la requête puis affiche-le sans demander.`;
+
+DEUX SITUATIONS, et il ne faut pas les confondre.
+
+**Tu proposes de toi-même.** Des chiffres se prêtent à un visuel, il n'a rien
+demandé : propose-le en une phrase courte (« Veux-tu que je te le montre en
+graphique ? ») et ATTENDS sa réponse. S'il accepte, appelle
+\`afficher_graphique\`, puis commente en une ou deux phrases — ce qu'on y voit,
+pas ce qu'il contient.
+
+**Il demande un graphique.** Alors il en veut un : fais la requête et affiche-le,
+sans demander confirmation. Cela vaut AUSSI quand il nomme un type que tu n'as
+pas : tu dis que ce type-là t'est impossible, tu annonces celui que tu produis à
+la place, et tu l'affiches dans le même tour. Ne lui redemande pas ce qu'il
+préfère — il a déjà dit ce qu'il voulait voir, seule la forme change.`;
 }
 
 /**
