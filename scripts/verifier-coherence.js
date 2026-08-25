@@ -114,10 +114,17 @@ const CAS = [
   {
     id: 10,
     question: 'Quel est le montant restant à recouvrer ?',
-    attendu: 'SELECT (SUM(montant_scolarite) - SUM(scolarite_verse))::numeric AS v '
-      + 'FROM assistant.v_etudiants',
+    // `scolarite_restante` et NON `montant_scolarite - scolarite_verse`.
+    // Les deux diffèrent de 31 660 104,50 FCFA, soit EXACTEMENT le total des
+    // 222 prises en charge validées : une PEC creuse l'écart entre ce qui est dû
+    // et ce qui est versé, mais elle n'est pas recouvrable. « Restant à
+    // recouvrer » désigne ce qu'on peut encore encaisser.
+    // La première version de ce cas utilisait la soustraction et signalait
+    // l'assistante comme fausse. C'est le harnais qui avait tort.
+    attendu: 'SELECT SUM(scolarite_restante)::numeric AS v FROM assistant.v_etudiants',
     tolerance: 0.01,
     unite: 'FCFA',
+    note: 'Les prises en charge validées ne sont pas recouvrables : elles sortent du reste à percevoir.',
   },
 ];
 
@@ -134,28 +141,107 @@ const MULTIPLICATEURS = [
   [/mille/i, 1e3],
 ];
 
+// Nombres ÉCRITS EN TOUTES LETTRES. L'instruction demande à l'assistante de
+// prononcer naturellement : elle répond « trente-trois agents » ou « mille huit
+// cent quatorze étudiants ». Une première version du harnais ne lisait que les
+// chiffres et signalait donc ces réponses — justes — comme fausses.
+const UNITES = {
+  zero: 0, un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7,
+  huit: 8, neuf: 9, dix: 10, onze: 11, douze: 12, treize: 13, quatorze: 14,
+  quinze: 15, seize: 16, vingt: 20, vingts: 20, trente: 30, quarante: 40, cinquante: 50,
+  soixante: 60, cent: 100, cents: 100,
+};
+const ECHELLES = { mille: 1e3, milles: 1e3, million: 1e6, millions: 1e6, milliard: 1e9, milliards: 1e9 };
+
+/** Somme les nombres en toutes lettres présents dans une phrase. */
+function nombresEnLettres(texte) {
+  const mots = texte.toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .split(/[^a-z]+/).filter(Boolean);
+
+  const trouves = [];
+  let total = 0;      // ce qui est déjà multiplié par une échelle
+  let courant = 0;    // le groupe en cours
+  let vu = false;
+
+  const cloturer = () => {
+    if (vu && (total + courant) > 0) trouves.push(total + courant);
+    total = 0; courant = 0; vu = false;
+  };
+
+  for (const mot of mots) {
+    if (mot === 'et') continue;                       // « vingt et un »
+    if (Object.prototype.hasOwnProperty.call(UNITES, mot)) {
+      const v = UNITES[mot];
+      if (v === 100) {
+        // « deux cents » : cent multiplie le groupe en cours plutôt que s'y ajouter.
+        courant = (courant || 1) * 100;
+      } else if ((mot === 'vingt' || mot === 'vingts') && courant % 100 === 4) {
+        // « quatre-vingt » vaut 80, pas 4 + 20. Sans cette règle,
+        // « quatre-vingt-treize » se lisait 37 : c'est ainsi que le harnais
+        // signalait comme fausse la réponse « cent cinq mille quatre cent
+        // quatre-vingt-treize », qui valait bien 105 493.
+        courant = courant - 4 + 80;
+      } else {
+        courant += v;
+      }
+      vu = true;
+    } else if (Object.prototype.hasOwnProperty.call(ECHELLES, mot)) {
+      // « mille » s'emploie seul (« mille huit cents ») ; « million » et
+      // « milliard » exigent un nombre devant. Sans cette distinction, la phrase
+      // « 1 milliard 668 millions » — dont les nombres sont en CHIFFRES — était
+      // relue ici comme « milliard + million » et donnait 1 001 000 000.
+      const echelle = ECHELLES[mot];
+      if (courant === 0 && echelle > 1e3) { cloturer(); continue; }
+      total += (courant || 1) * echelle;
+      courant = 0;
+      vu = true;
+    } else {
+      cloturer();
+    }
+  }
+  cloturer();
+  return trouves;
+}
+
 function nombresDe(texte) {
   const trouves = [];
+  // Chaque occurrence garde son ECHELLE : l assistante ecrit aussi des formes
+  // composees, « 1 milliard 668 millions ». Lues separement elles donnent deux
+  // nombres faux la ou la phrase en enonce un seul, juste.
+  const parts = [];
   const motif = /(\d[\d    .]*(?:,\d+)?)\s*(milliards?|millions?|mille)?/gi;
   let m = motif.exec(texte);
   while (m !== null) {
     const brut = m[1].replace(/[    .]/g, '').replace(',', '.');
-    let valeur = Number(brut);
-    if (Number.isFinite(valeur)) {
-      if (m[2]) {
-        const mult = MULTIPLICATEURS.find(([re]) => re.test(m[2]));
-        if (mult) valeur *= mult[1];
-      }
-      trouves.push(valeur);
+    const base = Number(brut);
+    if (Number.isFinite(base)) {
+      const mult = m[2] ? MULTIPLICATEURS.find(([re]) => re.test(m[2])) : null;
+      const echelle = mult ? mult[1] : 1;
+      parts.push({ valeur: base * echelle, echelle });
+      trouves.push(base * echelle);
     }
     m = motif.exec(texte);
+  }
+
+  // Recomposition : des echelles STRICTEMENT decroissantes qui se suivent
+  // decrivent un seul nombre. 1 x 1e9 puis 668 x 1e6 -> 1 668 000 000.
+  for (let i = 0; i < parts.length; i += 1) {
+    let somme = parts[i].valeur;
+    let derniere = parts[i].echelle;
+    for (let j = i + 1; j < parts.length && parts[j].echelle < derniere; j += 1) {
+      somme += parts[j].valeur;
+      derniere = parts[j].echelle;
+      trouves.push(somme);
+    }
   }
   return trouves;
 }
 
+
 /** Le bon nombre figure-t-il dans la réponse, à la tolérance près ? */
 function comparer(texte, attendu, tolerance) {
-  const candidats = nombresDe(texte);
+  const candidats = [...nombresDe(texte), ...nombresEnLettres(texte)];
   if (!candidats.length) return { ok: false, trouve: null, ecart: null };
 
   let meilleur = null;
