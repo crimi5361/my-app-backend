@@ -15,7 +15,7 @@
  *
  * @param {object} msg   message JSON reçu du navigateur
  * @param {{microCoupe:boolean}} etat  état courant de la session
- * @returns {{action:'audio'|'texte'|'fin_flux'|'micro'|'ignorer', [k:string]:any}}
+ * @returns {{action:'audio'|'texte'|'fin_flux'|'micro'|'page'|'ignorer', [k:string]:any}}
  */
 function routerMessageNavigateur(msg, etat) {
   if (!msg || typeof msg !== 'object') return { action: 'ignorer', motif: 'message illisible' };
@@ -38,6 +38,13 @@ function routerMessageNavigateur(msg, etat) {
   if (msg.type === 'texte' && msg.texte) return { action: 'texte', texte: msg.texte };
 
   if (msg.type === 'fin_flux') return { action: 'fin_flux' };
+
+  // Le fondateur a changé d'écran. Ce n'est pas une question : le modèle doit
+  // le SAVOIR sans avoir à répondre. Le chemin est repris tel quel — c'est le
+  // catalogue de destinations, côté serveur, qui décide s'il est connu.
+  if (msg.type === 'page' && typeof msg.chemin === 'string' && msg.chemin) {
+    return { action: 'page', chemin: msg.chemin.slice(0, 200) };
+  }
 
   return { action: 'ignorer', motif: 'type inconnu' };
 }

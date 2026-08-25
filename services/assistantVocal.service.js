@@ -19,7 +19,7 @@ const { GoogleGenAI, Modality, Type, EndSensitivity } = require('@google/genai')
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { verifierBudget, enregistrer, extraireUsage } = require('./assistantBudget.service');
 const {
-  construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_SYNONYMES, BLOC_GRAPHIQUES, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, DECLARATION_GRAPHIQUE, executerOutil,
+  construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_SYNONYMES, BLOC_GRAPHIQUES, BLOC_PAGE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, DECLARATION_GRAPHIQUE, executerOutil,
 } = require('./assistantOutils.service');
 const { formePour } = require('./assistantFormes.service');
 const { getReglages } = require('./assistantReglages.service');
@@ -29,6 +29,9 @@ const { corrigerTranscription } = require('./assistantTranscription');
 const { intentionOuiNon } = require('./assistantIntention');
 const { debriefingVeille } = require('./assistantDebriefing.service');
 const { preparerAccueil } = require('./assistantAccueil.service');
+// Catalogue des ecrans : sert a traduire une route en intitule lisible avant
+// de l'annoncer au modele.
+const { destinationValide } = require('../config/destinations');
 // Uniquement pour savoir si l'acces Google est configure — voir outilsPour.
 const google = require('./assistantGoogle.service');
 
@@ -216,6 +219,8 @@ ${BLOC_PHOTOS}
 ${BLOC_PROTECTION}
 
 ${BLOC_NAVIGATION}
+
+${BLOC_PAGE}
 
 ${BLOC_RECHERCHE}
 
@@ -445,6 +450,10 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
     // sera pas rejoué (il connaît la session).
     let accueilJoue = false;
 
+    // Dernier ecran annonce par le navigateur. Sert a ne pas repeter le meme
+    // contexte quand React re-rend sans que la route ait change.
+    let pageCourante = null;
+
     // Relances déjà faites sur une réponse ambiguë. Le protocole en autorise UNE :
     // au-delà, insister sur une question à laquelle le fondateur ne répond pas
     // devient une boucle dont il ne peut plus sortir qu'en fermant l'écran.
@@ -491,6 +500,37 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
           sessionLive.sendRealtimeInput({ audioStreamEnd: true });
           break;
 
+        case 'page': {
+          /**
+           * Le fondateur vient de changer d'ecran.
+           *
+           * `turnComplete: false` est la cle : le contenu s'ajoute a la
+           * conversation SANS demander de reponse. Avec `true`, l'assistante
+           * prendrait la parole a chaque navigation pour commenter un ecran que
+           * personne ne lui a demande de commenter.
+           *
+           * On ne renvoie rien si l'ecran est inconnu du catalogue : lui donner
+           * un chemin brut ne lui apprendrait rien qu'elle puisse dire.
+           */
+          const ecran = destinationValide(decision.chemin);
+          if (!ecran || ecran.chemin === pageCourante) break;
+          pageCourante = ecran.chemin;
+          try {
+            sessionLive.sendClientContent({
+              turns: [{
+                role: 'user',
+                parts: [{
+                  text: `[Contexte, ne reponds pas] Le fondateur est maintenant sur `
+                    + `${ecran.libelle} (${ecran.chemin}). Tu ne VOIS pas son ecran : `
+                    + `s'il te demande ce qui y figure, interroge la base.`,
+                }],
+              }],
+              turnComplete: false,
+            });
+          } catch { /* session deja fermee */ }
+          break;
+        }
+
         case 'accueil':
           // Une seule fois par session, même si le navigateur redemandait.
           if (accueilJoue) break;
@@ -526,8 +566,16 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       if (fermee) return;
       let msg;
       try { msg = JSON.parse(donnees.toString()); } catch { return; }
-      if (sessionPrete) traiterMessageNavigateur(msg);
-      else enAttente.push(msg);
+      // ENVELOPPE OBLIGATOIRE. Une exception levee ici remonte a l'emetteur
+      // d'evenements de `ws`, que personne n'ecoute : Node considere l'erreur
+      // comme non geree et TUE LE PROCESSUS. Le serveur entier tombe pour un
+      // message malforme. Vecu le 2026-08-25 sur un simple import oublie.
+      try {
+        if (sessionPrete) traiterMessageNavigateur(msg);
+        else enAttente.push(msg);
+      } catch (erreur) {
+        console.error('[vocal] message navigateur ignore :', erreur.message);
+      }
     });
     ws.on('close', () => fermer('navigateur déconnecté'));
     ws.on('error', () => fermer('erreur socket'));
