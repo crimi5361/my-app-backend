@@ -112,10 +112,26 @@ async function getFondateurOverview(db, { anneeAcademiqueId, siteId, ecoleId }) 
       WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit' ${ecoleCondEtudiant}
     `, etudiantParams),
 
+    /*
+     * Evolution des recettes — CLOISONNEE PAR L'ETUDIANT, ET NON PAR LA CAISSE.
+     *
+     * Cette courbe est affichee JUSTE SOUS le total « scolarite versee », qui
+     * vaut 1 668 089 662,50 FCFA. Elle passait par `JOIN caisse` et affichait
+     * 80 000 — un rapport de 1 a 20 000, sur le meme ecran, sous le meme mot.
+     *
+     * La cause n'est pas la courbe : 11 731 reglements sur 11 733 n'ont pas de
+     * `caisse_id`, le module Caisse n'ayant servi que deux fois. Une jointure
+     * interne sur `caisse` elimine donc 99,98 % des encaissements.
+     *
+     * Le rattachement par l'etudiant est complet — les 11 733 paiements portent
+     * un `etudiant_id` — et sa somme retombe AU CENTIME sur le total affiche
+     * au-dessus. C'est ce qui fait de lui la bonne cle de cloisonnement : deux
+     * chiffres presentes ensemble doivent se calculer pareil.
+     */
     db.query(`
       SELECT date_trunc('month', p.date_paiement) AS mois, COALESCE(SUM(p.montant), 0) AS total
-      FROM paiement p JOIN caisse c ON c.id = p.caisse_id
-      WHERE p.annee_academique_id = $1 AND c.site_id = $2 ${ecoleCondPaiement}
+      FROM paiement p JOIN etudiant e ON e.id = p.etudiant_id
+      WHERE p.annee_academique_id = $1 AND e.site_id = $2 ${ecoleCondPaiement}
       GROUP BY date_trunc('month', p.date_paiement) ORDER BY mois
     `, paiementParams),
 
@@ -125,16 +141,27 @@ async function getFondateurOverview(db, { anneeAcademiqueId, siteId, ecoleId }) 
       WHERE p.statut = 'valide' AND p.annee_academique_id = $1 AND e.site_id = $2 ${ecoleCondEtudiant}
     `, etudiantParams),
 
+    /*
+     * « Encaisse aujourd'hui » et « ce mois » : meme cloisonnement que la courbe
+     * ci-dessus, pour la meme raison. Le fondateur lit ces deux chiffres comme
+     * de l'argent entre, pas comme un taux d'usage du module Caisse — et deux
+     * libelles portant le mot « encaisse » sur un meme ecran ne peuvent pas
+     * compter deux choses differentes.
+     *
+     * Les deux indicateurs voisins, « caisses configurees » et « sessions
+     * ouvertes », restent adosses a la table caisse : eux parlent bien des
+     * caisses, et leur jointure est donc juste.
+     */
     db.query(`
       SELECT
         (SELECT COUNT(*) FROM caisse c WHERE c.site_id = $1) AS nb_caisses,
         (SELECT COUNT(*) FROM session_caisse sc JOIN caisse c ON c.id = sc.caisse_id
           WHERE c.site_id = $1 AND sc.statut = 'OUVERTE') AS sessions_ouvertes,
-        (SELECT COALESCE(SUM(p.montant), 0) FROM paiement p JOIN caisse c ON c.id = p.caisse_id
-          WHERE c.site_id = $1 AND p.date_paiement = CURRENT_DATE ${ecoleId !== null ? 'AND p.etudiant_id IN (SELECT ex.id FROM etudiant ex WHERE ex.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $2))' : ''}
+        (SELECT COALESCE(SUM(p.montant), 0) FROM paiement p JOIN etudiant e ON e.id = p.etudiant_id
+          WHERE e.site_id = $1 AND p.date_paiement = CURRENT_DATE ${ecoleId !== null ? 'AND p.etudiant_id IN (SELECT ex.id FROM etudiant ex WHERE ex.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $2))' : ''}
         ) AS encaisse_jour,
-        (SELECT COALESCE(SUM(p.montant), 0) FROM paiement p JOIN caisse c ON c.id = p.caisse_id
-          WHERE c.site_id = $1 AND p.date_paiement >= date_trunc('month', CURRENT_DATE) ${ecoleId !== null ? 'AND p.etudiant_id IN (SELECT ex.id FROM etudiant ex WHERE ex.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $2))' : ''}
+        (SELECT COALESCE(SUM(p.montant), 0) FROM paiement p JOIN etudiant e ON e.id = p.etudiant_id
+          WHERE e.site_id = $1 AND p.date_paiement >= date_trunc('month', CURRENT_DATE) ${ecoleId !== null ? 'AND p.etudiant_id IN (SELECT ex.id FROM etudiant ex WHERE ex.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $2))' : ''}
         ) AS encaisse_mois
     `, caissesParams),
 
