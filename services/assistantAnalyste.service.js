@@ -17,7 +17,7 @@ const { getReglages } = require('./assistantReglages.service');
 // dependent ne sont declares au modele que dans ce cas.
 const google = require('./assistantGoogle.service');
 const {
-  construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, executerOutil,
+  construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_SYNONYMES, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, executerOutil,
 } = require('./assistantOutils.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -150,6 +150,8 @@ ${BLOC_PROTECTION}
 ${BLOC_NAVIGATION}
 
 ${BLOC_RECHERCHE}
+
+${BLOC_SYNONYMES}
 
 ${BLOC_EXPERTISE}
 

@@ -245,6 +245,75 @@ Si plusieurs personnes correspondent, tu ne choisis pas à sa place :
 Une fois la personne identifiée, sers-toi de sa \`reference\` (le matricule) pour
 interroger les autres vues — c'est elle qui fait le lien, pas le nom.`;
 
+/**
+ * Traduction du vocabulaire du fondateur vers les objets du schema.
+ *
+ * POURQUOI CE BLOC EXISTE. Le fondateur dit « enseignants ». Le schema porte
+ * DEUX tables : `enseignant`, module RH recent et VIDE, et `professeur`, en
+ * service et peuplee. La vue metier `v_enseignants` lit la premiere. Interrogee
+ * sur ses enseignants, l'assistante repondait donc qu'il n'y en avait aucun —
+ * alors que 115 personnes sont exposees, a un nom de vue pres.
+ *
+ * Ce n'etait ni un defaut de couverture ni un defaut de droits : les 74 tables
+ * sont atteintes et lisibles. C'etait un defaut de DECOUVRABILITE. Le modele ne
+ * recoit des reflets `t_*` que le nom et une phrase ; il ne peut pas deviner
+ * qu'un mot courant designe une table au nom different.
+ *
+ * On ne liste donc que les cas ou le mot evident conduit AILLEURS que la donnee,
+ * ou nulle part. Un synonyme qui tombe juste n'a pas besoin d'etre ecrit.
+ */
+const BLOC_SYNONYMES = `## Ce que le fondateur dit, et où c'est réellement rangé
+
+Certains mots courants ne portent PAS le nom de la table qui contient la donnée.
+Avant de conclure qu'une information n'existe pas, vérifie dans cette table de
+correspondance. Une vue vide ne prouve pas que la donnée est absente : elle
+prouve seulement que TU AS REGARDÉ AU MAUVAIS ENDROIT.
+
+- ENSEIGNANT, professeur, prof, formateur, intervenant, corps enseignant
+  → \`assistant.t_professeur\` (nom, prenom, statut). C'est la table en service.
+  N'utilise NI \`v_enseignants\` NI \`t_enseignant\` : elles appartiennent au module
+  RH, qui n'est pas alimenté ici et rend zéro ligne.
+  Ce qu'un enseignant enseigne : \`t_enseignement\` (professeur_id, matiere_id,
+  groupe_id). Les notes s'y rattachent par \`enseignement_id\`.
+
+- ENCAISSEMENT, recette, chiffre d'affaires, total encaissé, argent rentré
+  → \`assistant.v_etudiants.scolarite_verse\`, ou \`t_paiement\` pour le détail
+  transaction par transaction. N'utilise PAS \`v_paiements\` pour un total :
+  elle exige une caisse rattachée, ce que presque aucun paiement n'a, et son
+  total est donc très inférieur à la réalité.
+
+- MATIÈRE, cours, module, unité d'enseignement, UE
+  → \`t_matiere\` et \`t_ue\`. Le rattachement passe par \`t_enseignement\`.
+
+- BULLETIN, note, évaluation, moyenne, résultat
+  → \`t_note\`. \`t_resultat\` est vide.
+
+- EMPLOI DU TEMPS, planning, horaires
+  → \`t_emploi_du_temps\` ne contient que des FICHIERS déposés (chemin, nom,
+  date), pas de créneaux exploitables. \`t_seance_edt\` et \`t_salle\`, qui
+  porteraient les créneaux, sont vides. Dis-le franchement : tu peux compter les
+  fichiers déposés, tu ne peux pas répondre « qui enseigne quoi à quelle heure ».
+
+- BOURSE, prise en charge, PEC, exonération
+  → \`v_prises_en_charge\`.
+
+- FOURNITURES, kit, accessoires, dotation
+  → \`t_kit\` pour ce qui est attribué aux étudiants, \`t_accessoire\` pour le
+  catalogue. \`v_distributions\` est vide.
+
+- REÇU, quittance, justificatif de paiement → \`t_recu\`.
+- DIPLÔME D'ORIGINE, parcours antérieur → \`t_etablissement_origine\`.
+- MÉMOIRE, soutenance → \`t_memoire\`.
+- PROGRAMME, maquette pédagogique, curriculum → \`t_maquette\`.
+- PROMOTION, classe, groupe → \`t_classe\` et \`t_groupe\`.
+- AGENT, employé, collaborateur, personnel → \`v_agents\` (et \`t_utilisateur\`
+  pour les comptes).
+
+Quand une vue rend zéro ligne, ne conclus jamais tout de suite. Regarde d'abord
+si cette table de correspondance propose un autre chemin. Si elle n'en propose
+pas, alors seulement dis que la donnée n'est pas saisie dans cette base — et
+dis-le clairement, sans inventer d'ordre de grandeur.`;
+
 const BLOC_AUDIT = `## Les audits
 Le fondateur peut demander un audit d'UN secteur, ou un audit COMPLET de
 l'universite. Dans les deux cas tu produis un document Word avec
