@@ -32,37 +32,122 @@ const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 // La variable d'environnement permet de changer de modèle sans redéployer le code.
 const MODELE_ANALYSTE = process.env.ASSISTANT_MODELE_TEXTE || 'gemini-3.6-flash';
 
+/**
+ * Chaîne de repli. Le premier modèle est celui qu'on veut ; les suivants sont
+ * ceux qu'on accepte plutôt que de ne rien répondre.
+ *
+ * CE QU'ELLE PROTÈGE, ET CE QU'ELLE NE PROTÈGE PAS — à lire avant d'y compter.
+ * Elle couvre une limite PROPRE À UN MODÈLE : débit par minute atteint, modèle
+ * bridé, modèle retiré. Elle ne couvre PAS un solde de crédits à zéro : dans ce
+ * cas tous les modèles du projet répondent 429 en même temps, et descendre la
+ * chaîne ne fait que retarder l'échec de deux appels. Contre le solde vide, il
+ * n'existe qu'un remède : recharger.
+ *
+ * COMPOSITION MESURÉE, PAS SUPPOSÉE. Le 2026-08-25, les six candidats ont été
+ * essayés sur une vraie question de bout en bout, et deux seulement tiennent :
+ *
+ *   gemini-3.6-flash        13,9 s, 2 requêtes, réponse juste     -> tête
+ *   gemini-flash-lite-latest 6,7 s, 1 requête,  réponse juste     -> repli 1
+ *   gemini-pro-latest       25,1 s, 1 requête,  réponse juste     -> repli 2
+ *
+ *   gemini-3.1-flash-lite   BOUCLE : 8 appels d'outils, aucune réponse finale
+ *   gemini-3.5-flash        aucune réponse en 200 s
+ *   gemini-3.7-flash        aucune réponse en 200 s
+ *
+ * Accepter les outils et le schéma JSON ne suffit donc pas : `3.1-flash-lite`
+ * les accepte et enchaîne pourtant les appels sans jamais conclure. Un repli qui
+ * répond « Je n'ai pas réussi à formuler de réponse » est pire que pas de repli
+ * du tout — il consomme des crédits pour produire du vide. D'où l'exclusion.
+ *
+ * Les deux retenus sont des alias, en connaissance de cause : les équivalents
+ * épinglés testés ci-dessus ne fonctionnent pas. Le compromis est assumé.
+ */
+const MODELES_TEXTE = [
+  MODELE_ANALYSTE,
+  process.env.ASSISTANT_MODELE_TEXTE_REPLI || 'gemini-flash-lite-latest',
+  'gemini-pro-latest',
+];
+
+/** L'erreur dit-elle « il n'y a plus de crédit » plutôt que « réessaie » ? */
+function estEpuisement(erreur) {
+  const m = String(erreur?.message || '');
+  return erreur?.status === 429
+    || /\b429\b|RESOURCE_EXHAUSTED|quota|billing|exceeded your current/i.test(m);
+}
+
 // Nombre d'appels d'outils autorises dans un tour.
 const MAX_OUTILS = 8;
 
 /**
- * Envoi au modèle, avec reprise sur indisponibilité passagère.
+ * Conversation avec le modèle, capable de changer de modèle en cours de route.
  *
- * POURQUOI. Le 2026-08-21, l'API Gemini répondait 503 « This model is currently
- * experiencing high demand » de façon intermittente. Sans reprise, chacune de ces
- * secondes de surcharge se traduisait pour le fondateur par une assistante en
- * panne — alors que le même appel passe à la tentative suivante.
+ * DEUX PANNES, DEUX REMÈDES, et il ne faut pas les confondre :
  *
- * Uniquement sur 503 et 429 : une erreur de quota définitive, une clé invalide ou
- * une requête malformée ne se réparent pas en attendant. L'attente double à chaque
- * essai (1 s, 2 s) pour ne pas aggraver la surcharge qu'on subit.
+ *   • surcharge passagère (503, « high demand ») — le même modèle répondra dans
+ *     une seconde. On attend, on réessaie, on ne change rien.
+ *   • épuisement (429, RESOURCE_EXHAUSTED) — le crédit est consommé. Attendre
+ *     ne sert à rien, et réessayer sur le même modèle non plus. On descend d'un
+ *     cran dans la chaîne de repli.
+ *
+ * LA BASCULE EST INVISIBLE POUR LE FONDATEUR. Elle est journalisée côté serveur,
+ * jamais renvoyée au navigateur : il obtient sa réponse, peut-être un peu moins
+ * finement tournée, et c'est tout. Une assistante qui explique ses ennuis de
+ * facturation en pleine démonstration est pire qu'une assistante lente.
+ *
+ * L'HISTORIQUE EST CAPTURÉ AVANT L'ENVOI. Le SDK n'ajoute le tour à l'historique
+ * qu'une fois la réponse reçue : après un échec, `getHistory()` peut être dans un
+ * état intermédiaire. On repart donc de l'instantané pris avant l'appel, et on
+ * rejoue le même message sur le nouveau modèle.
  */
-async function envoyerAuModele(chat, message) {
+function creerConversation({ config, historique }) {
   const ATTENTES = [1000, 2000];
-  for (let essai = 0; ; essai += 1) {
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      return await chat.sendMessage(message);
-    } catch (erreur) {
-      const texte = String(erreur?.message || '');
-      const passager = /\b(503|429)\b/.test(texte)
-        || /UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand/i.test(texte);
-      if (!passager || essai >= ATTENTES.length) throw erreur;
-      console.warn(`[assistant] modele indisponible, reprise ${essai + 1}/${ATTENTES.length}`);
-      // eslint-disable-next-line no-await-in-loop
-      await new Promise((r) => { setTimeout(r, ATTENTES[essai]); });
+  let rang = 0;
+  let chat = ai.chats.create({ model: MODELES_TEXTE[rang], config, history: historique });
+
+  async function envoyer(message) {
+    // Instantané pris avant tout envoi : c'est lui qui sert à reconstruire la
+    // conversation si l'on doit changer de modèle.
+    let avant = chat.getHistory();
+
+    for (let essai = 0; ; essai += 1) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        return await chat.sendMessage(message);
+      } catch (erreur) {
+        if (estEpuisement(erreur) && rang + 1 < MODELES_TEXTE.length) {
+          const ancien = MODELES_TEXTE[rang];
+          rang += 1;
+          console.warn(
+            `[assistant] ${ancien} epuise (429) — bascule sur ${MODELES_TEXTE[rang]}. `
+            + `Verifier le solde de credits Google.`
+          );
+          chat = ai.chats.create({ model: MODELES_TEXTE[rang], config, history: avant });
+          avant = chat.getHistory();
+          essai = -1;                       // le nouveau modèle a droit à ses propres reprises
+          // eslint-disable-next-line no-continue
+          continue;
+        }
+
+        const texte = String(erreur?.message || '');
+        const passager = /\b(503|500|502|504)\b/.test(texte)
+          || /UNAVAILABLE|overloaded|high demand/i.test(texte);
+        if (!passager || essai >= ATTENTES.length) throw erreur;
+
+        console.warn(`[assistant] ${MODELES_TEXTE[rang]} surcharge, reprise ${essai + 1}/${ATTENTES.length}`);
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => { setTimeout(r, ATTENTES[essai]); });
+      }
     }
   }
+
+  return {
+    envoyer,
+    // Le modèle RÉELLEMENT utilisé, et non la constante : c'est lui qu'il faut
+    // comptabiliser, sans quoi le coût est imputé au mauvais tarif.
+    get modele() { return MODELES_TEXTE[rang]; },
+    get aBascule() { return rang > 0; },
+    historique() { return chat.getHistory(); },
+  };
 }
 
 // Declares une seule fois dans assistantOutils.service.js : le canal vocal utilise
@@ -242,8 +327,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
 
-  const chat = ai.chats.create({
-    model: MODELE_ANALYSTE,
+  const conversation = creerConversation({
     config: {
       systemInstruction: construireInstruction(
         dictionnaire, aujourdhui, calendrier.ok ? calendrier.lignes : [], reglages
@@ -254,20 +338,23 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
       responseMimeType: 'application/json',
       responseSchema: SCHEMA_REPONSE,
     },
-    history: historique,
+    historique,
   });
 
   // Chaque échange avec le modèle est comptabilisé : le budget se calcule sur la
   // consommation réelle déclarée par Gemini, pas sur une estimation.
+  // `conversation.modele` et non la constante : apres une bascule, le cout doit
+  // etre impute au modele qui a REELLEMENT repondu, sinon la consommation est
+  // valorisee au mauvais tarif.
   const comptabiliser = (r) => enregistrer({
     siteId,
     utilisateurId,
     canal: 'texte',
-    modele: MODELE_ANALYSTE,
+    modele: conversation.modele,
     usage: extraireUsage(r?.usageMetadata),
   });
 
-  let reponse = await envoyerAuModele(chat, { message: question });
+  let reponse = await conversation.envoyer({ message: question });
   await comptabiliser(reponse);
 
   const requetes = [];        // trace de ce qui a été exécuté, montrée au fondateur
@@ -298,7 +385,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
     }
 
     // eslint-disable-next-line no-await-in-loop
-    reponse = await envoyerAuModele(chat, {
+    reponse = await conversation.envoyer({
       message: reponsesOutils.map((r) => ({ functionResponse: r })),
     });
     // eslint-disable-next-line no-await-in-loop
@@ -328,7 +415,7 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
     fichiers,
     fiches,
     navigation,
-    historique: chat.getHistory(),
+    historique: conversation.historique(),
   };
 }
 

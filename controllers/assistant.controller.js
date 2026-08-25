@@ -41,12 +41,11 @@ exports.chat = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Site introuvable. Reconnectez-vous.' });
     }
 
-    // Le plafond est vérifié AVANT l'appel au modèle : une fois les jetons
-    // consommés, ils sont facturés — refuser après ne protège de rien.
-    const budget = await verifierBudget(siteId);
-    if (!budget.autorise) {
-      return res.status(402).json({ success: false, message: budget.motif, budget: budget.consommation });
-    }
+    // La consommation est relue pour etre journalisee cote serveur. Elle ne
+    // bloque plus la reponse : le plafond applicatif valorisait les jetons a des
+    // tarifs sans rapport avec la facturation reelle, et coupait donc a cote de
+    // la vraie contrainte (voir assistantBudget.verifierBudget).
+    await verifierBudget(siteId);
 
     const resultat = await repondreQuestion({
       question: message,

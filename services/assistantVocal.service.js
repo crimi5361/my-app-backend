@@ -17,7 +17,7 @@ const jwt = require('jsonwebtoken');
 const { WebSocketServer } = require('ws');
 const { GoogleGenAI, Modality, Type, EndSensitivity } = require('@google/genai');
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
-const { verifierBudget, enregistrer, extraireUsage, getConsommationMois } = require('./assistantBudget.service');
+const { verifierBudget, enregistrer, extraireUsage } = require('./assistantBudget.service');
 const {
   construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_SYNONYMES, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, DECLARATION_GRAPHIQUE, executerOutil,
 } = require('./assistantOutils.service');
@@ -359,13 +359,10 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
   try {
     if (!siteId) { envoyer('erreur', { message: 'Site introuvable. Reconnectez-vous.' }); return fermer(); }
 
-    // Le plafond est vérifié AVANT d'ouvrir la session : une session ouverte
-    // consomme dès la première seconde d'écoute.
+    // La consommation est relue a l'ouverture pour la journaliser cote serveur.
+    // Elle ne conditionne plus l'ouverture : le plafond applicatif mesurait une
+    // depense qui n'existait pas (voir assistantBudget.verifierBudget).
     const budget = await verifierBudget(siteId);
-    if (!budget.autorise) {
-      envoyer('budget_depasse', { message: budget.motif, budget: budget.consommation });
-      return fermer('budget dépassé');
-    }
 
     const [dictionnaire, calendrier, reglages, vocabulaire, accueil] = await Promise.all([
       getDictionnaire({ siteId, ecoleId }),
@@ -738,20 +735,17 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
       }
 
       // ── Comptabilisation ─────────────────────────────────────────────────
+      // La consommation reelle continue d'etre ECRITE — c'est elle qui donne le
+      // cout par question. Ce qui a disparu, c'est la COUPURE : une session ne
+      // s'interrompt plus au milieu d'une phrase sur un plafond applicatif qui
+      // ne mesure pas la vraie contrainte (voir assistantBudget.verifierBudget).
+      // Le montant n'est plus non plus pousse a l'ecran : le fondateur pilote
+      // son etablissement, il n'a pas a surveiller une jauge pendant qu'il parle.
       if (msg.usageMetadata) {
         await enregistrer({
           siteId, utilisateurId, canal: 'vocal', modele: modeleUtilise,
           usage: extraireUsage(msg.usageMetadata),
         });
-        const conso = await getConsommationMois(siteId);
-        envoyer('budget', { budget: conso });
-        if (conso.fcfa >= conso.budget_fcfa) {
-          envoyer('budget_depasse', {
-            message: `Budget mensuel atteint (${conso.fcfa.toLocaleString('fr-FR')} FCFA). Session interrompue.`,
-            budget: conso,
-          });
-          fermer('budget dépassé');
-        }
       }
     }
 
