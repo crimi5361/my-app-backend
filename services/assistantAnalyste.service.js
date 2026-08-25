@@ -13,8 +13,11 @@ const { GoogleGenAI, Type } = require('@google/genai');
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { enregistrer, extraireUsage } = require('./assistantBudget.service');
 const { getReglages } = require('./assistantReglages.service');
+// Uniquement pour savoir si l'acces Google est configure : les outils qui en
+// dependent ne sont declares au modele que dans ce cas.
+const google = require('./assistantGoogle.service');
 const {
-  construireIdentite, BLOC_CAPACITES, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, executerOutil,
+  construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, executerOutil,
 } = require('./assistantOutils.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
@@ -67,11 +70,15 @@ async function envoyerAuModele(chat, message) {
 // La recherche web n'est proposee au modele que si le fondateur l'a activee :
 // un outil absent de la liste ne peut pas etre appele, ce qui est plus sur que
 // de compter sur une consigne pour l'en dissuader.
-const outilsPour = (reglages) => [{
-  functionDeclarations: reglages?.recherche_web
-    ? [...DECLARATIONS, DECLARATION_WEB]
-    : DECLARATIONS,
-}];
+// Google suit la meme regle : agenda, reunion et messagerie ne sont declares que
+// si le serveur porte les trois variables OAuth. Sans elles, les cinq outils
+// refusaient a l'appel — donc APRES que l'assistante les ait proposes.
+const outilsPour = (reglages) => {
+  const liste = [...DECLARATIONS];
+  if (reglages?.recherche_web) liste.push(DECLARATION_WEB);
+  if (google.estConfigure()) liste.push(...DECLARATIONS_GOOGLE);
+  return [{ functionDeclarations: liste }];
+};
 
 // Un tour peut desormais enchainer requetes ET production de fichier : le plafond
 // monte de 4 a 8, sinon un rapport d'audit en trois sections n'aboutit jamais.
@@ -134,7 +141,7 @@ function construireInstruction(dictionnaire, aujourdhui, annees, reglages) {
 
   return `${construireIdentite(reglages.nom_assistant)}
 
-${BLOC_CAPACITES}
+${construireCapacites({ google: google.estConfigure() })}
 
 ${BLOC_PHOTOS}
 

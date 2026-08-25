@@ -19,7 +19,7 @@ const { GoogleGenAI, Modality, Type, EndSensitivity } = require('@google/genai')
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { verifierBudget, enregistrer, extraireUsage, getConsommationMois } = require('./assistantBudget.service');
 const {
-  construireIdentite, BLOC_CAPACITES, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATION_GRAPHIQUE, executerOutil,
+  construireIdentite, construireCapacites, BLOC_PHOTOS, BLOC_PROTECTION, BLOC_NAVIGATION, DECLARATION_WEB, BLOC_RECHERCHE, BLOC_EXPERTISE, BLOC_AUDIT, BLOC_PRUDENCE, DECLARATIONS, DECLARATIONS_GOOGLE, DECLARATION_GRAPHIQUE, executerOutil,
 } = require('./assistantOutils.service');
 const { formePour } = require('./assistantFormes.service');
 const { getReglages } = require('./assistantReglages.service');
@@ -29,6 +29,8 @@ const { corrigerTranscription } = require('./assistantTranscription');
 const { intentionOuiNon } = require('./assistantIntention');
 const { debriefingVeille } = require('./assistantDebriefing.service');
 const { preparerAccueil } = require('./assistantAccueil.service');
+// Uniquement pour savoir si l'acces Google est configure — voir outilsPour.
+const google = require('./assistantGoogle.service');
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
@@ -158,11 +160,14 @@ const DECLARATION_DEBRIEFING = {
 // Memes outils que le canal ecrit, plus le graphique et le debriefing : une
 // capacite qui existerait au clavier et pas a l'oral serait incomprehensible
 // pour le fondateur.
-const outilsPour = (reglages) => [{
-  functionDeclarations: reglages?.recherche_web
-    ? [...DECLARATIONS, DECLARATION_GRAPHIQUE, DECLARATION_DEBRIEFING, DECLARATION_WEB]
-    : [...DECLARATIONS, DECLARATION_GRAPHIQUE, DECLARATION_DEBRIEFING],
-}];
+const outilsPour = (reglages) => {
+  const liste = [...DECLARATIONS, DECLARATION_GRAPHIQUE, DECLARATION_DEBRIEFING];
+  if (reglages?.recherche_web) liste.push(DECLARATION_WEB);
+  // Meme regle que pour la recherche web : un outil qu'on ne peut pas honorer
+  // n'est pas declare. Voir DECLARATIONS_GOOGLE dans assistantOutils.
+  if (google.estConfigure()) liste.push(...DECLARATIONS_GOOGLE);
+  return [{ functionDeclarations: liste }];
+};
 
 /**
  * Protocole de l'accueil. Il est dans l'instruction et non dans le code du
@@ -204,7 +209,7 @@ function construireInstruction(dictionnaire, annees, aujourdhui, reglages, phras
 
 ${blocAccueil(phraseAccueil)}
 
-${BLOC_CAPACITES}
+${construireCapacites({ google: google.estConfigure() })}
 
 ${BLOC_PHOTOS}
 

@@ -73,20 +73,52 @@ sans raideur, comme une collaboratrice de confiance. On peut t'appeler
 « ${appellation} ».`;
 }
 
-const BLOC_CAPACITES = `## Ce que tu sais faire (à n'énumérer que si on te le demande)
-1. Répondre sur les chiffres — effectifs, recettes, caisse, stock, enseignants,
-   candidatures, emploi du temps, salles — en interrogeant directement la base.
-2. Retrouver quelqu'un — étudiant, agent ou enseignant — à partir d'un simple
-   fragment de nom, et donner sa situation.
-3. Montrer un graphique : barres, courbes, aires, camembert, barres empilées.
-4. Produire un rapport d'activité par agent : qui a inscrit, encaissé, validé quoi.
-5. Générer un classeur Excel de n'importe quelle extraction, prêt à télécharger.
-6. Rédiger un rapport d'audit interne en Word, avec ses tableaux, téléchargeable.
-7. Programmer une réunion dans l'agenda, avec lien Google Meet et invitations.
-8. Consulter l'agenda et dire ce qui est prévu.
-9. Faire le point sur les messages reçus dans la boîte du fondateur.
-10. Rédiger un message, le lui lire, et ne l'envoyer qu'après son accord.
-11. Afficher la fiche d'identité d'une personne à l'écran, photo comprise.`;
+/**
+ * Catalogue des capacites — CONSTRUIT, ET NON FIGE.
+ *
+ * Il etait ecrit en dur, avec ses onze points. Quatre d'entre eux (agenda,
+ * reunion, messagerie) reposaient sur un acces Google non configure : le
+ * catalogue promettait donc des capacites que l'assistante ne pouvait pas
+ * honorer, et elle les proposait spontanement.
+ *
+ * Le catalogue suit desormais les outils REELLEMENT declares. Une capacite
+ * annoncee est une capacite disponible — la liste se renumerote seule.
+ */
+function construireCapacites({ google: avecGoogle = false } = {}) {
+  const points = [
+    "Répondre sur les chiffres — effectifs, recettes, caisse, stock, enseignants,\n   candidatures, emploi du temps, salles — en interrogeant directement la base.",
+    "Retrouver quelqu'un — étudiant, agent ou enseignant — à partir d'un simple\n   fragment de nom, et donner sa situation.",
+    'Montrer un graphique : barres, courbes, aires, camembert, barres empilées.',
+    "Produire un rapport d'activité par agent : qui a inscrit, encaissé, validé quoi.",
+    "Générer un classeur Excel de n'importe quelle extraction, prêt à télécharger.",
+    "Rédiger un rapport d'audit interne en Word, avec ses tableaux, téléchargeable.",
+    "Afficher la fiche d'identité d'une personne à l'écran, photo comprise.",
+  ];
+
+  if (avecGoogle) {
+    points.push(
+      "Programmer une réunion dans l'agenda, avec lien Google Meet et invitations.",
+      "Consulter l'agenda et dire ce qui est prévu.",
+      'Faire le point sur les messages reçus dans la boîte du fondateur.',
+      "Rédiger un message, le lui lire, et ne l'envoyer qu'après son accord.",
+    );
+  }
+
+  const liste = points.map((t, i) => `${i + 1}. ${t}`).join('\n');
+
+  // Sans cette phrase, l'assistante propose l'agenda et la messagerie parce que
+  // « une assistante, ca gere un agenda » : elle raisonne sur ce qu'evoque le
+  // mot, pas sur ses outils. Le dire explicitement coute trois lignes.
+  const absent = avecGoogle ? '' : `
+
+Tu n'as PAS acces a l'agenda, aux reunions ni a la messagerie : ces outils ne te
+sont pas donnes. Ne les propose jamais, meme en passant. Si le fondateur en
+demande un, dis en une phrase que cet acces n'est pas encore configure sur le
+serveur, et enchaine sur ce que tu sais faire.`;
+
+  return `## Ce que tu sais faire (à n'énumérer que si on te le demande)
+${liste}${absent}`;
+}
 
 const BLOC_NAVIGATION = `## Conduire le fondateur vers un écran
 
@@ -302,18 +334,24 @@ C'est le domaine ou le fondateur attend le plus de toi.
 - Quand un controle ne peut pas etre mene faute de donnee, tu le dis et tu
   expliques ce qu'il faudrait tracer pour le rendre possible. C'est souvent le
   point le plus utile de ton rapport.
-- L'administrateur de la plateforme est hors perimetre d'audit. Il apparait dans
-  l'annuaire mais dans aucun rapport d'activite ; dis-le plutot que de laisser
-  croire qu'il n'a rien fait.`;
+- L'administrateur de la plateforme est VERROUILLE, pas seulement hors perimetre
+  d'audit : il ne figure ni dans l'annuaire, ni dans les vues, ni dans les
+  recherches, ni dans aucun rapport nominatif. Voir la section « Donnees
+  protegees », qui fait foi.
+  Ce que cela implique pour un audit : les totaux generaux (inscriptions,
+  encaissements) incluent ses actes, mais aucun classement par agent ne le
+  nomme. Dis-le dans ta note de perimetre plutot que de laisser croire que le
+  classement est exhaustif.`;
 
 const BLOC_PRUDENCE = `## Ce que tu ne fais jamais
 - Tu n'écris rien dans la base : tu es en lecture seule, définitivement.
 - Tu n'envoies jamais un message sans avoir lu son contenu au fondateur et obtenu
   son accord explicite. Rédiger un brouillon et envoyer sont deux actes distincts.
 - Tu n'inventes aucun chiffre, même approximatif, même « pour donner un ordre d'idée ».
-- L'administrateur de la plateforme est hors de ton périmètre d'audit. Il n'apparaît
-  dans aucune de tes données : si on te pose une question sur lui, dis simplement
-  qu'il est exclu du périmètre d'audit.`;
+- L'administrateur de la plateforme n'apparaît dans AUCUNE de tes données : ni
+  annuaire, ni vue, ni recherche, ni statistique nominative. Si on te pose une
+  question sur lui, tu réponds la phrase exacte donnée dans « Données
+  protégées », sans rien y ajouter.`;
 
 // ---------------------------------------------------------------------------
 //  Déclarations d'outils
@@ -432,82 +470,6 @@ const DECLARATIONS = [
         },
       },
       required: ['titre', 'sections'],
-    },
-  },
-  {
-    name: 'programmer_reunion',
-    description:
-      "Crée une réunion dans l'agenda Google du fondateur, avec un lien Google Meet et l'envoi des "
-      + "invitations. Demande-lui confirmation de la date, de l'heure et des participants avant d'appeler cet outil.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        titre: { type: Type.STRING },
-        debut: { type: Type.STRING, description: "Début au format 2026-08-20T15:00:00 (heure locale d'Abidjan)." },
-        duree_minutes: { type: Type.NUMBER },
-        description: { type: Type.STRING },
-        participants: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Adresses e-mail des invités.' },
-        avec_meet: { type: Type.BOOLEAN, description: 'Vrai par défaut : crée un lien Meet.' },
-      },
-      required: ['titre', 'debut'],
-    },
-  },
-  {
-    name: 'consulter_agenda',
-    description: "Liste les prochaines réunions de l'agenda du fondateur.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        depuis: { type: Type.STRING, description: 'Date ISO. Par défaut : maintenant.' },
-        jusqua: { type: Type.STRING, description: 'Date ISO de fin de fenêtre.' },
-        limite: { type: Type.NUMBER },
-      },
-    },
-  },
-  {
-    name: 'consulter_messages',
-    description:
-      "Liste les messages de la boîte du fondateur (expéditeur, objet, date, extrait). Utilise la syntaxe "
-      + "de recherche Gmail dans `requete` : `is:unread`, `newer_than:7d`, `from:...`, `has:attachment`. "
-      + "Sers-t'en pour faire le point sur les messages reçus.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        requete: { type: Type.STRING, description: "Filtre Gmail. Défaut : in:inbox" },
-        limite: { type: Type.NUMBER },
-      },
-    },
-  },
-  {
-    name: 'rediger_message',
-    description:
-      "Rédige un message et l'enregistre en BROUILLON dans Gmail. N'ENVOIE RIEN. "
-      + "Après l'appel, lis le contenu au fondateur et demande son accord avant d'appeler envoyer_message.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        destinataires: { type: Type.ARRAY, items: { type: Type.STRING } },
-        copie: { type: Type.ARRAY, items: { type: Type.STRING } },
-        objet: { type: Type.STRING },
-        corps: { type: Type.STRING, description: 'Le message complet, en texte simple.' },
-      },
-      required: ['destinataires', 'objet', 'corps'],
-    },
-  },
-  {
-    name: 'envoyer_message',
-    description:
-      "Envoie un message. À N'APPELER QUE si le fondateur a explicitement dit d'envoyer, après avoir "
-      + "entendu le contenu. Passe `brouillon_id` pour envoyer un brouillon déjà rédigé.",
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        brouillon_id: { type: Type.STRING, description: "Identifiant renvoyé par rediger_message." },
-        destinataires: { type: Type.ARRAY, items: { type: Type.STRING } },
-        copie: { type: Type.ARRAY, items: { type: Type.STRING } },
-        objet: { type: Type.STRING },
-        corps: { type: Type.STRING },
-      },
     },
   },
 ];
@@ -695,6 +657,105 @@ const DECLARATION_GRAPHIQUE = {
   },
 };
 
+
+/**
+ * Agenda, visioconference et messagerie — DECLARES A PART, ET CONDITIONNELLEMENT.
+ *
+ * POURQUOI ILS NE SONT PAS DANS DECLARATIONS. Ces cinq outils exigent
+ * GOOGLE_OAUTH_CLIENT_ID, _SECRET et _REDIRECT_URI cote serveur, plus un compte
+ * Google rattache par le fondateur. Tant que ce n'est pas fait, ils refusent —
+ * et le refus arrive TROP TARD : l'assistante a deja propose de consulter
+ * l'agenda, le fondateur a deja dit oui.
+ *
+ * Mesure du 25 aout 2026 : a l'ouverture, l'assistante enchainait
+ * spontanement sur « Voulez-vous que je fasse le point sur vos messages ou
+ * votre agenda ? », puis « l'acces a votre agenda Google n'est pas encore
+ * possible sur le serveur ». Promettre puis se dedire est pire que se taire.
+ *
+ * Un outil ABSENT de la liste ne peut pas etre appele, donc pas etre propose.
+ * C'est plus sur que de compter sur une consigne dans l'instruction : le meme
+ * raisonnement vaut deja pour `chercher_web`, qui n'est declare que si le
+ * fondateur a active la recherche web.
+ */
+const DECLARATIONS_GOOGLE = [
+  {
+    name: 'programmer_reunion',
+    description:
+      "Crée une réunion dans l'agenda Google du fondateur, avec un lien Google Meet et l'envoi des "
+      + "invitations. Demande-lui confirmation de la date, de l'heure et des participants avant d'appeler cet outil.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        titre: { type: Type.STRING },
+        debut: { type: Type.STRING, description: "Début au format 2026-08-20T15:00:00 (heure locale d'Abidjan)." },
+        duree_minutes: { type: Type.NUMBER },
+        description: { type: Type.STRING },
+        participants: { type: Type.ARRAY, items: { type: Type.STRING }, description: 'Adresses e-mail des invités.' },
+        avec_meet: { type: Type.BOOLEAN, description: 'Vrai par défaut : crée un lien Meet.' },
+      },
+      required: ['titre', 'debut'],
+    },
+  },
+  {
+    name: 'consulter_agenda',
+    description: "Liste les prochaines réunions de l'agenda du fondateur.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        depuis: { type: Type.STRING, description: 'Date ISO. Par défaut : maintenant.' },
+        jusqua: { type: Type.STRING, description: 'Date ISO de fin de fenêtre.' },
+        limite: { type: Type.NUMBER },
+      },
+    },
+  },
+  {
+    name: 'consulter_messages',
+    description:
+      "Liste les messages de la boîte du fondateur (expéditeur, objet, date, extrait). Utilise la syntaxe "
+      + "de recherche Gmail dans `requete` : `is:unread`, `newer_than:7d`, `from:...`, `has:attachment`. "
+      + "Sers-t'en pour faire le point sur les messages reçus.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        requete: { type: Type.STRING, description: "Filtre Gmail. Défaut : in:inbox" },
+        limite: { type: Type.NUMBER },
+      },
+    },
+  },
+  {
+    name: 'rediger_message',
+    description:
+      "Rédige un message et l'enregistre en BROUILLON dans Gmail. N'ENVOIE RIEN. "
+      + "Après l'appel, lis le contenu au fondateur et demande son accord avant d'appeler envoyer_message.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        destinataires: { type: Type.ARRAY, items: { type: Type.STRING } },
+        copie: { type: Type.ARRAY, items: { type: Type.STRING } },
+        objet: { type: Type.STRING },
+        corps: { type: Type.STRING, description: 'Le message complet, en texte simple.' },
+      },
+      required: ['destinataires', 'objet', 'corps'],
+    },
+  },
+  {
+    name: 'envoyer_message',
+    description:
+      "Envoie un message. À N'APPELER QUE si le fondateur a explicitement dit d'envoyer, après avoir "
+      + "entendu le contenu. Passe `brouillon_id` pour envoyer un brouillon déjà rédigé.",
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        brouillon_id: { type: Type.STRING, description: "Identifiant renvoyé par rediger_message." },
+        destinataires: { type: Type.ARRAY, items: { type: Type.STRING } },
+        copie: { type: Type.ARRAY, items: { type: Type.STRING } },
+        objet: { type: Type.STRING },
+        corps: { type: Type.STRING },
+      },
+    },
+  },
+];
+
 const NOMS_SQL = new Set(['executer_sql']);
 const NOMS_GOOGLE = new Set([
   'programmer_reunion', 'consulter_agenda', 'consulter_messages', 'rediger_message', 'envoyer_message',
@@ -854,6 +915,18 @@ async function executerOutilInterne(nom, args = {}, { siteId, ecoleId = null, ut
           lignes: resultat.lignes,
           nb_lignes: resultat.nb_lignes,
           tronque: resultat.tronque,
+          // La consigne est portee par la REPONSE et pas seulement par
+          // l'instruction systeme : elle arrive au moment exact ou elle
+          // s'applique, sur le resultat concerne. Une regle generale enoncee
+          // trois mille jetons plus haut se dilue ; celle-ci ne peut pas
+          // s'ignorer.
+          ...(resultat.tronque ? {
+            instruction: `Ce resultat est TRONQUE : il en existe davantage, tu n'en vois que `
+              + `${resultat.nb_lignes}. Ne presente jamais ce nombre comme un total ni comme une `
+              + `liste complete. Si le fondateur voulait un DECOMPTE, refais la requete avec `
+              + `COUNT(*) au lieu de lister. S'il voulait une liste, dis-lui que tu montres les `
+              + `${resultat.nb_lignes} premieres et propose de filtrer ou de produire un classeur.`,
+          } : {}),
         }
         : { erreur: resultat.motif },
     };
@@ -937,7 +1010,8 @@ module.exports = {
   FONDATEUR,
   DECLARATION_WEB,
   construireIdentite,
-  BLOC_CAPACITES,
+  construireCapacites,
+  DECLARATIONS_GOOGLE,
   BLOC_PHOTOS,
   BLOC_PROTECTION,
   BLOC_NAVIGATION,

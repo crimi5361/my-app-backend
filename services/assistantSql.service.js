@@ -195,10 +195,17 @@ function validerRequete(sqlBrut, { limiteLignes = LIMITE_LIGNES_DEFAUT } = {}) {
   }
 
   // LIMIT imposé : borne le volume rendu au modèle et le coût de la requête.
+  //
+  // PLAFOND + 1, ET C'EST TOUT L'INTÉRÊT. En demandant exactement `plafond`
+  // lignes, on ne peut plus distinguer « il y en avait exactement 500 » de
+  // « il y en avait 7 208 et on a coupé ». L'appelant rendait donc `tronque:
+  // false` sur un résultat tronqué, et le modèle annonçait 500 étudiants comme
+  // un décompte complet. La ligne excédentaire n'est jamais rendue : elle sert
+  // uniquement de témoin.
   const aUnLimit = instruction.limit
     && (Array.isArray(instruction.limit.value) ? instruction.limit.value.length > 0 : instruction.limit.value != null);
   const plafond = Math.min(limiteLignes, LIMITE_LIGNES_MAX);
-  if (!aUnLimit) sql = `${sql}\nLIMIT ${plafond}`;
+  if (!aUnLimit) sql = `${sql}\nLIMIT ${plafond + 1}`;
 
   return { ok: true, sql };
 }
@@ -297,14 +304,17 @@ async function executerRequeteUneFois(sqlBrut, { siteId, ecoleId = null, limiteL
 
     // Le ROLLBACK a déjà été émis avec le contrôle ci-dessus — rien à valider,
     // tout est en lecture.
+    // La ligne de trop demandée par le validateur est le témoin de troncature :
+    // si elle est là, c'est qu'il en restait. Elle est coupée avant d'être rendue.
     const plafond = Math.min(limiteLignes || LIMITE_LIGNES_DEFAUT, LIMITE_LIGNES_MAX);
+    const tronque = resultat.rows.length > plafond;
     const lignes = resultat.rows.slice(0, plafond);
 
     return {
       ok: true,
       lignes,
       nb_lignes: lignes.length,
-      tronque: resultat.rows.length > plafond,
+      tronque,
       colonnes: resultat.fields.map((f) => f.name),
       duree_ms: Date.now() - debut,
       sql_execute: validation.sql,
