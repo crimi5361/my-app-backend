@@ -161,6 +161,35 @@ async function getUsageParJour(siteId, jours = 7) {
   return rows;
 }
 
+/**
+ * Ce à quoi un modèle a servi, dit en français.
+ *
+ * L'ÉCRAN NE MONTRE PAS DE NOMS DE MODÈLES, même à l'administrateur. Non par
+ * secret — il y a droit — mais parce que « gemini-3.1-flash-lite » ne lui
+ * apprend rien, alors que « modèle de secours, 18 appels » lui apprend qu'un
+ * repli s'est produit dix-huit fois. C'est le second qui déclenche une action.
+ *
+ * La classification se fait sur la FORME du nom et sur la configuration en
+ * cours, jamais sur une liste figée : un modèle changé dans l'environnement
+ * reste correctement rangé sans qu'on touche à ce fichier.
+ */
+function roleDeModele(modele) {
+  const nom = String(modele || '');
+  if (/live|native-audio/i.test(nom)) return 'vocal';
+  if (nom === (process.env.ASSISTANT_MODELE_TEXTE || 'gemini-3.6-flash')) return 'texte';
+  if (/lite|pro/i.test(nom)) return 'secours';
+  // Ni le modèle de tête, ni un repli déclaré : c'est une trace d'une
+  // configuration passée. La voir est utile — elle date l'historique.
+  return 'retire';
+}
+
+const LIBELLES_ROLE = {
+  texte: 'Assistante écrite',
+  vocal: 'Assistante vocale',
+  secours: 'Modèle de secours',
+  retire: 'Ancienne configuration',
+};
+
 /** Répartition par modèle — c'est elle qui rend un repli visible. */
 async function getUsageParModele(siteId, depuis) {
   const { rows } = await db.query(
@@ -171,7 +200,19 @@ async function getUsageParModele(siteId, depuis) {
      ORDER BY appels DESC`,
     [siteId, depuis],
   );
-  return rows;
+
+  // Regroupé par RÔLE et non par modèle : deux modèles de secours successifs
+  // sont le même fait pour qui lit l'écran, et les séparer masquerait qu'il y a
+  // eu vingt replis en tout.
+  const parRole = new Map();
+  for (const l of rows) {
+    const role = roleDeModele(l.modele);
+    const acc = parRole.get(role) || { role, libelle: LIBELLES_ROLE[role], appels: 0, cout_usd: 0 };
+    acc.appels += l.appels;
+    acc.cout_usd += l.cout_usd;
+    parRole.set(role, acc);
+  }
+  return [...parRole.values()].sort((a, b) => b.appels - a.appels);
 }
 
 /**
@@ -257,6 +298,7 @@ module.exports = {
   getConsommationDepuis,
   getUsageParJour,
   getUsageParModele,
+  roleDeModele,
   SEUIL_DEFAUT,
   ECART_QUESTION,
 };
