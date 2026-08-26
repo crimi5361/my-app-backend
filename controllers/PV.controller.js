@@ -2057,6 +2057,171 @@ exports.afficherBulletinByMatricule = async (req, res) => {
     }
 };
 
+// ============ FILTRAGE IMPRESSION BULLETINS (sélection avant impression — 2026-08-26) ============
+// Chantier : permettre de sélectionner les étudiants à imprimer selon leur décision académique
+// (ADMIS/AJOURNÉ/DÉROGÉ) et leur statut de scolarité (SOLDE/NON_SOLDE), SANS jamais recalculer ni
+// dupliquer ces deux informations — elles restent produites exclusivement par
+// calculerRecapitulatifComplet() → recap.annuel.decision (décision) et par
+// vue_position_academique.statut_paiement (scolarité, déjà scopée à l'année du groupe demandé,
+// identique à Caisse/Scolarité). Le filtre se contente de sélectionner, en amont ou juste après
+// ces calculs inchangés, quels étudiants entrent dans la liste transmise au moteur de rendu
+// existant (Bulletin_multiple.ejs, lui-même inchangé).
+
+const DECISION_SLUG_VERS_VALEUR = { ADMIS: 'ADMIS', AJOURNE: 'AJOURNÉ', DEROGE: 'DÉROGÉ' };
+
+const _normaliserStatutScolarite = (statutBrut) => {
+    const val = (statutBrut || '').toString().toUpperCase();
+    if (val === 'SOLDE') return 'SOLDE';
+    if (val === 'NON_SOLDE') return 'NON_SOLDE';
+    return null;
+};
+
+// query.decisions="ADMIS,DEROGE" (slugs ASCII — évite les soucis d'encodage des accents en query
+// string) → Set(['ADMIS','DÉROGÉ']). query.statutScolarite="SOLDE"|"NON_SOLDE". Paramètre
+// absent/invalide → null (= pas de filtre sur cet axe, comportement historique inchangé).
+const _parseFiltresBulletins = (query) => {
+    let decisions = null;
+    if (query && query.decisions) {
+        const valeurs = String(query.decisions)
+            .split(',')
+            .map(s => DECISION_SLUG_VERS_VALEUR[s.trim().toUpperCase()])
+            .filter(Boolean);
+        if (valeurs.length > 0) decisions = new Set(valeurs);
+    }
+    let statutScolarite = null;
+    if (query && query.statutScolarite) {
+        const val = String(query.statutScolarite).trim().toUpperCase();
+        if (val === 'SOLDE' || val === 'NON_SOLDE') statutScolarite = val;
+    }
+    return { decisions, statutScolarite };
+};
+
+// ✅ Extrait TEL QUEL (aucun changement de logique) du corps de boucle historique de
+// afficherBulletinsMultiples : même séquence notes → UE → repêchage crédits → repêchage annuel
+// BTS → calculerRecapitulatifComplet. Centralisé ici pour être appelé IDENTIQUEMENT par
+// l'impression et par le comptage par catégorie (getCompteursBulletinsGroupe ci-dessous) — un
+// compteur ne doit jamais diverger de la liste réellement imprimée.
+const _calculerResultatEtudiantBulletin = async (etudiant, structureAcademique, typeTraitement, totalCreditsS1, totalCreditsS2, groupeInfo, semestreId) => {
+    if (DEBUG_VERBOSE) {
+        console.log(`📊 Traitement: ${etudiant.nom} ${etudiant.prenoms} (${etudiant.matricule_iipea})`);
+        console.log(`📊 niveau_libelle: "${etudiant.niveau_libelle}"`);
+    }
+
+    const notes = await getNotesEtudiantAvecDetailsFonction(etudiant.id, structureAcademique.maquette_id);
+
+    let uesAvecResultats = [];
+    for (const ue of structureAcademique.ues) {
+        const resultatsUE = await calculerResultatsUEAvecDetailsFonction(ue, notes, typeTraitement);
+        uesAvecResultats.push(resultatsUE);
+    }
+
+    // ✅ CORRECTIF RACINE : le repêchage crédits est appliqué INCONDITIONNELLEMENT aux
+    // DEUX semestres, quel que soit le semestre demandé dans l'URL pour l'affichage —
+    // EXACTEMENT comme le fait le PV (_calculerResultatsTousEtudiants) et le bulletin
+    // individuel (afficherBulletinByMatricule). Le document affiche toujours les deux
+    // semestres ; laisser le semestre non demandé avec ses valeurs BRUTES créait des
+    // écarts PV/Bulletin (moyenne et crédits du semestre non demandé non harmonisés).
+    const uesS1Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+    const uesS2Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+
+    const { ues: uesS1ApresCredits } = appliquerRepechageCredits(
+        uesS1Resultats, totalCreditsS1, 1, etudiant.niveau_libelle, groupeInfo.nom
+    );
+    const { ues: uesS2ApresCredits } = appliquerRepechageCredits(
+        uesS2Resultats, totalCreditsS2, 2, etudiant.niveau_libelle, groupeInfo.nom
+    );
+
+    // ✅ Repêchage annuel BTS : UNE SEULE décision, basée sur la moyenne annuelle
+    // (S1+S2) — jamais semestre par semestre. No-op pour tout ce qui n'est pas
+    // BTS 1/2 professionnel.
+    const { uesS1: uesS1Final, uesS2: uesS2Final } = appliquerRepechageAnnuelBTS(
+        uesS1ApresCredits, uesS2ApresCredits, typeTraitement, etudiant.niveau_libelle, groupeInfo.nom
+    );
+
+    uesAvecResultats = [...uesS1Final, ...uesS2Final];
+
+    // ✅ SOURCE UNIQUE DE VÉRITÉ pour crédits/moyennes/décisions (S1, S2, annuel) —
+    // EXACTEMENT la même logique que le PV et le bulletin individuel, y compris le
+    // repêchage annuel BTS le cas échéant. Le template Bulletin_multiple.ejs consomme
+    // directement ces valeurs (décision_s1/s2/jury, moyennes, crédits) sans jamais
+    // les recalculer.
+    const recap = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement, etudiant.niveau_libelle, groupeInfo.nom);
+    uesAvecResultats = recap.ues;
+
+    const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats, typeTraitement);
+
+    const ecueAReprendreEntry = ecueAReprendre.length > 0 ? {
+        etudiant_id: etudiant.id,
+        matricule_iipea: etudiant.matricule_iipea,
+        nom: etudiant.nom,
+        prenoms: etudiant.prenoms,
+        decision: recap.annuel.decision,
+        ecue_a_reprendre: ecueAReprendre
+    } : null;
+
+    const semestreDemande = semestreId ? parseInt(semestreId, 10) : null;
+    const decisionAffichee = semestreDemande === 1 ? recap.s1.decision
+                            : semestreDemande === 2 ? recap.s2.decision
+                            : recap.annuel.decision;
+
+    // ✅ Redoublant : basé sur la moyenne/crédits ANNUELS officiels (recap.annuel),
+    // identique à la règle utilisée par le bulletin individuel.
+    let redoublantEtudiant = 'NON';
+    const typeFEtudiant = (groupeInfo.type_filiere || '').toLowerCase();
+    if (typeFEtudiant.includes('universitaire')) {
+        if (recap.annuel.moyenne < 10 || recap.annuel.creditsValides < 48) redoublantEtudiant = 'OUI';
+    } else {
+        if (recap.annuel.moyenne < 10) redoublantEtudiant = 'OUI';
+    }
+
+    const resultatEtudiant = {
+        etudiant_id: etudiant.id,
+        matricule_iipea: etudiant.matricule_iipea,
+        matricule_mesrs: etudiant.code_unique || etudiant.matricule_iipea,
+        nom: etudiant.nom,
+        prenoms: etudiant.prenoms,
+        date_naissance: etudiant.date_naissance
+            ? new Date(etudiant.date_naissance).toLocaleDateString('fr-FR')
+            : '-',
+        lieu_naissance: etudiant.lieu_naissance || '-',
+        genre: etudiant.genre === 'M' ? 'Masculin' : (etudiant.genre === 'F' ? 'Féminin' : (etudiant.genre || '-')),
+        niveau_libelle: etudiant.niveau_libelle || '',
+        niveau_id: etudiant.niveau_id,
+        moyenne_generale: semestreDemande === 1 ? recap.s1.moyenne : semestreDemande === 2 ? recap.s2.moyenne : recap.annuel.moyenne,
+        credits_valides: semestreDemande === 1 ? recap.s1.creditsValides : semestreDemande === 2 ? recap.s2.creditsValides : recap.annuel.creditsValides,
+        credits_total: semestreDemande === 1 ? recap.s1.creditsTotal : semestreDemande === 2 ? recap.s2.creditsTotal : recap.annuel.creditsTotal,
+        decision: decisionAffichee,
+        decision_jury: recap.annuel.decision === 'AJOURNÉ' ? 'AJOURNÉ(E)' : recap.annuel.decision,
+        decision_jury_class: recap.annuel.decision === 'ADMIS' ? 'admis' : recap.annuel.decision === 'DÉROGÉ' ? 'deroge' : 'ajourne',
+        ues: uesAvecResultats,
+        ecue_a_reprendre: ecueAReprendre,
+        moyenne_s1: recap.s1.moyenne,
+        credits_s1: recap.s1.creditsValides,
+        credits_s1_total: recap.s1.creditsTotal,
+        decision_s1: recap.s1.decision,
+        decision_s1_class: recap.s1.decision === 'ADMIS' ? 'admis' : 'ajourne',
+        moyenne_s2: recap.s2.moyenne,
+        credits_s2: recap.s2.creditsValides,
+        credits_s2_total: recap.s2.creditsTotal,
+        decision_s2: recap.s2.decision,
+        decision_s2_class: recap.s2.decision === 'ADMIS' ? 'admis' : 'ajourne',
+        moyenne_annuelle: recap.annuel.moyenne,
+        credits_annuels: recap.annuel.creditsValides,
+        credits_annuels_total: recap.annuel.creditsTotal,
+        redoublant: redoublantEtudiant
+    };
+
+    return {
+        resultatEtudiant,
+        ecueAReprendreEntry,
+        // ✅ Décision de FILTRAGE — toujours recap.annuel.decision, jamais decisionAffichee (qui
+        // varie selon le semestre demandé dans l'URL) : les 3 décisions des boutons de filtrage
+        // sont mutuellement exclusives et raisonnent toujours à l'année, comme demandé.
+        decisionAnnuelle: recap.annuel.decision,
+        statutScolariteNormalise: _normaliserStatutScolarite(etudiant.statut_etudiant)
+    };
+};
+
 /**
  * ✅ CORRIGÉ EN PROFONDEUR : Affiche les bulletins multiples avec repêchage.
  * - Vue correcte : 'Bulletin_multiple' (au lieu de 'bulletins_multiples')
@@ -2068,10 +2233,16 @@ exports.afficherBulletinByMatricule = async (req, res) => {
  *     ajout de la condition moyenne >= 10 pour DÉROGÉ + exclusion des UE sans
  *     aucune note du calcul de la moyenne, pour rester cohérent avec
  *     calculerTotauxFonction côté serveur).
+ *
+ * ✅ Filtrage sélection avant impression (2026-08-26) : query params optionnels `decisions`
+ * (slugs ASCII séparés par virgule : ADMIS, AJOURNE, DEROGE) et `statutScolarite`
+ * (SOLDE|NON_SOLDE). Absents → comportement strictement identique à avant cette modification.
  */
 exports.afficherBulletinsMultiples = async (req, res) => {
     try {
         const { groupeId, semestreId } = req.params;
+        const { decisions: decisionsFiltre, statutScolarite: statutFiltre } = _parseFiltresBulletins(req.query);
+        const filtreActif = Boolean(decisionsFiltre || statutFiltre);
         console.log(`📚 Bulletins multiples - groupe: ${groupeId}, semestre: ${semestreId}`);
 
         const groupeInfo = await _getGroupeInfo(groupeId);
@@ -2102,8 +2273,17 @@ exports.afficherBulletinsMultiples = async (req, res) => {
             ORDER BY e.nom, e.prenoms
         `;
         const etudiantsResult = await db.query(etudiantsQuery, [groupeId]);
-        const etudiants = etudiantsResult.rows;
+        let etudiants = etudiantsResult.rows;
         console.log(`👨‍🎓 ${etudiants.length} étudiants trouvés`);
+
+        // ✅ Filtre "statut de scolarité" — appliqué ici, avant tout calcul académique, sur la
+        // MÊME colonne (vue_position_academique.statut_paiement, déjà scopée à l'année du groupe
+        // demandé — voir 016_vue_position_academique_finance.sql) que Caisse/Scolarité. Aucune
+        // deuxième logique de calcul du solde créée.
+        if (statutFiltre) {
+            etudiants = etudiants.filter(e => _normaliserStatutScolarite(e.statut_etudiant) === statutFiltre);
+            console.log(`🔎 Filtre statutScolarite=${statutFiltre} → ${etudiants.length} étudiant(s)`);
+        }
 
         // ℹ️ Info d'affichage uniquement (en-tête du document)
         const structureRepresentative = await getStructureAcademiqueFonction(groupeId, null);
@@ -2160,117 +2340,35 @@ exports.afficherBulletinsMultiples = async (req, res) => {
                 if (++_yieldCounterBulletins % 25 === 0) {
                     await new Promise(resolve => setImmediate(resolve));
                 }
-                if (DEBUG_VERBOSE) {
-                    console.log(`📊 Traitement: ${etudiant.nom} ${etudiant.prenoms} (${etudiant.matricule_iipea})`);
-                    console.log(`📊 niveau_libelle: "${etudiant.niveau_libelle}"`);
-                }
 
-                const notes = await getNotesEtudiantAvecDetailsFonction(etudiant.id, structureAcademique.maquette_id);
-
-                let uesAvecResultats = [];
-                for (const ue of structureAcademique.ues) {
-                    const resultatsUE = await calculerResultatsUEAvecDetailsFonction(ue, notes, typeTraitement);
-                    uesAvecResultats.push(resultatsUE);
-                }
-
-                // ✅ CORRECTIF RACINE : le repêchage crédits est appliqué INCONDITIONNELLEMENT aux
-                // DEUX semestres, quel que soit le semestre demandé dans l'URL pour l'affichage —
-                // EXACTEMENT comme le fait le PV (_calculerResultatsTousEtudiants) et le bulletin
-                // individuel (afficherBulletinByMatricule). Le document affiche toujours les deux
-                // semestres ; laisser le semestre non demandé avec ses valeurs BRUTES créait des
-                // écarts PV/Bulletin (moyenne et crédits du semestre non demandé non harmonisés).
-                const uesS1Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 1);
-                const uesS2Resultats = uesAvecResultats.filter(ue => parseInt(ue.semestre_id, 10) === 2);
-
-                const { ues: uesS1ApresCredits } = appliquerRepechageCredits(
-                    uesS1Resultats, totalCreditsS1, 1, etudiant.niveau_libelle, groupeInfo.nom
-                );
-                const { ues: uesS2ApresCredits } = appliquerRepechageCredits(
-                    uesS2Resultats, totalCreditsS2, 2, etudiant.niveau_libelle, groupeInfo.nom
+                const { resultatEtudiant, ecueAReprendreEntry, decisionAnnuelle } = await _calculerResultatEtudiantBulletin(
+                    etudiant, structureAcademique, typeTraitement, totalCreditsS1, totalCreditsS2, groupeInfo, semestreId
                 );
 
-                // ✅ Repêchage annuel BTS : UNE SEULE décision, basée sur la moyenne annuelle
-                // (S1+S2) — jamais semestre par semestre. No-op pour tout ce qui n'est pas
-                // BTS 1/2 professionnel.
-                const { uesS1: uesS1Final, uesS2: uesS2Final } = appliquerRepechageAnnuelBTS(
-                    uesS1ApresCredits, uesS2ApresCredits, typeTraitement, etudiant.niveau_libelle, groupeInfo.nom
-                );
-
-                uesAvecResultats = [...uesS1Final, ...uesS2Final];
-
-                // ✅ SOURCE UNIQUE DE VÉRITÉ pour crédits/moyennes/décisions (S1, S2, annuel) —
-                // EXACTEMENT la même logique que le PV et le bulletin individuel, y compris le
-                // repêchage annuel BTS le cas échéant. Le template Bulletin_multiple.ejs consomme
-                // directement ces valeurs (décision_s1/s2/jury, moyennes, crédits) sans jamais
-                // les recalculer.
-                const recap = calculerRecapitulatifComplet(uesAvecResultats, typeTraitement, etudiant.niveau_libelle, groupeInfo.nom);
-                uesAvecResultats = recap.ues;
-
-                const ecueAReprendre = _collecterEcueAReprendre(uesAvecResultats, typeTraitement);
-
-                if (ecueAReprendre.length > 0) {
-                    etudiantsAReprendre.push({
-                        etudiant_id: etudiant.id,
-                        matricule_iipea: etudiant.matricule_iipea,
-                        nom: etudiant.nom,
-                        prenoms: etudiant.prenoms,
-                        decision: recap.annuel.decision,
-                        ecue_a_reprendre: ecueAReprendre
-                    });
+                // ✅ Filtre "décision" — appliqué APRÈS calculerRecapitulatifComplet (la décision
+                // n'existe qu'à ce moment-là), toujours sur recap.annuel.decision (jamais
+                // recalculée, jamais une autre logique). Les étudiants exclus n'entrent ni dans
+                // resultatsEtudiants ni dans etudiantsAReprendre — cohérent avec le fait qu'ils ne
+                // seront pas imprimés dans ce lot.
+                if (decisionsFiltre && !decisionsFiltre.has(decisionAnnuelle)) {
+                    continue;
                 }
 
-                const semestreDemande = semestreId ? parseInt(semestreId, 10) : null;
-                const decisionAffichee = semestreDemande === 1 ? recap.s1.decision
-                                        : semestreDemande === 2 ? recap.s2.decision
-                                        : recap.annuel.decision;
-
-                // ✅ Redoublant : basé sur la moyenne/crédits ANNUELS officiels (recap.annuel),
-                // identique à la règle utilisée par le bulletin individuel.
-                let redoublantEtudiant = 'NON';
-                const typeFEtudiant = (groupeInfo.type_filiere || '').toLowerCase();
-                if (typeFEtudiant.includes('universitaire')) {
-                    if (recap.annuel.moyenne < 10 || recap.annuel.creditsValides < 48) redoublantEtudiant = 'OUI';
-                } else {
-                    if (recap.annuel.moyenne < 10) redoublantEtudiant = 'OUI';
+                if (ecueAReprendreEntry) {
+                    etudiantsAReprendre.push(ecueAReprendreEntry);
                 }
-
-                resultatsEtudiants.push({
-                    etudiant_id: etudiant.id,
-                    matricule_iipea: etudiant.matricule_iipea,
-                    matricule_mesrs: etudiant.code_unique || etudiant.matricule_iipea,
-                    nom: etudiant.nom,
-                    prenoms: etudiant.prenoms,
-                    date_naissance: etudiant.date_naissance
-                        ? new Date(etudiant.date_naissance).toLocaleDateString('fr-FR')
-                        : '-',
-                    lieu_naissance: etudiant.lieu_naissance || '-',
-                    genre: etudiant.genre === 'M' ? 'Masculin' : (etudiant.genre === 'F' ? 'Féminin' : (etudiant.genre || '-')),
-                    niveau_libelle: etudiant.niveau_libelle || '',
-                    niveau_id: etudiant.niveau_id,
-                    moyenne_generale: semestreDemande === 1 ? recap.s1.moyenne : semestreDemande === 2 ? recap.s2.moyenne : recap.annuel.moyenne,
-                    credits_valides: semestreDemande === 1 ? recap.s1.creditsValides : semestreDemande === 2 ? recap.s2.creditsValides : recap.annuel.creditsValides,
-                    credits_total: semestreDemande === 1 ? recap.s1.creditsTotal : semestreDemande === 2 ? recap.s2.creditsTotal : recap.annuel.creditsTotal,
-                    decision: decisionAffichee,
-                    decision_jury: recap.annuel.decision === 'AJOURNÉ' ? 'AJOURNÉ(E)' : recap.annuel.decision,
-                    decision_jury_class: recap.annuel.decision === 'ADMIS' ? 'admis' : recap.annuel.decision === 'DÉROGÉ' ? 'deroge' : 'ajourne',
-                    ues: uesAvecResultats,
-                    ecue_a_reprendre: ecueAReprendre,
-                    moyenne_s1: recap.s1.moyenne,
-                    credits_s1: recap.s1.creditsValides,
-                    credits_s1_total: recap.s1.creditsTotal,
-                    decision_s1: recap.s1.decision,
-                    decision_s1_class: recap.s1.decision === 'ADMIS' ? 'admis' : 'ajourne',
-                    moyenne_s2: recap.s2.moyenne,
-                    credits_s2: recap.s2.creditsValides,
-                    credits_s2_total: recap.s2.creditsTotal,
-                    decision_s2: recap.s2.decision,
-                    decision_s2_class: recap.s2.decision === 'ADMIS' ? 'admis' : 'ajourne',
-                    moyenne_annuelle: recap.annuel.moyenne,
-                    credits_annuels: recap.annuel.creditsValides,
-                    credits_annuels_total: recap.annuel.creditsTotal,
-                    redoublant: redoublantEtudiant
-                });
+                resultatsEtudiants.push(resultatEtudiant);
             }
+        }
+
+        // ✅ Filtre actif et aucun étudiant ne correspond : ne jamais générer un bulletin vide.
+        if (filtreActif && resultatsEtudiants.length === 0) {
+            return res.status(200).send(
+                '<html><head><meta charset="utf-8"><title>Bulletins</title></head>' +
+                '<body style="font-family:sans-serif;text-align:center;padding:60px;color:#333;">' +
+                '<h2>Aucun étudiant ne correspond à ce filtre.</h2>' +
+                '</body></html>'
+            );
         }
 
         const admisCount = resultatsEtudiants.filter(e => e.decision === 'ADMIS' || e.decision === 'DÉROGÉ').length;
@@ -2291,6 +2389,112 @@ exports.afficherBulletinsMultiples = async (req, res) => {
     } catch (error) {
         console.error('❌ Erreur affichage bulletins multiples:', error.message);
         res.status(500).render('error', { title: 'Erreur', message: 'Erreur lors de l\'affichage des bulletins multiples', error: error.message });
+    }
+};
+
+/**
+ * ✅ NOUVEAU (filtrage impression bulletins, 2026-08-26) : compte, pour un groupe (+ semestre
+ * optionnel), le nombre d'étudiants dans chacune des 6 catégories décision × statut de scolarité,
+ * plus le total "TOUS". Réutilise EXACTEMENT le même moteur que l'impression
+ * (_calculerResultatEtudiantBulletin, donc calculerRecapitulatifComplet) — un compteur ne doit
+ * jamais diverger de la liste réellement imprimée. Ne rend aucun HTML, uniquement des chiffres
+ * pour alimenter les boutons de filtrage.
+ */
+exports.getCompteursBulletinsGroupe = async (req, res) => {
+    try {
+        const { groupeId, semestreId } = req.params;
+
+        const groupeInfo = await _getGroupeInfo(groupeId);
+        if (!groupeInfo) {
+            return res.status(404).json({ error: `Groupe ${groupeId} non trouvé` });
+        }
+
+        const typeTraitement = determinerTypeTraitement(groupeInfo.type_filiere, groupeInfo.nom);
+
+        const etudiantsQuery = `
+            SELECT e.id, e.matricule_iipea, e.nom, e.prenoms,
+                   e.date_naissance, e.lieu_naissance, e.sexe as genre,
+                   e.nationalite, e.code_unique,
+                   e.groupe_id, e.niveau_id, e.id_filiere,
+                   COALESCE(n.libelle, '') as niveau_libelle,
+                   e.statut_paiement as statut_etudiant,
+                   e.curcus_id
+            FROM vue_position_academique e
+            LEFT JOIN niveau n ON n.id = e.niveau_id
+            WHERE e.groupe_id = $1
+            AND e.standing = 'Inscrit'
+            ORDER BY e.nom, e.prenoms
+        `;
+        const etudiantsResult = await db.query(etudiantsQuery, [groupeId]);
+        const etudiants = etudiantsResult.rows;
+
+        const etudiantsParCombo = new Map();
+        for (const etudiant of etudiants) {
+            const cle = `${etudiant.id_filiere}_${etudiant.niveau_id}_${etudiant.curcus_id || ''}`;
+            if (!etudiantsParCombo.has(cle)) {
+                etudiantsParCombo.set(cle, {
+                    filiereId: etudiant.id_filiere,
+                    niveauId: etudiant.niveau_id,
+                    curcusId: etudiant.curcus_id || null,
+                    etudiants: []
+                });
+            }
+            etudiantsParCombo.get(cle).etudiants.push(etudiant);
+        }
+
+        const compteurs = {
+            tous: 0,
+            admisSolde: 0, admisNonSolde: 0,
+            ajourneSolde: 0, ajourneNonSolde: 0,
+            derogeSolde: 0, derogeNonSolde: 0
+        };
+
+        for (const { filiereId, niveauId, curcusId, etudiants: etudiantsCombo } of etudiantsParCombo.values()) {
+            let parcourLibelleCombo = null;
+            if (curcusId) {
+                const curcusResult = await db.query('SELECT type_parcours FROM curcus WHERE id = $1', [curcusId]);
+                parcourLibelleCombo = curcusResult.rows[0]?.type_parcours || null;
+            }
+            const structureS1 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 1, parcourLibelleCombo);
+            const structureS2 = await getStructureAcademiqueParFiliereNiveau(filiereId, niveauId, 2, parcourLibelleCombo);
+
+            const uesFusionnees = [...(structureS1.ues || []), ...(structureS2.ues || [])];
+            const structureAcademique = {
+                maquette_id: structureS1.maquette_id || structureS2.maquette_id,
+                parcour: structureS1.parcour || structureS2.parcour,
+                ues: uesFusionnees
+            };
+
+            const uesS1 = structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === 1);
+            const uesS2 = structureAcademique.ues.filter(ue => parseInt(ue.semestre_id, 10) === 2);
+            const totalCreditsS1 = uesS1.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
+            const totalCreditsS2 = uesS2.reduce((sum, ue) => sum + ue.matieres.reduce((s, m) => s + m.coefficient, 0), 0);
+
+            let _yieldCounterCompteurs = 0;
+            for (const etudiant of etudiantsCombo) {
+                if (++_yieldCounterCompteurs % 25 === 0) {
+                    await new Promise(resolve => setImmediate(resolve));
+                }
+
+                const { decisionAnnuelle, statutScolariteNormalise } = await _calculerResultatEtudiantBulletin(
+                    etudiant, structureAcademique, typeTraitement, totalCreditsS1, totalCreditsS2, groupeInfo, semestreId
+                );
+
+                compteurs.tous++;
+                if (decisionAnnuelle === 'ADMIS' && statutScolariteNormalise === 'SOLDE') compteurs.admisSolde++;
+                else if (decisionAnnuelle === 'ADMIS' && statutScolariteNormalise === 'NON_SOLDE') compteurs.admisNonSolde++;
+                else if (decisionAnnuelle === 'AJOURNÉ' && statutScolariteNormalise === 'SOLDE') compteurs.ajourneSolde++;
+                else if (decisionAnnuelle === 'AJOURNÉ' && statutScolariteNormalise === 'NON_SOLDE') compteurs.ajourneNonSolde++;
+                else if (decisionAnnuelle === 'DÉROGÉ' && statutScolariteNormalise === 'SOLDE') compteurs.derogeSolde++;
+                else if (decisionAnnuelle === 'DÉROGÉ' && statutScolariteNormalise === 'NON_SOLDE') compteurs.derogeNonSolde++;
+            }
+        }
+
+        res.json({ groupeId: parseInt(groupeId, 10), semestreId: semestreId ? parseInt(semestreId, 10) : null, compteurs });
+
+    } catch (error) {
+        console.error('❌ Erreur compteurs bulletins multiples:', error.message);
+        res.status(500).json({ error: 'Erreur lors du calcul des compteurs de bulletins', detail: error.message });
     }
 };
 
