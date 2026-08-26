@@ -15,6 +15,7 @@
 const credits = require('../services/assistantCredits.service');
 const sante = require('../services/assistantSante.service');
 const journal = require('../services/assistantJournal.service');
+const couverture = require('../services/assistantCouverture.service');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 /** Le site de l'appelant, refusé plutôt que deviné s'il manque. */
@@ -145,5 +146,38 @@ exports.majSeuil = async (req, res) => {
   } catch (error) {
     console.error('[console] seuil :', error.message);
     return res.status(500).json({ success: false, message: "Le seuil n'a pas pu être enregistré." });
+  }
+};
+
+/**
+ * « Ce que l'assistante peut lire » : les 74 sujets, leurs ecarts, et les cas ou
+ * un sujet vide porte le nom d'un sujet peuple.
+ */
+exports.couverture = async (req, res) => {
+  const siteId = siteDe(req, res);
+  if (!siteId) return undefined;
+  try {
+    const donnees = await couverture.getCouverture({ siteId, ecoleId: getEcoleScopeFromUser(req) });
+    return res.json({ success: true, mesure_le: new Date().toISOString(), ...donnees });
+  } catch (error) {
+    console.error('[console] couverture :', error.message);
+    return res.status(500).json({ success: false, message: 'Lecture de la couverture impossible.' });
+  }
+};
+
+/** Cinq lignes reelles d'un sujet, avec un comptage EXACT cette fois. */
+exports.echantillon = async (req, res) => {
+  const siteId = siteDe(req, res);
+  if (!siteId) return undefined;
+  try {
+    const donnees = await couverture.getEchantillon({
+      siteId, ecoleId: getEcoleScopeFromUser(req), vue: req.params.vue,
+    });
+    return res.json({ success: true, ...donnees });
+  } catch (error) {
+    // « Sujet inconnu » est une faute d'appel, pas une panne : 404 plutot que 500.
+    const inconnu = /inconnu/i.test(error.message);
+    if (!inconnu) console.error('[console] echantillon :', error.message);
+    return res.status(inconnu ? 404 : 500).json({ success: false, message: error.message });
   }
 };

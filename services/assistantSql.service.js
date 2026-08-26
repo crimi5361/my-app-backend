@@ -455,4 +455,13 @@ async function executerRequete(sqlBrut, options = {}) {
   };
 }
 
-module.exports = { validerRequete, executerRequete, getDictionnaire, decrireTable };
+// `getPool` est expose pour la console d'administration, qui doit compter ce que
+// l'assistante voit REELLEMENT — donc avec son role en lecture seule et son
+// cloisonnement. Ouvrir un second pool ailleurs consommerait des connexions
+// Neon en double pour joindre exactement la meme base avec les memes droits.
+//
+// Le validateur n'est pas contourne par negligence : le SQL de la console est
+// ENGENDRE PAR LE SERVEUR a partir du catalogue du schema, jamais recu du
+// navigateur ni ecrit par le modele. C'est la condition qui rend ce passage
+// direct acceptable, et elle doit le rester.
+module.exports = { validerRequete, executerRequete, getDictionnaire, decrireTable, getPool };

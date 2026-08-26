@@ -96,6 +96,18 @@ router.get(
   assistantConsoleController.sante
 );
 router.get(
+  '/console/couverture',
+  authenticateToken,
+  authorizeRoles('admin'),
+  assistantConsoleController.couverture
+);
+router.get(
+  '/console/couverture/:vue',
+  authenticateToken,
+  authorizeRoles('admin'),
+  assistantConsoleController.echantillon
+);
+router.get(
   '/console/credits',
   authenticateToken,
   authorizeRoles('admin'),
