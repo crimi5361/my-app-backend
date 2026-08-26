@@ -3,6 +3,7 @@ const router = express.Router();
 const authenticateToken = require('../middleware/auth.middleware');
 const authorizeRoles = require('../middleware/authorize.middleware');
 const assistantController = require('../controllers/assistant.controller');
+const assistantConsoleController = require('../controllers/assistantConsole.controller');
 
 router.post(
   '/chat',
@@ -79,6 +80,32 @@ router.delete(
   authenticateToken,
   authorizeRoles('admin', 'fondateur'),
   assistantController.googleDeconnexion
+);
+
+// --- Console d'administration -----------------------------------------------
+//
+// ADMIN SEUL, ET LE FONDATEUR EN EST EXCLU alors qu'il a accès à tout le reste
+// de l'assistante. Ce n'est pas une précaution de principe : ces écrans parlent
+// de modèles, de crédits et de facturation, c'est-à-dire exactement ce que le
+// fondateur ne doit jamais apprendre. Lui ouvrir ces routes réduirait à néant
+// tout ce que l'instruction système s'applique à taire.
+router.get(
+  '/console/credits',
+  authenticateToken,
+  authorizeRoles('admin'),
+  assistantConsoleController.credits
+);
+router.post(
+  '/console/recharge',
+  authenticateToken,
+  authorizeRoles('admin'),
+  assistantConsoleController.ajouterRecharge
+);
+router.put(
+  '/console/seuil',
+  authenticateToken,
+  authorizeRoles('admin'),
+  assistantConsoleController.majSeuil
 );
 
 module.exports = router;
