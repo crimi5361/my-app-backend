@@ -13,6 +13,7 @@ const { GoogleGenAI, Type } = require('@google/genai');
 const { executerRequete, getDictionnaire } = require('./assistantSql.service');
 const { enregistrer, extraireUsage } = require('./assistantBudget.service');
 const { getReglages } = require('./assistantReglages.service');
+const { journaliser } = require('./assistantJournal.service');
 // Uniquement pour savoir si l'acces Google est configure : les outils qui en
 // dependent ne sont declares au modele que dans ce cas.
 const google = require('./assistantGoogle.service');
@@ -99,7 +100,7 @@ const MAX_OUTILS = 8;
  * état intermédiaire. On repart donc de l'instantané pris avant l'appel, et on
  * rejoue le même message sur le nouveau modèle.
  */
-function creerConversation({ config, historique }) {
+function creerConversation({ config, historique, surRepli = null }) {
   const ATTENTES = [1000, 2000];
   let rang = 0;
   let chat = ai.chats.create({ model: MODELES_TEXTE[rang], config, history: historique });
@@ -121,6 +122,13 @@ function creerConversation({ config, historique }) {
             `[assistant] ${ancien} epuise (429) — bascule sur ${MODELES_TEXTE[rang]}. `
             + `Verifier le solde de credits Google.`
           );
+          // Le repli laisse une trace durable : un journal du serveur se perd au
+          // redemarrage, et c'est justement ce signal qui aurait rendu visible
+          // en un jour les 18 appels partis sur un modele qui bouclait sans
+          // conclure. Il ne doit jamais faire echouer la reponse en cours.
+          if (surRepli) {
+            try { surRepli(ancien, MODELES_TEXTE[rang]); } catch (_) { /* le journal n'interrompt rien */ }
+          }
           chat = ai.chats.create({ model: MODELES_TEXTE[rang], config, history: avant });
           avant = chat.getHistory();
           essai = -1;                       // le nouveau modèle a droit à ses propres reprises
@@ -341,6 +349,14 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
       responseSchema: SCHEMA_REPONSE,
     },
     historique,
+    // Journalise la bascule de modele. `void` : on ne l'attend pas, la reponse
+    // du fondateur ne doit pas dependre d'une ecriture de journal.
+    surRepli: (ancien, nouveau) => {
+      void journaliser({
+        siteId, utilisateurId, canal: 'texte', genre: 'repli', question,
+        detail: `${ancien} epuise, bascule sur ${nouveau}.`,
+      });
+    },
   });
 
   // Chaque échange avec le modèle est comptabilisé : le budget se calcule sur la

@@ -90,6 +90,12 @@ router.delete(
 // fondateur ne doit jamais apprendre. Lui ouvrir ces routes réduirait à néant
 // tout ce que l'instruction système s'applique à taire.
 router.get(
+  '/console/sante',
+  authenticateToken,
+  authorizeRoles('admin'),
+  assistantConsoleController.sante
+);
+router.get(
   '/console/credits',
   authenticateToken,
   authorizeRoles('admin'),

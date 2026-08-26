@@ -13,6 +13,9 @@
 // vient du JWT, jamais du corps de la requête. Tout le calcul est dans les
 // services.
 const credits = require('../services/assistantCredits.service');
+const sante = require('../services/assistantSante.service');
+const journal = require('../services/assistantJournal.service');
+const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 
 /** Le site de l'appelant, refusé plutôt que deviné s'il manque. */
 function siteDe(req, res) {
@@ -23,6 +26,50 @@ function siteDe(req, res) {
   }
   return siteId;
 }
+
+/**
+ * L'écran « Santé » en un seul appel.
+ *
+ * TOUT EN PARALLÈLE, ET AUCUN MORCEAU NE PEUT EN EMPORTER UN AUTRE. Un écran de
+ * diagnostic doit s'afficher surtout quand quelque chose ne va pas : si la
+ * lecture des crédits échoue, les voyants doivent quand même apparaître. Chaque
+ * bloc porte donc son propre échec, sous la forme d'un `null` et d'un motif, au
+ * lieu d'un 500 qui laisserait l'administrateur devant une page blanche le jour
+ * où il en a le plus besoin.
+ */
+exports.sante = async (req, res) => {
+  const siteId = siteDe(req, res);
+  if (!siteId) return undefined;
+  const ecoleId = getEcoleScopeFromUser(req);
+
+  const sansCasse = (promesse, etiquette) => promesse.catch((error) => {
+    console.error(`[console] ${etiquette} :`, error.message);
+    return null;
+  });
+
+  const [voyants, incident, etat, recharges, usage, modeles, echecs] = await Promise.all([
+    sansCasse(sante.voyants({ siteId, ecoleId }), 'voyants'),
+    sansCasse(sante.dernierIncident(siteId), 'dernier incident'),
+    sansCasse(credits.getEtatCredits(siteId), 'crédits'),
+    sansCasse(credits.listerRecharges(siteId, 20), 'recharges'),
+    sansCasse(credits.getUsageParJour(siteId, 7), 'usage 7 jours'),
+    sansCasse(credits.getUsageParModele(siteId, null), 'modèles'),
+    sansCasse(journal.listerEchecs(siteId, 10), 'échecs'),
+  ]);
+
+  return res.json({
+    success: true,
+    mesure_le: new Date().toISOString(),
+    voyants,
+    dernier_incident: incident,
+    credits: etat,
+    recharges,
+    usage_7_jours: usage,
+    modeles,
+    echecs,
+    retention_echecs_jours: journal.RETENTION_JOURS,
+  });
+};
 
 /** État des crédits : rechargé, consommé, solde estimé, seuil, coût par question. */
 exports.credits = async (req, res) => {
