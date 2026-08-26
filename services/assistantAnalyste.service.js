@@ -372,7 +372,12 @@ async function repondreQuestion({ question, historique = [], siteId, ecoleId = n
 
     for (const appel of reponse.functionCalls) {
       // eslint-disable-next-line no-await-in-loop
-      const sortie = await executerOutil(appel.name, appel.args, { siteId, ecoleId, utilisateurId });
+      // `canal` et `question` ne servent qu'au journal des échecs : ils permettent
+      // de relire l'échec avec ce qui l'a déclenché, au lieu d'un outil isolé de
+      // sa cause. Aucun outil ne les lit.
+      const sortie = await executerOutil(appel.name, appel.args, {
+        siteId, ecoleId, utilisateurId, canal: 'texte', question,
+      });
 
       if (sortie.trace) requetes.push(sortie.trace);
       if (sortie.traces) requetes.push(...sortie.traces);

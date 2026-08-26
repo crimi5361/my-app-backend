@@ -17,6 +17,7 @@ const { chercherPersonnes, construireFiche } = require('./assistantFiche.service
 const { rapportPersonne } = require('./assistantFicheRapport');
 const { destinationValide, catalogueTexte } = require('../config/destinations');
 const { intentionOuiNon } = require('./assistantIntention');
+const { journaliser, journaliserSortieOutil } = require('./assistantJournal.service');
 
 // ---------------------------------------------------------------------------
 //  Identité — reprise mot pour mot par les deux canaux
@@ -553,7 +554,25 @@ C'est le domaine ou le fondateur attend le plus de toi.
   nomme. Dis-le dans ta note de perimetre plutot que de laisser croire que le
   classement est exhaustif.`;
 
-const BLOC_PRUDENCE = `## Ce que tu ne fais jamais
+const BLOC_PRUDENCE = `## Quand tu ne peux pas répondre, tu le signales
+
+Avant de dire au fondateur que tu ne sais pas, que la donnée n'existe pas, ou
+que ce n'est pas dans ce que tu peux lire, appelle \`signaler_impasse\`. Fais-le
+aussi quand tu réponds à moitié faute de mieux.
+
+Y COMPRIS QUAND TA PHRASE SONNE COMME UNE RÉPONSE. « Il n'y en a aucun », « ce
+n'est pas suivi ici », « ce module n'est pas utilisé », « cette information
+n'est pas enregistrée » : ce sont des impasses, pas des réponses. Le fondateur
+a posé une question et repart sans le chiffre qu'il cherchait. Signale-les.
+
+Cela ne change rien à ta réponse et le fondateur n'en voit rien. Cela sert à ce
+que l'administrateur découvre sur quels sujets tu butes, et te les ouvre. Une
+assistante qui bute en silence bute indéfiniment.
+
+Tu ne mentionnes jamais ce signalement à voix haute : tu appelles l'outil, puis
+tu réponds comme si de rien n'était.
+
+## Ce que tu ne fais jamais
 - Tu n'écris rien dans la base : tu es en lecture seule, définitivement.
 - Tu n'envoies jamais un message sans avoir lu son contenu au fondateur et obtenu
   son accord explicite. Rédiger un brouillon et envoyer sont deux actes distincts.
@@ -702,6 +721,46 @@ const DECLARATIONS = [
         },
       },
       required: ['titre', 'sections'],
+    },
+  },
+
+  /**
+   * L'AVEU D'IMPASSE, RENDU VISIBLE.
+   *
+   * Les autres échecs se reconnaissent à la forme de ce qu'un outil renvoie :
+   * une erreur, zéro ligne, un nom introuvable. Celui-ci n'a aucune forme — il
+   * arrive quand l'assistante décline SANS avoir rien tenté, et il se noie dans
+   * une phrase française qu'on ne peut pas analyser sans se tromper.
+   *
+   * Cet outil le sort du texte libre. Il ne renvoie rien d'utile au modèle, ne
+   * change pas sa réponse, et n'est pas visible du fondateur : son seul effet est
+   * d'écrire une ligne dans le journal. C'est un accusé de réception, et c'est
+   * pour cela que sa description insiste autant — un outil sans bénéfice apparent
+   * pour le modèle ne sera appelé que si la consigne est sans ambiguïté.
+   */
+  {
+    name: 'signaler_impasse',
+    description:
+      "À APPELER AVANT de dire au fondateur que tu ne peux pas répondre, que la donnée n'existe "
+      + "pas, ou que ce n'est pas dans ce que tu sais lire. Appelle-le AUSSI quand tu réponds "
+      + 'partiellement faute de mieux. Il ne change rien à ta réponse et le fondateur ne le voit '
+      + "pas : il sert à ce que l'administrateur sache sur quels sujets tu butes, pour te les "
+      + 'ouvrir. Ne pas le signaler, c\'est laisser le manque se répéter indéfiniment.',
+    parameters: {
+      type: Type.OBJECT,
+      properties: {
+        sujet: {
+          type: Type.STRING,
+          description: 'Ce que le fondateur voulait savoir, en quelques mots.',
+        },
+        raison: {
+          type: Type.STRING,
+          description:
+            "Pourquoi tu ne peux pas : donnée absente, vue vide, hors de ton périmètre, "
+            + 'information protégée, question mal comprise…',
+        },
+      },
+      required: ['sujet', 'raison'],
     },
   },
 ];
@@ -1012,11 +1071,12 @@ const NOMS_GOOGLE = new Set([
  * Une panne se dit ; elle ne se devine pas.
  */
 async function executerOutil(nom, args = {}, contexteAppel = {}) {
+  let sortie;
   try {
-    return await executerOutilInterne(nom, args, contexteAppel);
+    sortie = await executerOutilInterne(nom, args, contexteAppel);
   } catch (erreur) {
     console.error(`[assistant] outil ${nom} en echec :`, erreur.message);
-    return {
+    sortie = {
       reponse: {
         erreur: `L'outil ${nom} n'a pas abouti (${String(erreur.message).slice(0, 160)}).`,
         instruction: "Cet outil a echoue. N'invente RIEN pour combler le vide : "
@@ -1025,10 +1085,50 @@ async function executerOutil(nom, args = {}, contexteAppel = {}) {
       },
     };
   }
+
+  /*
+   * LE JOURNAL SE BRANCHE ICI, ET NULLE PART AILLEURS.
+   *
+   * C'est le seul point par lequel passe TOUT appel d'outil, des deux canaux.
+   * Poser l'observation ailleurs — dans chaque branche, ou chez les deux
+   * appelants — garantirait d'en oublier au prochain outil ajouté.
+   *
+   * ON ATTEND L'ÉCRITURE plutôt que de la lancer sans l'attendre. Elle n'a lieu
+   * que sur échec, donc jamais sur le chemin nominal ; et à cet instant la
+   * réponse est déjà dégradée, ce qui rend les quelques dizaines de millisecondes
+   * sans conséquence. En échange, un échec survenu juste avant une coupure est
+   * réellement écrit — c'est-à-dire précisément le cas qu'on veut voir.
+   */
+  const { siteId, utilisateurId = null, canal = 'texte', question = null } = contexteAppel;
+  if (siteId) {
+    if (nom === 'signaler_impasse') {
+      await journaliser({
+        siteId,
+        utilisateurId,
+        canal,
+        question,
+        genre: 'impasse',
+        outil: nom,
+        detail: [args?.sujet, args?.raison].filter(Boolean).join(' — ') || null,
+      });
+    } else {
+      await journaliserSortieOutil(nom, sortie, { siteId, utilisateurId, canal, question });
+    }
+  }
+
+  return sortie;
 }
 
 async function executerOutilInterne(nom, args = {}, { siteId, ecoleId = null, utilisateurId = null }) {
   const contexte = { siteId, ecoleId, utilisateurId };
+
+  // L'impasse est journalisée par l'enveloppe, comme tous les autres échecs :
+  // ici on se contente d'accuser réception. La réponse est neutre et brève —
+  // toute instruction supplémentaire risquerait de faire commenter l'appel à
+  // voix haute, alors que le fondateur ne doit rien en savoir.
+  if (nom === 'signaler_impasse') {
+    return { reponse: { note: 'Signalement pris en compte. Réponds au fondateur normalement.' } };
+  }
 
   if (nom === 'afficher_fiche_personne') {
     const cat = args?.categorie === 'agent' || args?.categorie === 'etudiant' ? args.categorie : null;

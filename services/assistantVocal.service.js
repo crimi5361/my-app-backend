@@ -469,14 +469,23 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
      */
     const tampons = { fondateur: '', assistant: '' };
 
+    /** Derniere question du fondateur, transcrite. Sert au journal des echecs. */
+    let derniereQuestion = null;
+
     /** Clôt un tour de transcription : le texte complet est corrigé une seule
      *  fois, puis renvoyé pour REMPLACER les fragments déjà affichés. */
     const finaliserTranscription = (qui) => {
       const brut = tampons[qui];
       tampons[qui] = '';
       if (!brut.trim()) return;
+      const texte = corrigerTranscription(brut);
+      // La dernière question posée à voix haute, retenue pour le SEUL journal des
+      // échecs : sans elle, un échec vocal se lirait « outil X, zéro ligne » sans
+      // qu'on sache ce que le fondateur avait demandé. Elle n'est jamais renvoyée
+      // au modèle et ne sert à rien d'autre.
+      if (qui === 'fondateur') derniereQuestion = texte;
       envoyer(qui === 'fondateur' ? 'transcription_fondateur' : 'transcription_assistant', {
-        texte: corrigerTranscription(brut),
+        texte,
         partiel: false,
       });
     };
@@ -705,7 +714,9 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
             }
 
             // eslint-disable-next-line no-await-in-loop
-            const sortie = await executerOutil(appel.name, appel.args, { siteId, ecoleId, utilisateurId });
+            const sortie = await executerOutil(appel.name, appel.args, {
+              siteId, ecoleId, utilisateurId, canal: 'vocal', question: derniereQuestion,
+            });
 
             // Trace d'exploitation. Le modele ANNONCE parfois une action qu'il n'a
             // pas demandee — « j'affiche la fiche » sans appeler l'outil. Sans
