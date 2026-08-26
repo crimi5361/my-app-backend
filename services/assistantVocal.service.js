@@ -595,7 +595,12 @@ async function demarrerSession(ws, { siteId, ecoleId, utilisateurId }) {
     // Session Live établie et écouteur navigateur déjà branché : on peut annoncer
     // 'pret' sans risque de perdre la réponse immédiate du client.
     sessionPrete = true;
-    envoyer('pret', { budget: budget.consommation, modele: modeleUtilise });
+    // Le nom du modele NE PART PAS au navigateur. Il n'y etait affiche nulle
+    // part, mais il restait lisible dans la console de developpement — et le
+    // fondateur ne doit rien savoir de la technique qui le sert. Il reste
+    // journalise cote serveur, ou il est utile au diagnostic.
+    console.log(`[vocal] session ouverte sur ${modeleUtilise}`);
+    envoyer('pret', {});
     while (enAttente.length) traiterMessageNavigateur(enAttente.shift());
 
     async function traiterMessageLive(msg) {

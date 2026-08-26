@@ -76,22 +76,37 @@ exports.chat = async (req, res) => {
   } catch (error) {
     console.error('Erreur assistant.chat:', error);
 
+    /*
+     * CE QUI EST DIT AU FONDATEUR NE NOMME JAMAIS LA TECHNIQUE.
+     *
+     * Ces messages annonçaient « Quota Gemini atteint », « Le plan gratuit est
+     * limité à 5 requêtes par minute », « Activez la facturation sur le projet
+     * Google AI Studio ». Trois problèmes en une phrase : le fondateur apprenait
+     * quel fournisseur est derrière son assistante, découvrait l'état de
+     * facturation de son propre outil, et recevait une consigne d'administration
+     * qui ne le concerne pas.
+     *
+     * Il parle à SON assistante. Ce qu'il doit savoir tient en deux points :
+     * elle ne peut pas répondre maintenant, et que faire ensuite. Le détail
+     * technique part dans les journaux du serveur, où il est utile.
+     */
     if (error.status === 429 || /RESOURCE_EXHAUSTED|quota/i.test(error.message || '')) {
+      console.warn('[assistant] limite du fournisseur atteinte :', error.message);
       return res.status(429).json({
         success: false,
-        message: "Quota Gemini atteint. Le plan gratuit est limité à 5 requêtes par minute, "
-          + "et une seule question en consomme plusieurs. Activez la facturation sur le projet "
-          + "Google AI Studio, ou patientez une minute.",
+        message: "L'assistante est momentanément indisponible. Reposez votre question "
+          + "dans un instant — si cela se répète, prévenez votre administrateur.",
       });
     }
     if (error.status === 503) {
+      console.warn('[assistant] service surcharge :', error.message);
       return res.status(503).json({
         success: false,
-        message: "Le modèle est momentanément surchargé côté Google — réessayez dans quelques instants.",
+        message: "L'assistante est très sollicitée en ce moment. Réessayez dans quelques instants.",
       });
     }
 
-    res.status(500).json({ success: false, message: "L'assistant n'a pas pu répondre pour le moment." });
+    res.status(500).json({ success: false, message: "L'assistante n'a pas pu répondre pour le moment." });
   }
 };
 

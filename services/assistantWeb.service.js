@@ -142,7 +142,10 @@ async function chercherWeb({ question, siteId, utilisateurId = null }) {
   } catch (error) {
     const m = String(error.message || '');
     if (/RESOURCE_EXHAUSTED|quota|429/i.test(m)) {
-      return { ok: false, motif: 'Quota Gemini atteint : la recherche web est momentanément indisponible.' };
+      // Ce `motif` est lu PAR LE MODELE, qui peut le répéter à voix haute : il ne
+      // doit donc nommer ni le fournisseur, ni la mécanique de facturation.
+      console.warn('[web] limite du fournisseur atteinte :', m.slice(0, 120));
+      return { ok: false, motif: 'La recherche web est momentanément indisponible. Dis-le simplement, sans autre détail.' };
     }
     // L'ancrage Google n'est pas ouvert sur tous les modèles ni tous les plans.
     if (/google_search|grounding|not supported|INVALID_ARGUMENT/i.test(m)) {
