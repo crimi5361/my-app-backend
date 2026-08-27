@@ -38,6 +38,9 @@ const {
   getEvolutionInscriptionsQuotidienne, getEvolutionRecettesQuotidienne,
 } = require('../services/statistiquesInscriptions.service');
 const { getStatistiquesKit } = require('../services/kitStatistiques.service');
+// ✅ Chantier Dashboards financiers par type (2026-08-27) : détail des sessions de caisse
+// actuellement ouvertes pour ce site — voir services/sessionCaisse.service.js.
+const { getSessionsOuvertesDetailSite } = require('../services/sessionCaisse.service');
 
 exports.getDashboardFondateur = async (req, res) => {
   try {
@@ -74,6 +77,7 @@ exports.getDashboardFondateur = async (req, res) => {
       evolutionRecettes,
       pecResult,
       caissesResult,
+      sessionsOuvertesDetail,
       moyensGenerauxEtudiantsServis,
       moyensGenerauxEtatStock,
       moyensGenerauxEvolution,
@@ -175,6 +179,11 @@ exports.getDashboardFondateur = async (req, res) => {
           ) AS encaisse_mois
       `, caissesParams),
 
+      // ✅ Chantier Dashboards financiers par type (2026-08-27) — détail par session ouverte
+      // (caissier, heure d'ouverture, encaissé aujourd'hui, répartition par type de frais).
+      // Complète caissesResult.sessions_ouvertes (simple compteur, inchangé) sans le remplacer.
+      getSessionsOuvertesDetailSite(db, siteId, ecoleId),
+
       // Bloc Moyens Généraux (sous-phase 12) — fonctions de service partagées avec le Dashboard
       // Moyens Généraux, aucune requête réécrite ici.
       getEtudiantsServis(db, { anneeAcademiqueId, emplacementStockId, ecoleId }),
@@ -228,6 +237,8 @@ exports.getDashboardFondateur = async (req, res) => {
           sessions_ouvertes: parseInt(caissesResult.rows[0].sessions_ouvertes, 10),
           encaisse_jour: parseFloat(caissesResult.rows[0].encaisse_jour),
           encaisse_mois: parseFloat(caissesResult.rows[0].encaisse_mois),
+          // ✅ Chantier Dashboards financiers par type (2026-08-27) — détail par session ouverte.
+          sessions_ouvertes_detail: sessionsOuvertesDetail,
         },
         // Moyens Généraux (sous-phase 12) — indicateurs de pilotage uniquement, aucune action de
         // gestion : cohérent avec la philosophie du reste de ce dashboard.

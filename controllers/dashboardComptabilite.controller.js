@@ -6,6 +6,13 @@
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { getStatistiquesKit } = require('../services/kitStatistiques.service');
+// ✅ Chantier Dashboards financiers par type (2026-08-27) : "Étudiants inscrits" — même source
+// UNIQUE que le Dashboard Fondateur (services/statistiquesInscriptions.service.js), aucune
+// deuxième logique de comptage. Vérifié avant modification : getTotalInscrits est déjà réutilisée
+// telle quelle par dashboardAdministrateur.controller.js et dashboardFondateur.controller.js ;
+// getEvolutionRecettesQuotidienne n'est PAS utilisée ici (le Dashboard Comptabilité a sa propre
+// fenêtre "14 derniers jours", volontairement différente de celle du Fondateur — non touchée).
+const { getTotalInscrits } = require('../services/statistiquesInscriptions.service');
 
 exports.getDashboardComptabilite = async (req, res) => {
   try {
@@ -45,6 +52,7 @@ exports.getDashboardComptabilite = async (req, res) => {
       financeResult,
       pecResult,
       statistiquesKit,
+      totalInscrits,
     ] = await Promise.all([
       db.query(`
         SELECT COALESCE(SUM(p.montant), 0) AS total FROM paiement p JOIN caisse c ON c.id = p.caisse_id
@@ -80,12 +88,19 @@ exports.getDashboardComptabilite = async (req, res) => {
         WHERE p.annee_academique_id = $1 AND c.site_id = $2 ${ecoleCond}
       `, baseParams),
 
+      // ✅ Chantier Dashboards financiers par type (2026-08-27) : ventilation par `type_frais`
+      // ajoutée dans LA MÊME requête (GROUP BY supplémentaire), pour que le total par jour reste
+      // mathématiquement la somme des types — même convention COALESCE que caisse.controller.js
+      // (buildRapportSession/getSupervisionCaisse), période 14 jours INCHANGÉE.
       db.query(`
-        SELECT p.date_paiement AS jour, COALESCE(SUM(p.montant), 0) AS total
+        SELECT p.date_paiement AS jour,
+               COALESCE(NULLIF(p.type_frais, ''), 'scolarite') AS type_frais,
+               COALESCE(SUM(p.montant), 0) AS total
         FROM paiement p JOIN caisse c ON c.id = p.caisse_id
         WHERE p.annee_academique_id = $1 AND c.site_id = $2
           AND p.date_paiement BETWEEN CURRENT_DATE - INTERVAL '13 days' AND CURRENT_DATE ${ecoleCond}
-        GROUP BY p.date_paiement ORDER BY jour
+        GROUP BY p.date_paiement, COALESCE(NULLIF(p.type_frais, ''), 'scolarite')
+        ORDER BY jour
       `, baseParams),
 
       // Regroupement insensible à la casse ("especes" / "Espèces" coexistent en base) — constat
@@ -143,7 +158,26 @@ exports.getDashboardComptabilite = async (req, res) => {
 
       // Chantier Kit étudiant — Phase statistiques (2026-08-21) : voir services/kitStatistiques.service.js.
       getStatistiquesKit(db, { siteId, anneeAcademiqueId, ecoleId }),
+
+      // ✅ Chantier Dashboards financiers par type (2026-08-27) — même source unique que le
+      // Dashboard Fondateur, voir commentaire d'import ci-dessus.
+      getTotalInscrits(db, { siteId, ecoleId, anneeAcademiqueId }),
     ]);
+
+    // ✅ Pivot {jour, type_frais, total} → [{jour, total, parType}] — même transformation que
+    // services/statistiquesInscriptions.service.js::getEvolutionRecettesQuotidienne, reprise ici
+    // (pas extraite en commun) car cette requête a sa propre fenêtre "14 derniers jours",
+    // volontairement distincte de celle du Fondateur (depuis le 1er jour de l'année académique).
+    const evolutionParJour = new Map();
+    for (const row of evolutionResult.rows) {
+      const jour = row.jour instanceof Date ? row.jour.toISOString().slice(0, 10) : String(row.jour);
+      if (!evolutionParJour.has(jour)) evolutionParJour.set(jour, { jour, total: 0, parType: {} });
+      const entry = evolutionParJour.get(jour);
+      const montant = parseFloat(row.total);
+      entry.total += montant;
+      entry.parType[row.type_frais] = montant;
+    }
+    const evolutionEncaissements = Array.from(evolutionParJour.values()).sort((a, b) => a.jour.localeCompare(b.jour));
 
     res.status(200).json({
       success: true,
@@ -154,8 +188,11 @@ exports.getDashboardComptabilite = async (req, res) => {
         recettesSemaineDerniere: parseFloat(recettesSemaineDerniere.rows[0].total),
         recettesMois: parseFloat(recettesMois.rows[0].total),
         recettesAnnee: parseFloat(recettesAnnee.rows[0].total),
-        evolutionEncaissements: evolutionResult.rows.map((r) => ({ jour: r.jour, total: parseFloat(r.total) })),
+        evolutionEncaissements,
         repartitionMethode: methodeResult.rows.map((r) => ({ methode: r.methode, total: parseFloat(r.total) })),
+        // ✅ Chantier Dashboards financiers par type (2026-08-27) — même source unique que le
+        // Dashboard Fondateur (services/statistiquesInscriptions.service.js::getTotalInscrits).
+        totalInscrits,
         parCaisse: parCaisseResult.rows.map((r) => ({
           caisse: r.caisse,
           aujourd_hui: parseFloat(r.aujourd_hui),

@@ -155,6 +155,15 @@ async function getEvolutionInscriptionsQuotidienne(client, { siteId, ecoleId, an
 // Évolution quotidienne des recettes réellement encaissées (déjà la bonne source ailleurs dans
 // l'appli — reprise telle quelle, juste bornée à l'année académique complète). Une PEC
 // institutionnelle (paiement.montant = 0) n'inflate jamais un total ici.
+//
+// ✅ Chantier Dashboards financiers par type (2026-08-27) : ajout d'une ventilation par
+// `type_frais` (`parType`), calculée dans LA MÊME requête (un seul GROUP BY supplémentaire) pour
+// que `total` reste mathématiquement la somme de `parType` — jamais deux requêtes séparées qui
+// pourraient diverger. Convention `COALESCE(NULLIF(type_frais,''),'scolarite')` identique à
+// caisse.controller.js (buildRapportSession/getSupervisionCaisse), pas une nouvelle règle.
+// `{jour, total}` reste inchangé pour tout appelant existant (seul dashboardFondateur.controller.js
+// consomme cette fonction à ce jour — vérifié, aucun autre contrôleur ne l'importe) : `parType`
+// est un champ strictement additionnel.
 async function getEvolutionRecettesQuotidienne(client, { siteId, ecoleId, anneeAcademiqueId }) {
   const dateDebut = await getDateDebutAnnee(client, { siteId, anneeAcademiqueId });
   const ecoleCond = ecoleId !== null
@@ -164,15 +173,25 @@ async function getEvolutionRecettesQuotidienne(client, { siteId, ecoleId, anneeA
     ? [anneeAcademiqueId, siteId, dateDebut, ecoleId]
     : [anneeAcademiqueId, siteId, dateDebut];
   const r = await client.query(`
-    SELECT p.date_paiement AS jour, COALESCE(SUM(p.montant), 0) AS total
+    SELECT p.date_paiement AS jour,
+           COALESCE(NULLIF(p.type_frais, ''), 'scolarite') AS type_frais,
+           COALESCE(SUM(p.montant), 0) AS total
     FROM paiement p JOIN caisse c ON c.id = p.caisse_id
     WHERE p.annee_academique_id = $1 AND c.site_id = $2 AND p.date_paiement >= $3::date ${ecoleCond}
-    GROUP BY p.date_paiement ORDER BY p.date_paiement
+    GROUP BY p.date_paiement, COALESCE(NULLIF(p.type_frais, ''), 'scolarite')
+    ORDER BY p.date_paiement
   `, params);
-  return r.rows.map((row) => ({
-    jour: row.jour instanceof Date ? row.jour.toISOString().slice(0, 10) : String(row.jour),
-    total: parseFloat(row.total),
-  }));
+
+  const parJour = new Map();
+  for (const row of r.rows) {
+    const jour = row.jour instanceof Date ? row.jour.toISOString().slice(0, 10) : String(row.jour);
+    if (!parJour.has(jour)) parJour.set(jour, { jour, total: 0, parType: {} });
+    const entry = parJour.get(jour);
+    const montant = parseFloat(row.total);
+    entry.total += montant;
+    entry.parType[row.type_frais] = montant;
+  }
+  return Array.from(parJour.values()).sort((a, b) => a.jour.localeCompare(b.jour));
 }
 
 module.exports = {
