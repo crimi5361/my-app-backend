@@ -533,4 +533,73 @@ router.get('/vue/groupe/:groupeId/bulletins/semestre/:semestreId/compteurs', aut
 router.get('/stats/resultats', authenticateToken, pvController.getStatsResultats);
 router.get('/stats/recap', authenticateToken, pvController.getRecapFiliereNiveau);
 
+/**
+ * @swagger
+ * /api/PV/vue/groupe/{groupeId}/structure:
+ *   get:
+ *     summary: Résout la maquette (id) correspondant au parcours réel d'un groupe
+ *     description: |
+ *       ✅ Correctif 2026-08-28 ("maquette JOUR affichée pour un groupe SOIR") — source de vérité
+ *       backend pour "Nouvelle Note → Importation des notes → Sélection matière". Résout le
+ *       parcours réel du groupe (curcus d'un étudiant inscrit représentant), puis la maquette
+ *       correspondant EXACTEMENT à ce parcours. `maquette_id: null` (jamais un autre parcours) si
+ *       aucune maquette n'est configurée pour ce parcours précis.
+ *     tags: [PV & Bulletins - Vue]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: groupeId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: semestreId
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           enum: [1, 2]
+ *     responses:
+ *       200:
+ *         description: Résolution effectuée (maquette_id peut être null)
+ *       404:
+ *         description: Aucun étudiant inscrit dans ce groupe
+ *       500:
+ *         description: Erreur serveur
+ */
+router.get('/vue/groupe/:groupeId/structure', authenticateToken, pvController.getStructureGroupe);
+
+/**
+ * @swagger
+ * /api/PV/vue/classe/{classeId}/structure:
+ *   get:
+ *     summary: Résout la maquette (id) correspondant au parcours réel d'une classe
+ *     description: |
+ *       Même principe que /vue/groupe/{groupeId}/structure, résolu depuis une classe (utilisé par
+ *       "Gestion académique → Maquettes pédagogiques" / DetailClasse.tsx).
+ *     tags: [PV & Bulletins - Vue]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: classeId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: semestreId
+ *         required: false
+ *         schema:
+ *           type: integer
+ *           enum: [1, 2]
+ *     responses:
+ *       200:
+ *         description: Résolution effectuée (maquette_id peut être null)
+ *       404:
+ *         description: Aucun étudiant inscrit dans cette classe
+ *       500:
+ *         description: Erreur serveur
+ */
+router.get('/vue/classe/:classeId/structure', authenticateToken, pvController.getStructureClasse);
+
 module.exports = router;

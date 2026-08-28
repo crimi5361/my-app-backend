@@ -1111,88 +1111,55 @@ const _buildStatistiques = (totalEtudiants, admisCount, resultatsEtudiants, etud
  * dans l'en-tête du PV/bulletin multiple). NE PLUS UTILISER pour calculer les
  * résultats d'un étudiant — utiliser getStructureAcademiqueParFiliereNiveau à la
  * place, qui résout la maquette propre à CHAQUE étudiant.
- * ORDER BY ajouté pour rendre le choix du représentant déterministe (stable),
- * même si ce choix reste arbitraire pour un groupe mixte.
+ *
+ * ✅ CORRECTIF (2026-08-28) — bug "maquette JOUR affichée pour un groupe/parcours SOIR" :
+ * l'ancienne requête résolvait la maquette par un simple JOIN filiere_id+niveau_id SANS filtrer
+ * par parcours (curcus), avec `ORDER BY mq.id LIMIT 1` — pour une filière/niveau ayant une
+ * maquette JOUR (non vide) et aucune maquette SOIR, ce LIMIT 1 arbitraire choisissait la maquette
+ * JOUR même pour l'en-tête d'un groupe SOIR. Délègue désormais à
+ * getStructureAcademiqueParFiliereNiveau (source unique déjà correcte, utilisée par le calcul
+ * réel des résultats — aucune nouvelle logique créée), après avoir résolu le parcours réel du
+ * groupe depuis un étudiant représentant (curcus.type_parcours). Jamais de repli vers un autre
+ * parcours : une maquette absente/vide pour CE parcours précis renvoie désormais une structure
+ * vide (ues: []), cohérente avec le corps du document — pas plus de matières qu'avant pour les
+ * groupes déjà corrects (une seule maquette pour leur filière/niveau), structure vide (au lieu de
+ * la maquette d'un autre parcours) pour les groupes affectés par le bug.
  */
 const getStructureAcademiqueFonction = async (groupeId, semestreId = null) => {
-    const query = `
-        WITH etudiants_groupe AS (
-            SELECT id_filiere, niveau_id
-            FROM vue_position_academique
-            WHERE groupe_id = $1
-            AND standing = 'Inscrit'
-            ORDER BY id_filiere, niveau_id
-            LIMIT 1
-        ),
-        maquette_groupe AS (
-            SELECT mq.*
-            FROM maquette mq
-            JOIN etudiants_groupe eg ON (
-                mq.filiere_id = eg.id_filiere
-                AND mq.niveau_id = eg.niveau_id
-            )
-            ORDER BY mq.id
-            LIMIT 1
-        )
-        SELECT
-            mg.id AS maquette_id,
-            mg.parcour,
-            ue.id AS ue_id,
-            ue.libelle AS ue_libelle,
-            ue.semestre_id,
-            ue.code_ue,
-            ue.categorie_id,
-            mat.id AS matiere_id,
-            mat.nom AS matiere_nom,
-            mat.coefficient AS matiere_coef,
-            mat.volume_horaire_cm,
-            mat.volume_horaire_td,
-            mat.code_ecue,
-            mat.type_evaluation
-        FROM maquette_groupe mg
-        JOIN ue ON ue.maquette_id = mg.id
-        JOIN matiere mat ON mat.ue_id = ue.id
-        WHERE 1=1
-        ${semestreId ? 'AND ue.semestre_id = $2' : ''}
-        ORDER BY ue.semestre_id, ue.id, mat.id
-    `;
+    const representant = await _resoudreParcourGroupe(db, groupeId);
+    if (!representant) {
+        return { maquette_id: null, parcour: null, ues: [] };
+    }
+    return getStructureAcademiqueParFiliereNiveau(
+        representant.filiereId, representant.niveauId, semestreId, representant.parcourLibelle
+    );
+};
 
-    const params = [groupeId];
-    if (semestreId) params.push(semestreId);
-
-    const result = await db.query(query, params);
-
-    const structure = {
-        maquette_id: result.rows[0]?.maquette_id || null,
-        parcour: result.rows[0]?.parcour || null,
-        ues: []
+/**
+ * ✅ NOUVEAU (2026-08-28) — résout le parcours RÉEL d'un groupe à partir d'un étudiant
+ * représentant réellement inscrit (curcus.type_parcours), pour alimenter
+ * getStructureAcademiqueParFiliereNiveau sans jamais deviner le parcours par un texte
+ * (nom de groupe/classe). Centralisé ici pour être appelé IDENTIQUEMENT par
+ * getStructureAcademiqueFonction (en-tête PV) et exports.getStructureGroupe (résolution de
+ * maquette pour "Nouvelle Note → Importation des notes") — un seul point de résolution, jamais
+ * deux logiques divergentes. `null` si aucun étudiant inscrit dans ce groupe (impossible de
+ * déterminer le parcours).
+ */
+const _resoudreParcourGroupe = async (dbClient, groupeId) => {
+    const result = await dbClient.query(`
+        SELECT e.id_filiere, e.niveau_id, c.type_parcours AS parcour
+        FROM vue_position_academique e
+        LEFT JOIN curcus c ON c.id = e.curcus_id
+        WHERE e.groupe_id = $1 AND e.standing = 'Inscrit'
+        ORDER BY e.id_filiere, e.niveau_id
+        LIMIT 1
+    `, [groupeId]);
+    if (result.rows.length === 0) return null;
+    return {
+        filiereId: result.rows[0].id_filiere,
+        niveauId: result.rows[0].niveau_id,
+        parcourLibelle: result.rows[0].parcour,
     };
-
-    const uesMap = new Map();
-    result.rows.forEach(row => {
-        if (!uesMap.has(row.ue_id)) {
-            uesMap.set(row.ue_id, {
-                ue_id: row.ue_id,
-                libelle: row.ue_libelle,
-                code_ue: row.code_ue,
-                semestre_id: parseInt(row.semestre_id, 10),
-                categorie_id: row.categorie_id,
-                matieres: []
-            });
-        }
-        uesMap.get(row.ue_id).matieres.push({
-            matiere_id: row.matiere_id,
-            nom: row.matiere_nom,
-            code_ecue: row.code_ecue,
-            coefficient: parseFloat(row.matiere_coef) || 1,
-            volume_horaire_cm: row.volume_horaire_cm,
-            volume_horaire_td: row.volume_horaire_td,
-            type_evaluation: row.type_evaluation
-        });
-    });
-
-    structure.ues = Array.from(uesMap.values());
-    return structure;
 };
 
 /**
@@ -1304,6 +1271,98 @@ const getStructureAcademiqueComplete = async (filiereId, niveauId, parcourLibell
         parcour: structureS1.parcour || structureS2.parcour,
         ues: ues
     };
+};
+
+/**
+ * ✅ NOUVEAU (2026-08-28, correctif "maquette JOUR affichée pour un groupe SOIR") — endpoint
+ * backend faisant AUTORITÉ pour résoudre QUELLE maquette (id) correspond au parcours réel d'un
+ * GROUPE. Remplace la résolution ad hoc précédemment faite côté frontend (NouvelleNote.tsx,
+ * fonction fetchMaquetteForClasse) : correspondance filière/niveau + repli implicite sur le
+ * premier candidat trouvé (`maquettesCandidates[0]`) dès qu'un seul résultat existait — ce repli
+ * affichait silencieusement les matières de la maquette JOUR pour un groupe SOIR dès lors
+ * qu'aucune maquette SOIR n'existait pour ce couple filière/niveau. Ici : jamais de repli vers un
+ * autre parcours — `maquette_id: null` si aucune maquette ne correspond exactement au parcours
+ * résolu. Réutilise _resoudreParcourGroupe + getStructureAcademiqueParFiliereNiveau (source
+ * unique déjà correcte, utilisée par les bulletins/PV) — aucune nouvelle logique de résolution.
+ * Le frontend n'a plus ensuite qu'à appeler /api/detailaffichageMaquette/maquettes/:id/structured
+ * (inchangé) avec ce maquette_id pour afficher le détail.
+ */
+exports.getStructureGroupe = async (req, res) => {
+    try {
+        const { groupeId } = req.params;
+        const { semestreId } = req.query;
+
+        const representant = await _resoudreParcourGroupe(db, groupeId);
+        if (!representant) {
+            return res.status(404).json({
+                success: false,
+                message: 'Aucun étudiant inscrit dans ce groupe — impossible de résoudre la maquette.'
+            });
+        }
+
+        const structure = await getStructureAcademiqueParFiliereNiveau(
+            representant.filiereId, representant.niveauId,
+            semestreId ? parseInt(semestreId, 10) : null, representant.parcourLibelle
+        );
+
+        res.status(200).json({
+            success: true,
+            maquette_id: structure.maquette_id,
+            parcour: representant.parcourLibelle,
+            filiere_id: representant.filiereId,
+            niveau_id: representant.niveauId,
+            message: structure.maquette_id ? null : "Aucune maquette pédagogique n'est configurée pour ce parcours.",
+        });
+    } catch (error) {
+        console.error('Erreur getStructureGroupe:', error);
+        res.status(500).json({ success: false, message: 'Erreur serveur.' });
+    }
+};
+
+/**
+ * ✅ Même principe que exports.getStructureGroupe ci-dessus, mais résolu depuis une CLASSE —
+ * utilisé par l'écran "Gestion académique → Maquettes pédagogiques" (DetailClasse.tsx), qui
+ * navigue par classe et non par groupe. Un étudiant représentant est cherché parmi tous les
+ * groupes de cette classe (une classe peut avoir plusieurs groupes, tous du même parcours).
+ */
+exports.getStructureClasse = async (req, res) => {
+    try {
+        const { classeId } = req.params;
+        const { semestreId } = req.query;
+
+        const result = await db.query(`
+            SELECT e.id_filiere, e.niveau_id, c.type_parcours AS parcour
+            FROM vue_position_academique e
+            LEFT JOIN curcus c ON c.id = e.curcus_id
+            WHERE e.groupe_id IN (SELECT id FROM groupe WHERE classe_id = $1) AND e.standing = 'Inscrit'
+            ORDER BY e.id_filiere, e.niveau_id
+            LIMIT 1
+        `, [classeId]);
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Aucun étudiant inscrit dans cette classe — impossible de résoudre la maquette.'
+            });
+        }
+
+        const { id_filiere: filiereId, niveau_id: niveauId, parcour: parcourLibelle } = result.rows[0];
+        const structure = await getStructureAcademiqueParFiliereNiveau(
+            filiereId, niveauId, semestreId ? parseInt(semestreId, 10) : null, parcourLibelle
+        );
+
+        res.status(200).json({
+            success: true,
+            maquette_id: structure.maquette_id,
+            parcour: parcourLibelle,
+            filiere_id: filiereId,
+            niveau_id: niveauId,
+            message: structure.maquette_id ? null : "Aucune maquette pédagogique n'est configurée pour ce parcours.",
+        });
+    } catch (error) {
+        console.error('Erreur getStructureClasse:', error);
+        res.status(500).json({ success: false, message: 'Erreur serveur.' });
+    }
 };
 
 const calculerTotalCreditsMaquette = (ues) => {
