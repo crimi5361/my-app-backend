@@ -138,6 +138,36 @@ const trouverOrientationsFiliere = async (filiereActuelleId, niveauLibelle, anne
 // Exportée pour la même raison que getAnneeEnCoursPourSite ci-dessus.
 exports.trouverOrientationsFiliere = trouverOrientationsFiliere;
 
+// ✅ Chantier "Orientations de réinscription LICENCE 2 PRO → LICENCE 3 PRO" (2026-08-29) —
+// SOURCE UNIQUE des orientations explicitement configurées par l'administration (table
+// `orientation_reinscription`), pour les filières dont la LICENCE 3 PRO n'existe volontairement
+// pas sous le même nom (ex. AD → ADAF/MAM). Exportée pour être appelée À L'IDENTIQUE par
+// getDossierReinscription (agent, ci-dessous) ET publicReinscription.controller.js (portail) —
+// jamais deux moteurs de résolution différents.
+//
+// Distincte de `trouverOrientationsFiliere` ci-dessus (qui reste inchangée, toujours utilisée
+// pour le cas SEG/filiere_mere_id) : les deux sources sont simplement FUSIONNÉES par les
+// appelants, jamais l'une ne remplace l'autre — aucune régression sur SEG.
+//
+// Cloisonnement par année académique garanti PAR CONSTRUCTION : `niveauOrigineId` désigne un
+// niveau.id précis (donc une seule anneeacademique_id) — aucune colonne année supplémentaire
+// nécessaire, aucune fuite possible vers une autre année.
+const resoudreOrientationsNiveau = async (niveauOrigineId) => {
+  if (!niveauOrigineId) return [];
+  const result = await db.query(
+    `SELECT n.id AS niveau_id, n.libelle AS niveau_libelle, n.filiere_id,
+            f.nom AS filiere_nom, f.sigle AS filiere_sigle
+     FROM orientation_reinscription orr
+     JOIN niveau n ON n.id = orr.niveau_destination_id
+     JOIN filiere f ON f.id = n.filiere_id
+     WHERE orr.niveau_origine_id = $1
+     ORDER BY f.nom`,
+    [niveauOrigineId]
+  );
+  return result.rows;
+};
+exports.resoudreOrientationsNiveau = resoudreOrientationsNiveau;
+
 // ✅ Libellé du niveau "suivant" générique, déduit du libellé actuel — utilisé UNIQUEMENT comme
 // filet de secours pour la recherche d'orientations quand niveau.niveau_suivant_id n'est pas
 // configuré (cas des filières génériques qui se scindent en options : leur propre "LICENCE 3"
@@ -154,6 +184,11 @@ const LIBELLE_NIVEAU_SUIVANT = {
 
 const libelleNiveauSuivantGenerique = (libelleActuel) =>
   LIBELLE_NIVEAU_SUIVANT[(libelleActuel || '').trim().toUpperCase()] || null;
+// ✅ Correctif portail public (2026-08-29) : exportée pour être réutilisée telle quelle par
+// publicReinscription.controller.js — jusqu'ici privée à ce module, ce qui empêchait le portail
+// de trouver les orientations d'une filière générique (ex. SEG → SEG(ECO)/SEG(GES)) quand
+// niveau_suivant_id est légitimement absent. Comportement/table inchangés, uniquement exportée.
+exports.libelleNiveauSuivantGenerique = libelleNiveauSuivantGenerique;
 
 // ✅ Parcours JOUR/SOIR : requiertChoixParcours est désormais partagée avec l'admission
 // (services/parcoursProfessionnel.service.js), pour que le même niveau académique déclenche
@@ -313,6 +348,24 @@ exports.getDossierReinscription = async (req, res) => {
       const orientations = await trouverOrientationsFiliere(
         etudiant.id_filiere, libelleCibleOrientation, anneeCible.id, etudiant.site_id
       );
+
+      // ✅ Chantier "Orientations de réinscription" (2026-08-29) : quand il n'existe AUCUNE
+      // progression directe (niveau_suivant_id), on complète avec les orientations
+      // EXPLICITEMENT configurées par l'administration (orientation_reinscription) — ex. AD
+      // LICENCE 2 PRO → ADAF/MAM LICENCE 3 PRO. Fusion, jamais un remplacement : ne casse jamais
+      // le cas SEG (filiere_mere_id, ci-dessus), qui continue de fonctionner à l'identique.
+      // Dédupliqué par niveau_id — garde défensive, pas de duplicata attendu en pratique.
+      if (!niveauPropose) {
+        const orientationsExplicites = await resoudreOrientationsNiveau(etudiant.niveau_id);
+        const dejaVus = new Set(orientations.map((o) => o.niveau_id));
+        for (const o of orientationsExplicites) {
+          if (!dejaVus.has(o.niveau_id)) {
+            orientations.push({ filiere_id: o.filiere_id, nom: o.filiere_nom, sigle: o.filiere_sigle, niveau_id: o.niveau_id });
+            dejaVus.add(o.niveau_id);
+          }
+        }
+      }
+
       orientationsDisponibles = await Promise.all(orientations.map(async (o) => ({
         ...o,
         tarif: await TarifController.calculerMontantScolarite(o.niveau_id, etudiant.statut_scolaire, 'reinscription')

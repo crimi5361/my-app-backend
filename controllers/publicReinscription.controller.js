@@ -8,7 +8,18 @@ const {
   evaluerEligibiliteReinscription,
   determinerChangementDeCycle,
   afficherFicheReinscription,
-  IDENTITE_FIELDS
+  IDENTITE_FIELDS,
+  // ✅ Correctif portail public (2026-08-29) : jusqu'ici privée à reinscription.controller.js
+  // (déclarée `const`, non exportée) — le portail ne pouvait donc jamais chercher d'orientations
+  // pour une filière générique dont la propre "LICENCE 3" n'existe pas en tant que ligne niveau
+  // (ex. SEG → SEG(ECO)/SEG(GES)), alors que l'espace agent le fait déjà. Réutilisée telle quelle,
+  // aucune nouvelle règle.
+  libelleNiveauSuivantGenerique,
+  // ✅ Chantier "Orientations de réinscription" (2026-08-29) — source UNIQUE des orientations
+  // explicitement configurées par l'administration (table orientation_reinscription). Réutilisée
+  // À L'IDENTIQUE de l'espace agent (reinscription.controller.js::getDossierReinscription) —
+  // jamais de requête SQL dupliquée ici.
+  resoudreOrientationsNiveau,
 } = require('./reinscription.controller');
 const { requiertChoixParcours } = require('../services/parcoursProfessionnel.service');
 const { determinerOptionsVersements } = require('../services/echeancier.service');
@@ -136,54 +147,97 @@ exports.getSituationReinscriptionPublic = async (req, res) => {
       niveauProposeRow = null;
     }
 
+    // ✅ Correctif portail public (2026-08-29) — réutilise EXACTEMENT le même mécanisme que
+    // reinscription.controller.js::getDossierReinscription (espace agent) : quand
+    // niveau_suivant_id ne permet pas de résoudre directement niveauProposeRow (filières
+    // génériques qui se scindent en options, ex. SEG → SEG(ECO)/SEG(GES) — leur propre
+    // "LICENCE 3" n'existe légitimement pas en tant que ligne niveau, seules les options en ont
+    // une), on déduit tout de même le libellé cible générique via libelleNiveauSuivantGenerique
+    // pour aller chercher les orientations RÉELLEMENT configurées (trouverOrientationsFiliere,
+    // filiere_mere_id ou correspondance par nom — inchangé, aucune nouvelle règle). N'invente
+    // jamais de niveau : si aucune orientation n'est trouvée non plus, la progression reste
+    // strictement absente, exactement comme avant ce correctif.
+    const libelleCibleOrientation = niveauProposeRow?.libelle
+      || (financierConforme && academiqueValide ? libelleNiveauSuivantGenerique(etudiant.niveau_libelle) : null);
+
     let progression = null;
-    if (niveauProposeRow) {
+    if (libelleCibleOrientation) {
       let orientations = [];
       if (anneeCible) {
         orientations = await trouverOrientationsFiliere(
-          etudiant.id_filiere, niveauProposeRow.libelle, anneeCible.id, etudiant.site_id
+          etudiant.id_filiere, libelleCibleOrientation, anneeCible.id, etudiant.site_id
         );
       }
-      // ✅ Statut/tarif calculés avec le même moteur que la soumission (determinerChangementDeCycle)
-      // — jamais etudiant.statut_scolaire brut : un changement de cycle (ex. Licence 3 → Master 1)
-      // doit déjà afficher le tarif "Non affecté" ici, avant même que l'étudiant ne soumette.
-      const orientationsResolues = await Promise.all(orientations.map(async (o) => {
-        const changementCycleOrientation = determinerChangementDeCycle({
-          niveauActuelLibelle: etudiant.niveau_libelle, niveauRetenuLibelle: niveauProposeRow.libelle,
-          filiereActuelleId: etudiant.id_filiere, filiereRetenueId: o.filiere_id,
-          orientationsValides: orientations
-        });
-        const statutOrientation = changementCycleOrientation ? 'Non affecté' : etudiant.statut_scolaire;
-        const tarifOrientation = await calculerMontantScolarite(o.niveau_id, statutOrientation, 'reinscription');
-        return {
-          niveau_id: o.niveau_id,
-          filiere_id: o.filiere_id,
-          niveau_libelle: niveauProposeRow.libelle,
-          filiere_nom: o.nom,
-          parcours_requis: requiertChoixParcours(etudiant.type_filiere_libelle, niveauProposeRow.libelle),
-          tarif: tarifOrientation,
-          versements_options: determinerOptionsVersements(tarifOrientation?.montant)
-        };
-      }));
 
-      const filiereProgressionId = niveauProposeRow.filiere_id ?? etudiant.id_filiere;
-      const changementCycleProgression = determinerChangementDeCycle({
-        niveauActuelLibelle: etudiant.niveau_libelle, niveauRetenuLibelle: niveauProposeRow.libelle,
-        filiereActuelleId: etudiant.id_filiere, filiereRetenueId: filiereProgressionId,
-        orientationsValides: orientations
-      });
-      const statutProgression = changementCycleProgression ? 'Non affecté' : etudiant.statut_scolaire;
-      const tarifProgression = await calculerMontantScolarite(niveauProposeRow.id, statutProgression, 'reinscription');
-      progression = {
-        niveau_id: niveauProposeRow.id,
-        filiere_id: filiereProgressionId,
-        niveau_libelle: niveauProposeRow.libelle,
-        filiere_nom: etudiant.filiere_nom,
-        parcours_requis: requiertChoixParcours(etudiant.type_filiere_libelle, niveauProposeRow.libelle),
-        tarif: tarifProgression,
-        versements_options: determinerOptionsVersements(tarifProgression?.montant),
-        orientations: orientationsResolues
-      };
+      // ✅ Chantier "Orientations de réinscription" (2026-08-29) : quand il n'existe AUCUNE
+      // progression directe (niveau_suivant_id), on complète avec les orientations EXPLICITEMENT
+      // configurées par l'administration (orientation_reinscription) — même fonction, même
+      // résultat que l'espace agent (reinscription.controller.js::getDossierReinscription).
+      // Fusion, jamais un remplacement : ne casse jamais le cas SEG (filiere_mere_id, ci-dessus).
+      if (!niveauProposeRow) {
+        const orientationsExplicites = await resoudreOrientationsNiveau(etudiant.niveau_id);
+        const dejaVus = new Set(orientations.map((o) => o.niveau_id));
+        for (const o of orientationsExplicites) {
+          if (!dejaVus.has(o.niveau_id)) {
+            orientations.push({ filiere_id: o.filiere_id, nom: o.filiere_nom, sigle: o.filiere_sigle, niveau_id: o.niveau_id });
+            dejaVus.add(o.niveau_id);
+          }
+        }
+      }
+
+      // Ni niveau direct, ni orientation trouvée : aucune progression à proposer (comportement
+      // identique à avant ce correctif pour toutes les filières déjà correctement configurées).
+      if (niveauProposeRow || orientations.length > 0) {
+        // ✅ Statut/tarif calculés avec le même moteur que la soumission (determinerChangementDeCycle)
+        // — jamais etudiant.statut_scolaire brut : un changement de cycle (ex. Licence 3 → Master 1)
+        // doit déjà afficher le tarif "Non affecté" ici, avant même que l'étudiant ne soumette.
+        const orientationsResolues = await Promise.all(orientations.map(async (o) => {
+          const changementCycleOrientation = determinerChangementDeCycle({
+            niveauActuelLibelle: etudiant.niveau_libelle, niveauRetenuLibelle: libelleCibleOrientation,
+            filiereActuelleId: etudiant.id_filiere, filiereRetenueId: o.filiere_id,
+            orientationsValides: orientations
+          });
+          const statutOrientation = changementCycleOrientation ? 'Non affecté' : etudiant.statut_scolaire;
+          const tarifOrientation = await calculerMontantScolarite(o.niveau_id, statutOrientation, 'reinscription');
+          return {
+            niveau_id: o.niveau_id,
+            filiere_id: o.filiere_id,
+            niveau_libelle: libelleCibleOrientation,
+            filiere_nom: o.nom,
+            parcours_requis: requiertChoixParcours(etudiant.type_filiere_libelle, libelleCibleOrientation),
+            tarif: tarifOrientation,
+            versements_options: determinerOptionsVersements(tarifOrientation?.montant)
+          };
+        }));
+
+        // ✅ Cas "niveau direct" (RITY, RHCOM s'il était configuré, etc.) : comportement
+        // STRICTEMENT inchangé par rapport à avant ce correctif.
+        // ✅ Cas "orientations seulement, aucun niveau propre" (SEG) : même repli que l'agent
+        // (reinscription.controller.js:326-328) — niveau_id/filiere_id/tarif null, le vrai choix
+        // se fait via progression.orientations (déjà géré par le frontend portail existant,
+        // StepSituation.tsx, sans aucune modification nécessaire).
+        let tarifProgression = null;
+        const filiereProgressionId = niveauProposeRow ? (niveauProposeRow.filiere_id ?? etudiant.id_filiere) : null;
+        if (niveauProposeRow) {
+          const changementCycleProgression = determinerChangementDeCycle({
+            niveauActuelLibelle: etudiant.niveau_libelle, niveauRetenuLibelle: niveauProposeRow.libelle,
+            filiereActuelleId: etudiant.id_filiere, filiereRetenueId: filiereProgressionId,
+            orientationsValides: orientations
+          });
+          const statutProgression = changementCycleProgression ? 'Non affecté' : etudiant.statut_scolaire;
+          tarifProgression = await calculerMontantScolarite(niveauProposeRow.id, statutProgression, 'reinscription');
+        }
+        progression = {
+          niveau_id: niveauProposeRow?.id ?? null,
+          filiere_id: filiereProgressionId,
+          niveau_libelle: libelleCibleOrientation,
+          filiere_nom: niveauProposeRow ? etudiant.filiere_nom : null,
+          parcours_requis: requiertChoixParcours(etudiant.type_filiere_libelle, libelleCibleOrientation),
+          tarif: tarifProgression,
+          versements_options: determinerOptionsVersements(tarifProgression?.montant),
+          orientations: orientationsResolues
+        };
+      }
     }
 
     // ✅ Cas particulier BTS 2 → Licence 3 PRO (portail Web uniquement) : uniquement les filières

@@ -124,6 +124,7 @@ const apiRoutes = [
   { path: '/api/etudiants',         route: require('./routes/etudiant.routes') },
   { path: '/api/operations-admin',  route: require('./routes/operationsAdmin.routes') },
   { path: '/api/reinscription',     route: require('./routes/reinscription.routes') },
+  { path: '/api/orientations-reinscription', route: require('./routes/orientationReinscription.routes') },
   { path: '/api/verification',      route: require('./routes/verification.routes') },
   { path: '/api/caisse',            route: require('./routes/caisse.routes') },
   { path: '/api/effectifs',         route: require('./routes/effectifs.routes') },
