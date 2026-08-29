@@ -1686,7 +1686,19 @@ exports.getRecuData = async (req, res) => {
       -- classeGroupe.service.js utilise pour trouver/créer la classe).
       LEFT JOIN classe c ON c.filiere_id = e.id_filiere AND c.niveau_id = e.niveau_id
         AND c.annee_academique_id = e.annee_academique_id AND c.curcus_id IS NOT DISTINCT FROM e.curcus_id
-      LEFT JOIN paiement p ON p.etudiant_id = e.id AND p.annee_academique_id = COALESCE($2::int, e.annee_academique_id)
+      -- Chantier reçu de scolarité — filtrage par type_frais (2026-08-29) : un reçu de scolarité
+      -- ne doit JAMAIS mélanger des paiements d'un autre type (kit_ecole, accessoire_supplementaire,
+      -- pec_institutionnelle, etc. — cas réel constaté : un paiement accessoire_supplementaire de
+      -- 15 000 FCFA apparaissait sur le reçu d'une étudiante alors qu'il ne concernait pas sa
+      -- scolarité). Convention DÉJÀ établie ailleurs dans ce projet (caisse.controller.js,
+      -- dashboardComptabilite.controller.js, depense.controller.js, sessionCaisse.service.js,
+      -- statistiquesInscriptions.service.js — tous via COALESCE(NULLIF(type_frais,''),'scolarite'))
+      -- : type_frais NULL ou vide = paiement de scolarité classique. Réutilisée telle quelle,
+      -- aucune nouvelle logique de rattachement inventée. Le cloisonnement par année académique
+      -- (p.annee_academique_id) reste strictement inchangé.
+      LEFT JOIN paiement p ON p.etudiant_id = e.id
+        AND p.annee_academique_id = COALESCE($2::int, e.annee_academique_id)
+        AND (p.type_frais IS NULL OR p.type_frais = '')
       LEFT JOIN recu r ON p.recu_id = r.id
       -- Chantier Kit étudiant, Phase 1 (2026-08-21) : scopé sur la MÊME année que le paiement
       -- ci-dessus (explicite via $2, sinon l'année courante de l'étudiant) — un étudiant peut

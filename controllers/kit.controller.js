@@ -6,7 +6,7 @@
 // logique de paiement.
 const db = require('../config/db.config');
 const { isKitSuspenduPourAnnee } = require('../services/kitCampagne.service');
-const { estPremiereAnnee, NIVEAUX_PREMIERE_ANNEE, KitEligibiliteError } = require('../services/kitEligibilite.service');
+const { validerNiveauExiste, KitEligibiliteError } = require('../services/kitEligibilite.service');
 const { getSessionOuverte } = require('../services/sessionCaisse.service');
 const { enregistrerPaiementEtRecu } = require('../services/paiementEcriture.service');
 const { METHODES_VALIDES_NOUVEAU_PAIEMENT } = require('../services/methodesPaiement.service');
@@ -77,10 +77,11 @@ exports.getKitByEtudiant = async (req, res) => {
 
 // État COMPLET et dérivé du Kit pour un étudiant, sur SON année académique courante — un seul
 // appel pour que le frontend sache exactement quoi afficher :
-//   - concerne=false (première année) → aucune section Kit affichée, jamais d'appel à /traiter.
 //   - suspendu=true → module suspendu pour cette campagne (KIT_ANNEES_SUSPENDUES), rien affiché.
 //   - statut='NON_TRAITE' (dérivé, aucune ligne kit) → les 2 choix proposés (apporté / payé).
 //   - statut='KIT_APPORTE'|'KIT_PAYE' → déjà traité, affichage en lecture seule.
+// Plus d'exemption 1ère année (retirée le 2026-08-29, décision validée) : un étudiant de LICENCE 1
+// / BTS 1 / LICENCE 1 PRO est désormais traité exactement comme les autres niveaux éligibles.
 exports.getEtatKitEtudiant = async (req, res) => {
   try {
     const { id } = req.params;
@@ -97,12 +98,12 @@ exports.getEtatKitEtudiant = async (req, res) => {
     if (!anneeAcademiqueId) {
       return res.status(200).json({
         success: true,
-        data: { concerne: false, suspendu: false, statut: null, annee_academique_id: null, kit: null },
+        data: { suspendu: false, statut: null, annee_academique_id: null, kit: null },
       });
     }
 
-    const [premiereAnnee, suspendu, kitResult] = await Promise.all([
-      estPremiereAnnee(db, etudiant.niveau_id),
+    const [, suspendu, kitResult] = await Promise.all([
+      validerNiveauExiste(db, etudiant.niveau_id),
       isKitSuspenduPourAnnee(db, anneeAcademiqueId),
       db.query(
         `SELECT id, statut, paiement_id, montant, traite_par, date_enregistrement
@@ -111,13 +112,12 @@ exports.getEtatKitEtudiant = async (req, res) => {
       ),
     ]);
 
-    const concerne = !premiereAnnee;
     const kitRow = kitResult.rows[0] || null;
-    const statut = (concerne && !suspendu) ? (kitRow?.statut || 'NON_TRAITE') : null;
+    const statut = !suspendu ? (kitRow?.statut || 'NON_TRAITE') : null;
 
     res.status(200).json({
       success: true,
-      data: { concerne, suspendu, statut, annee_academique_id: anneeAcademiqueId, kit: kitRow },
+      data: { suspendu, statut, annee_academique_id: anneeAcademiqueId, kit: kitRow },
     });
   } catch (error) {
     if (error instanceof KitEligibiliteError) {
@@ -137,9 +137,8 @@ exports.getEtatKitEtudiant = async (req, res) => {
 // getEcoleScopeFromUser) : aucune deuxième logique de scoping créée. N'exige jamais au moins
 // 2 caractères pour éviter de charger tous les étudiants d'un site (§2 de la demande).
 //
-// Le statut Kit par ligne est dérivé avec la MÊME constante NIVEAUX_PREMIERE_ANNEE que
-// estPremiereAnnee (services/kitEligibilite.service.js) — jamais une deuxième liste de niveaux
-// exemptés récrite ici. La ligne kit est jointe avec le même filtre
+// Le statut Kit par ligne n'exclut plus la 1ère année (exemption retirée le 2026-08-29, décision
+// validée) — tout étudiant 'Inscrit' est concerné. La ligne kit est jointe avec le même filtre
 // k.annee_academique_id = e.annee_academique_id que le correctif appliqué à
 // etudiant.controller.js (getEtudiantById/getRecuData) en Phase 1 : un étudiant a désormais une
 // ligne kit par année, jamais une jointure non scopée.
@@ -199,9 +198,8 @@ exports.rechercherEtudiantsKit = async (req, res) => {
 
     const suspendu = await isKitSuspenduPourAnnee(db, anneeAcademiqueId);
     const data = result.rows.map((row) => {
-      const concerne = !NIVEAUX_PREMIERE_ANNEE.includes((row.niveau || '').trim().toUpperCase());
-      const statut = (concerne && !suspendu) ? (row.kit_statut || 'NON_TRAITE') : null;
-      return { ...row, concerne, suspendu, statut };
+      const statut = !suspendu ? (row.kit_statut || 'NON_TRAITE') : null;
+      return { ...row, suspendu, statut };
     });
 
     res.status(200).json({ success: true, data, annee_academique_id: anneeAcademiqueId });
@@ -254,14 +252,9 @@ exports.traiterKit = async (req, res) => {
       return res.status(400).json({ success: false, message: "Cet étudiant n'est rattaché à aucune année académique." });
     }
 
-    const premiereAnnee = await estPremiereAnnee(client, etudiant.niveau_id);
-    if (premiereAnnee) {
-      await client.query('ROLLBACK');
-      return res.status(400).json({
-        success: false,
-        message: "Cet étudiant n'est pas concerné par l'obligation Kit (première année : LICENCE 1 / BTS 1 / LICENCE 1 PRO).",
-      });
-    }
+    // Plus d'exemption 1ère année (retirée le 2026-08-29, décision validée) — seule la validation
+    // d'existence du niveau (indépendante de cette règle métier) est conservée.
+    await validerNiveauExiste(client, etudiant.niveau_id);
 
     const suspendu = await isKitSuspenduPourAnnee(client, anneeAcademiqueId);
     if (suspendu) {

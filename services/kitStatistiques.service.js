@@ -1,11 +1,13 @@
-// Chantier Kit étudiant — Phase statistiques (2026-08-21). Service centralisé de comptage, unique
-// source utilisée par les 4 dashboards (Fondateur, Administrateur, Comptabilité, Caisse) — aucune
-// deuxième logique de calcul écrite dans un contrôleur. Ne modifie RIEN du fonctionnement du
-// module Kit lui-même (paiement, régularisation) : lecture seule.
+// Chantier Kit étudiant — Phase statistiques (2026-08-21), puis retrait de l'exemption 1ère année
+// (2026-08-29). Service centralisé de comptage, unique source utilisée par les 4 dashboards
+// (Fondateur, Administrateur, Comptabilité, Caisse) — aucune deuxième logique de calcul écrite
+// dans un contrôleur. Ne modifie RIEN du fonctionnement du module Kit lui-même (paiement,
+// régularisation) : lecture seule.
 //
-// Éligibilité dérivée avec la MÊME constante NIVEAUX_PREMIERE_ANNEE que
-// services/kitEligibilite.service.js (estPremiereAnnee) — jamais une deuxième liste de niveaux
-// exemptés récrite ici, jamais niveau.ordre (confirmé non fiable, cf. audit Phase 1).
+// Décision validée le 2026-08-29 : il n'existe plus d'exemption automatique du Kit pour la 1ère
+// année — tout étudiant 'Inscrit' est désormais "éligible", quel que soit son niveau. La catégorie
+// "exemptes" et le filtre par NIVEAUX_PREMIERE_ANNEE (kitEligibilite.service.js) ont donc été
+// retirés d'ici ; plus besoin de JOIN niveau, ce comptage ne dépend plus du libellé du niveau.
 //
 // Convention de comptage "payés" : identique à celle déjà établie en Phase 1 dans
 // caisse.controller.js::getDashboardStats et StatDashboard.controller.js::getDashboardStats —
@@ -15,29 +17,26 @@
 // ancienne ligne (elle n'a pas de paiement Caisse réel derrière) — uniquement de
 // paiement.type_frais = 'kit_ecole' via kit.paiement_id, conformément à la demande explicite
 // ("Ce montant doit provenir exclusivement des vrais paiements Caisse").
-const { NIVEAUX_PREMIERE_ANNEE } = require('./kitEligibilite.service');
 
 async function getStatistiquesKit(executor, { siteId, anneeAcademiqueId, ecoleId = null }) {
   if (!siteId) throw new Error('siteId requis.');
   if (!anneeAcademiqueId) throw new Error('anneeAcademiqueId requis.');
 
   const ecoleCondCompte = ecoleId !== null
-    ? 'AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $4)'
+    ? 'AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $3)'
     : '';
   const paramsCompte = ecoleId !== null
-    ? [siteId, anneeAcademiqueId, NIVEAUX_PREMIERE_ANNEE, ecoleId]
-    : [siteId, anneeAcademiqueId, NIVEAUX_PREMIERE_ANNEE];
+    ? [siteId, anneeAcademiqueId, ecoleId]
+    : [siteId, anneeAcademiqueId];
 
   // Seuls les étudiants réellement inscrits (standing = 'Inscrit') sont comptés — jamais les
   // dossiers en attente (§4 de la demande).
   const compteResult = await executor.query(
     `SELECT
-        COUNT(*) FILTER (WHERE UPPER(TRIM(n.libelle)) <> ALL($3::text[])) AS eligibles,
-        COUNT(*) FILTER (WHERE UPPER(TRIM(n.libelle)) = ANY($3::text[])) AS exemptes,
-        COUNT(*) FILTER (WHERE UPPER(TRIM(n.libelle)) <> ALL($3::text[]) AND k.statut = 'KIT_APPORTE') AS apportes,
-        COUNT(*) FILTER (WHERE UPPER(TRIM(n.libelle)) <> ALL($3::text[]) AND (k.statut = 'KIT_PAYE' OR (k.deposer = true AND k.statut IS NULL))) AS payes
+        COUNT(*) AS eligibles,
+        COUNT(*) FILTER (WHERE k.statut = 'KIT_APPORTE') AS apportes,
+        COUNT(*) FILTER (WHERE k.statut = 'KIT_PAYE' OR (k.deposer = true AND k.statut IS NULL)) AS payes
      FROM etudiant e
-     JOIN niveau n ON n.id = e.niveau_id
      JOIN filiere f ON f.id = e.id_filiere
      LEFT JOIN kit k ON k.etudiant_id = e.id AND k.annee_academique_id = e.annee_academique_id
      WHERE e.site_id = $1 AND e.annee_academique_id = $2 AND e.standing = 'Inscrit'
@@ -47,7 +46,6 @@ async function getStatistiquesKit(executor, { siteId, anneeAcademiqueId, ecoleId
 
   const row = compteResult.rows[0];
   const eligibles = parseInt(row.eligibles, 10);
-  const exemptes = parseInt(row.exemptes, 10);
   const apportes = parseInt(row.apportes, 10);
   const payes = parseInt(row.payes, 10);
 
@@ -70,7 +68,6 @@ async function getStatistiquesKit(executor, { siteId, anneeAcademiqueId, ecoleId
 
   return {
     eligibles,
-    exemptes,
     apportes,
     payes,
     // Cohérence structurelle (§1 de la demande) : dérivé, jamais requêté séparément — garantie par
