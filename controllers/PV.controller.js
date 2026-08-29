@@ -1136,24 +1136,51 @@ const getStructureAcademiqueFonction = async (groupeId, semestreId = null) => {
 };
 
 /**
- * ✅ NOUVEAU (2026-08-28) — résout le parcours RÉEL d'un groupe à partir d'un étudiant
- * représentant réellement inscrit (curcus.type_parcours), pour alimenter
- * getStructureAcademiqueParFiliereNiveau sans jamais deviner le parcours par un texte
- * (nom de groupe/classe). Centralisé ici pour être appelé IDENTIQUEMENT par
- * getStructureAcademiqueFonction (en-tête PV) et exports.getStructureGroupe (résolution de
- * maquette pour "Nouvelle Note → Importation des notes") — un seul point de résolution, jamais
- * deux logiques divergentes. `null` si aucun étudiant inscrit dans ce groupe (impossible de
- * déterminer le parcours).
+ * ✅ NOUVEAU (2026-08-28), CORRIGÉ (2026-08-30) — résout le parcours RÉEL d'un groupe OU d'une
+ * classe à partir de SES étudiants réellement inscrits (curcus.type_parcours), pour alimenter
+ * getStructureAcademiqueParFiliereNiveau sans jamais deviner le parcours par un texte (nom de
+ * groupe/classe). Centralisé ici pour être appelé IDENTIQUEMENT par getStructureAcademiqueFonction
+ * (en-tête PV), exports.getStructureGroupe ("Nouvelle Note → Importation des notes") ET
+ * exports.getStructureClasse ("Gestion des maquettes" / DetailClasse.tsx, qui appelait auparavant
+ * une copie de cette même requête, désormais retirée) — un seul point de résolution, jamais deux
+ * logiques divergentes.
+ *
+ * ✅ CORRECTIF (2026-08-30) — bug réel "GBAT LICENCE 3 PRO SOIR affiche la maquette JOUR" : la
+ * version précédente ne triait QUE par (id_filiere, niveau_id) — deux colonnes identiques pour
+ * TOUS les étudiants d'un même groupe/classe par construction — ce qui revenait en pratique à un
+ * LIMIT 1 sans aucun tri déterministe : l'étudiant "représentant" choisi dépendait de l'ordre de
+ * lecture disque de Postgres, pas d'un critère métier. Pour le groupe 163 (GBAT L3 PRO SOIR,
+ * 2 étudiants curcus "Professionnel jour" / 17 "Professionnel soir" — placement individuel
+ * incohérent avec leur groupe, cf. rapport), ce tirage arbitraire retombait sur un des 2 étudiants
+ * "jour" et résolvait donc la maquette JOUR pour tout le groupe SOIR.
+ *
+ * Corrigé en un VOTE MAJORITAIRE parmi les étudiants réellement inscrits dans le groupe/la classe :
+ * le parcours retenu est celui du plus grand nombre d'étudiants 'Inscrit' à cet instant — une
+ * minorité d'étudiants mal placés (donnée à corriger séparément, jamais ici) ne peut plus, à elle
+ * seule, faire basculer la maquette résolue pour tout le groupe. Aucun repli vers un autre
+ * parcours, une autre année ou une autre filière : si aucun étudiant n'est inscrit, `null`.
  */
-const _resoudreParcourGroupe = async (dbClient, groupeId) => {
+const _resoudreParcourGroupeOuClasse = async (dbClient, { groupeId = null, classeId = null } = {}) => {
+    const params = [];
+    let whereGroupe;
+    if (groupeId) {
+        params.push(groupeId);
+        whereGroupe = `e.groupe_id = $${params.length}`;
+    } else if (classeId) {
+        params.push(classeId);
+        whereGroupe = `e.groupe_id IN (SELECT id FROM groupe WHERE classe_id = $${params.length})`;
+    } else {
+        return null;
+    }
     const result = await dbClient.query(`
-        SELECT e.id_filiere, e.niveau_id, c.type_parcours AS parcour
+        SELECT e.id_filiere, e.niveau_id, c.type_parcours AS parcour, COUNT(*) AS nb_etudiants
         FROM vue_position_academique e
         LEFT JOIN curcus c ON c.id = e.curcus_id
-        WHERE e.groupe_id = $1 AND e.standing = 'Inscrit'
-        ORDER BY e.id_filiere, e.niveau_id
+        WHERE ${whereGroupe} AND e.standing = 'Inscrit'
+        GROUP BY e.id_filiere, e.niveau_id, c.type_parcours
+        ORDER BY nb_etudiants DESC, c.type_parcours ASC NULLS LAST
         LIMIT 1
-    `, [groupeId]);
+    `, params);
     if (result.rows.length === 0) return null;
     return {
         filiereId: result.rows[0].id_filiere,
@@ -1161,6 +1188,11 @@ const _resoudreParcourGroupe = async (dbClient, groupeId) => {
         parcourLibelle: result.rows[0].parcour,
     };
 };
+
+// Conservé sous son nom d'origine — appelé par getStructureAcademiqueFonction et
+// exports.getStructureGroupe, inchangé pour ces deux appelants (même signature, même résultat).
+const _resoudreParcourGroupe = async (dbClient, groupeId) =>
+    _resoudreParcourGroupeOuClasse(dbClient, { groupeId });
 
 /**
  * ✅ RÉSOLUTION CORRECTE DE LA MAQUETTE
@@ -1323,30 +1355,24 @@ exports.getStructureGroupe = async (req, res) => {
  * ✅ Même principe que exports.getStructureGroupe ci-dessus, mais résolu depuis une CLASSE —
  * utilisé par l'écran "Gestion académique → Maquettes pédagogiques" (DetailClasse.tsx), qui
  * navigue par classe et non par groupe. Un étudiant représentant est cherché parmi tous les
- * groupes de cette classe (une classe peut avoir plusieurs groupes, tous du même parcours).
+ * groupes de cette classe (une classe peut avoir plusieurs groupes, tous censés être du même
+ * parcours). Réutilise désormais _resoudreParcourGroupeOuClasse (2026-08-30) — plus de requête
+ * dupliquée : même vote majoritaire, même robustesse qu'exports.getStructureGroupe.
  */
 exports.getStructureClasse = async (req, res) => {
     try {
         const { classeId } = req.params;
         const { semestreId } = req.query;
 
-        const result = await db.query(`
-            SELECT e.id_filiere, e.niveau_id, c.type_parcours AS parcour
-            FROM vue_position_academique e
-            LEFT JOIN curcus c ON c.id = e.curcus_id
-            WHERE e.groupe_id IN (SELECT id FROM groupe WHERE classe_id = $1) AND e.standing = 'Inscrit'
-            ORDER BY e.id_filiere, e.niveau_id
-            LIMIT 1
-        `, [classeId]);
-
-        if (result.rows.length === 0) {
+        const representant = await _resoudreParcourGroupeOuClasse(db, { classeId });
+        if (!representant) {
             return res.status(404).json({
                 success: false,
                 message: 'Aucun étudiant inscrit dans cette classe — impossible de résoudre la maquette.'
             });
         }
 
-        const { id_filiere: filiereId, niveau_id: niveauId, parcour: parcourLibelle } = result.rows[0];
+        const { filiereId, niveauId, parcourLibelle } = representant;
         const structure = await getStructureAcademiqueParFiliereNiveau(
             filiereId, niveauId, semestreId ? parseInt(semestreId, 10) : null, parcourLibelle
         );
