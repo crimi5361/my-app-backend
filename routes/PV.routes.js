@@ -400,9 +400,6 @@ router.get('/vue/etudiant/:matricule/bulletin/semestre/:semestreId', authenticat
  *       - Format condensé par étudiant
  *       - Inclut les résultats semestriels et annuels
  *       - Adapté au type de filière
- *       - Filtrage optionnel (2026-08-26) par décision académique et/ou statut de scolarité
- *         (sélection des étudiants avant impression, voir `decisions`/`statutScolarite`
- *         ci-dessous). Sans ces paramètres, comportement strictement identique à l'historique.
  *     tags: [PV & Bulletins - Vue]
  *     security:
  *       - bearerAuth: []
@@ -413,29 +410,9 @@ router.get('/vue/etudiant/:matricule/bulletin/semestre/:semestreId', authenticat
  *         schema:
  *           type: integer
  *         description: ID du groupe
- *       - in: query
- *         name: decisions
- *         required: false
- *         schema:
- *           type: string
- *         description: >
- *           Filtre optionnel par décision académique, slugs ASCII séparés par virgule parmi
- *           ADMIS, AJOURNE, DEROGE (ex. "ADMIS" ou "ADMIS,DEROGE"). Décision toujours issue de
- *           recap.annuel.decision (calculerRecapitulatifComplet), jamais recalculée. Omis =
- *           aucun filtre de décision (comportement historique).
- *       - in: query
- *         name: statutScolarite
- *         required: false
- *         schema:
- *           type: string
- *           enum: [SOLDE, NON_SOLDE]
- *         description: >
- *           Filtre optionnel par statut de scolarité de l'année du groupe demandé (source :
- *           vue_position_academique.statut_paiement, identique à Caisse/Scolarité). Omis = aucun
- *           filtre de scolarité (comportement historique).
  *     responses:
  *       200:
- *         description: Page des bulletins multiples (ou message "Aucun étudiant ne correspond à ce filtre." si le filtre ne retourne aucun étudiant)
+ *         description: Page des bulletins multiples
  *         content:
  *           text/html:
  *             schema:
@@ -455,8 +432,6 @@ router.get('/vue/groupe/:groupeId/bulletins', authenticateToken, pvController.af
  *     description: |
  *       Affiche les bulletins semestriels de tous les étudiants d'un groupe.
  *       - Semestre 1 ou Semestre 2 uniquement
- *       - Mêmes filtres optionnels `decisions`/`statutScolarite` que la route sans semestre
- *         (voir /api/PV/vue/groupe/{groupeId}/bulletins).
  *     tags: [PV & Bulletins - Vue]
  *     security:
  *       - bearerAuth: []
@@ -474,22 +449,9 @@ router.get('/vue/groupe/:groupeId/bulletins', authenticateToken, pvController.af
  *           type: integer
  *           enum: [1, 2]
  *         description: ID du semestre
- *       - in: query
- *         name: decisions
- *         required: false
- *         schema:
- *           type: string
- *         description: Filtre optionnel par décision, slugs ASCII séparés par virgule (ADMIS, AJOURNE, DEROGE). Omis = comportement historique.
- *       - in: query
- *         name: statutScolarite
- *         required: false
- *         schema:
- *           type: string
- *           enum: [SOLDE, NON_SOLDE]
- *         description: Filtre optionnel par statut de scolarité de l'année du groupe. Omis = comportement historique.
  *     responses:
  *       200:
- *         description: Bulletins semestriels multiples (ou message "Aucun étudiant ne correspond à ce filtre.")
+ *         description: Bulletins semestriels multiples
  *       404:
  *         description: Groupe non trouvé
  *       500:
@@ -497,35 +459,8 @@ router.get('/vue/groupe/:groupeId/bulletins', authenticateToken, pvController.af
  */
 router.get('/vue/groupe/:groupeId/bulletins/semestre/:semestreId', authenticateToken, pvController.afficherBulletinsMultiples);
 
-/**
- * @swagger
- * /api/PV/vue/groupe/{groupeId}/bulletins/compteurs:
- *   get:
- *     summary: Compteurs par catégorie décision × statut de scolarité, pour les boutons de filtrage
- *     description: |
- *       Calcule, pour un groupe (et un semestre optionnel), le nombre d'étudiants dans chacune des
- *       6 catégories (ADMIS/AJOURNÉ/DÉROGÉ × SOLDE/NON_SOLDE) plus le total "TOUS". Utilise
- *       exactement le même moteur que l'impression (calculerRecapitulatifComplet) — un compteur
- *       ne peut jamais diverger de la liste réellement imprimée par les routes /bulletins.
- *       Ne génère aucun HTML/PDF.
- *     tags: [PV & Bulletins - Vue]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: groupeId
- *         required: true
- *         schema:
- *           type: integer
- *         description: ID du groupe
- *     responses:
- *       200:
- *         description: Compteurs par catégorie
- *       404:
- *         description: Groupe non trouvé
- *       500:
- *         description: Erreur serveur
- */
+// Compteurs par catégorie décision × statut de scolarité (panneau "Filtrer avant impression") —
+// même moteur que l'impression (getCompteursBulletinsGroupe), aucun HTML généré.
 router.get('/vue/groupe/:groupeId/bulletins/compteurs', authenticateToken, pvController.getCompteursBulletinsGroupe);
 router.get('/vue/groupe/:groupeId/bulletins/semestre/:semestreId/compteurs', authenticateToken, pvController.getCompteursBulletinsGroupe);
 

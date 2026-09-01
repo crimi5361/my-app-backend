@@ -532,6 +532,14 @@
 
     etudiantsTries.forEach(function(etudiant, index) {
 
+        // ✅ CORRECTIF (2026-09-01) — PÉRIMÈTRE DE CLASSEMENT ≠ PÉRIMÈTRE D'IMPRESSION.
+        // `etudiantsTries` (et donc rangsS1Map/rangsS2Map/rangsAnnuelMap ci-dessus, déjà calculés
+        // AVANT cette boucle) contient TOUJOURS le groupe complet, filtre d'impression actif ou
+        // non — voir PV.controller.js::afficherBulletinsMultiples. Seul le RENDU (impression) de
+        // cet étudiant est sauté ici s'il n'a pas été sélectionné par le filtre ; son rang reste
+        // celui calculé sur le groupe entier, jamais recalculé sur un sous-ensemble.
+        if (etudiant.aImprimer === false) return;
+
         // ✅ SOURCE UNIQUE DE VÉRITÉ : moyennes/crédits/décisions déjà calculés côté
         // contrôleur (calculerRecapitulatifComplet / determinerDecisionFonction),
         // rigoureusement identiques à ce qu'affiche le PV pour ce même étudiant.

@@ -2358,17 +2358,13 @@ exports.afficherBulletinsMultiples = async (req, res) => {
             ORDER BY e.nom, e.prenoms
         `;
         const etudiantsResult = await db.query(etudiantsQuery, [groupeId]);
-        let etudiants = etudiantsResult.rows;
+        // ✅ CORRECTIF (2026-09-01) — bug "le rang change selon le filtre d'impression" : `etudiants`
+        // n'est PLUS jamais réduit ici (ni par statutScolarite, ni par decisions plus bas). TOUS les
+        // étudiants du groupe restent dans le périmètre de calcul, donc dans le périmètre de
+        // classement (Bulletin_multiple.ejs::calculerRangs() reçoit toujours la liste complète) —
+        // seule la sélection des bulletins RENDUS (voir `aImprimer` plus bas) dépend du filtre.
+        const etudiants = etudiantsResult.rows;
         console.log(`👨‍🎓 ${etudiants.length} étudiants trouvés`);
-
-        // ✅ Filtre "statut de scolarité" — appliqué ici, avant tout calcul académique, sur la
-        // MÊME colonne (vue_position_academique.statut_paiement, déjà scopée à l'année du groupe
-        // demandé — voir 016_vue_position_academique_finance.sql) que Caisse/Scolarité. Aucune
-        // deuxième logique de calcul du solde créée.
-        if (statutFiltre) {
-            etudiants = etudiants.filter(e => _normaliserStatutScolarite(e.statut_etudiant) === statutFiltre);
-            console.log(`🔎 Filtre statutScolarite=${statutFiltre} → ${etudiants.length} étudiant(s)`);
-        }
 
         // ℹ️ Info d'affichage uniquement (en-tête du document)
         const structureRepresentative = await getStructureAcademiqueFonction(groupeId, null);
@@ -2426,20 +2422,22 @@ exports.afficherBulletinsMultiples = async (req, res) => {
                     await new Promise(resolve => setImmediate(resolve));
                 }
 
-                const { resultatEtudiant, ecueAReprendreEntry, decisionAnnuelle } = await _calculerResultatEtudiantBulletin(
+                const { resultatEtudiant, ecueAReprendreEntry, decisionAnnuelle, statutScolariteNormalise } = await _calculerResultatEtudiantBulletin(
                     etudiant, structureAcademique, typeTraitement, totalCreditsS1, totalCreditsS2, groupeInfo, semestreId
                 );
 
-                // ✅ Filtre "décision" — appliqué APRÈS calculerRecapitulatifComplet (la décision
-                // n'existe qu'à ce moment-là), toujours sur recap.annuel.decision (jamais
-                // recalculée, jamais une autre logique). Les étudiants exclus n'entrent ni dans
-                // resultatsEtudiants ni dans etudiantsAReprendre — cohérent avec le fait qu'ils ne
-                // seront pas imprimés dans ce lot.
-                if (decisionsFiltre && !decisionsFiltre.has(decisionAnnuelle)) {
-                    continue;
-                }
+                // ✅ CORRECTIF (2026-09-01) — PÉRIMÈTRE DE CLASSEMENT ≠ PÉRIMÈTRE D'IMPRESSION.
+                // Le filtre (décision et/ou statut de scolarité) ne retire plus personne de
+                // `resultatsEtudiants` — il se contente de marquer `aImprimer` sur chaque étudiant,
+                // toujours sur recap.annuel.decision / le statut déjà normalisé (jamais recalculés,
+                // jamais une autre logique). resultatsEtudiants reste TOUJOURS le groupe complet :
+                // c'est lui qui est transmis à Bulletin_multiple.ejs, qui calcule le rang dessus
+                // (calculerRangs, inchangée) AVANT de sauter le rendu des étudiants non sélectionnés.
+                const correspondDecision = !decisionsFiltre || decisionsFiltre.has(decisionAnnuelle);
+                const correspondStatut = !statutFiltre || statutScolariteNormalise === statutFiltre;
+                resultatEtudiant.aImprimer = correspondDecision && correspondStatut;
 
-                if (ecueAReprendreEntry) {
+                if (resultatEtudiant.aImprimer && ecueAReprendreEntry) {
                     etudiantsAReprendre.push(ecueAReprendreEntry);
                 }
                 resultatsEtudiants.push(resultatEtudiant);
@@ -2447,7 +2445,10 @@ exports.afficherBulletinsMultiples = async (req, res) => {
         }
 
         // ✅ Filtre actif et aucun étudiant ne correspond : ne jamais générer un bulletin vide.
-        if (filtreActif && resultatsEtudiants.length === 0) {
+        // Basé sur `aImprimer` (pas sur la taille de resultatsEtudiants, qui contient désormais
+        // toujours le groupe complet, filtre actif ou non).
+        const nombreAImprimer = resultatsEtudiants.filter(e => e.aImprimer).length;
+        if (filtreActif && nombreAImprimer === 0) {
             return res.status(200).send(
                 '<html><head><meta charset="utf-8"><title>Bulletins</title></head>' +
                 '<body style="font-family:sans-serif;text-align:center;padding:60px;color:#333;">' +
@@ -2456,7 +2457,7 @@ exports.afficherBulletinsMultiples = async (req, res) => {
             );
         }
 
-        const admisCount = resultatsEtudiants.filter(e => e.decision === 'ADMIS' || e.decision === 'DÉROGÉ').length;
+        const admisCount = resultatsEtudiants.filter(e => e.aImprimer && (e.decision === 'ADMIS' || e.decision === 'DÉROGÉ')).length;
 
         res.render('Bulletin_multiple', {
             title: `Bulletins - ${groupeInfo.est_primaire ? (groupeInfo.classe_nom || '') : groupeInfo.nom}`,
