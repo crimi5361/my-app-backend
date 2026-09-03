@@ -713,6 +713,10 @@ function _construireFiltresEtudiants(req, siteId, anneeAcademiqueId, ecoleId) {
 
   return { whereClause: 'WHERE ' + whereClauses.join(' AND '), params, paramCounter };
 }
+// Exportée pour être réutilisée telle quelle par exportComptesEtudiants (Chantier Export des
+// comptes étudiants, 2026-09-03) — même construction de filtres que getEtudiantsByDepartement/
+// exportEtudiantsByDepartement, jamais une deuxième implémentation.
+exports._construireFiltresEtudiants = _construireFiltresEtudiants;
 
 exports.getEtudiantsByDepartement = async (req, res) => {
   try {
@@ -1041,6 +1045,146 @@ exports.exportEtudiantsByDepartement = async (req, res) => {
 
   } catch (err) {
     console.error("Erreur exportation étudiants:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Erreur serveur",
+      code: "SERVER_ERROR",
+      details: err.message
+    });
+  }
+};
+//==============================================================================================================
+
+// POST /api/etudiants/ExportComptesEtudiants — Chantier "Export des comptes étudiants par année
+// académique" (2026-09-03). Réutilise EXACTEMENT la même source de vérité que
+// exportEtudiantsByDepartement ci-dessus (vue_position_academique + _construireFiltresEtudiants) :
+// aucune logique parallèle de détermination de l'année/position académique, voir audit validé.
+// Différences volontaires avec exportEtudiantsByDepartement :
+// - departement_id n'est JAMAIS pris depuis req.query (contrairement à l'endpoint historique
+//   ci-dessus) : uniquement req.user.departement_id, pour qu'un agent ne puisse jamais exporter un
+//   autre site que le sien en falsifiant un paramètre de requête (exigence sécurité du chantier).
+// - g.est_primaire est exposé tel quel (colonne "Groupe primaire" demandée explicitement), au lieu
+//   d'être masqué comme sur l'écran Etudiant/export existant.
+// - Ajoute la prise en charge (pourcentage_reduction, montant_reduction, statut) rattachée
+//   STRICTEMENT à l'étudiant ET à l'année académique consultée — même condition
+//   (etudiant_id + annee_academique_id + statut = 'valide') que
+//   services/priseEnChargeResolution.service.js::getPecActive, la source unique documentée pour
+//   "la PEC active" — exprimée ici comme jointure LATERAL plutôt que N appels séquentiels (export
+//   en masse, potentiellement des milliers de lignes) : même condition, pas une deuxième règle.
+//   LATERAL + LIMIT 1 garantit qu'un étudiant ne peut jamais apparaître deux fois dans l'export
+//   même si, un jour, plusieurs PEC 'valide' existaient pour la même année (aucun cas aujourd'hui,
+//   vérifié à l'audit, mais rien dans le schéma ne l'interdit).
+exports.exportComptesEtudiants = async (req, res) => {
+  try {
+    const departementId = req.user?.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
+    const { anneeAcademiqueId } = req.query;
+
+    if (!departementId) {
+      return res.status(400).json({
+        success: false,
+        message: "Site de l'agent introuvable",
+        code: "DEPARTMENT_ID_REQUIRED"
+      });
+    }
+
+    if (!anneeAcademiqueId) {
+      return res.status(400).json({
+        success: false,
+        message: "L'ID de l'année académique est requis",
+        code: "ACADEMIC_YEAR_REQUIRED"
+      });
+    }
+
+    const yearCheck = await db.query(
+      `SELECT a.id, a.annee, s.etat
+       FROM anneeacademique a
+       LEFT JOIN anneeacademique_site s ON s.anneeacademique_id = a.id AND s.site_id = $2
+       WHERE a.id = $1`,
+      [anneeAcademiqueId, departementId]
+    );
+
+    if (yearCheck.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Année académique non trouvée",
+        code: "ACADEMIC_YEAR_NOT_FOUND"
+      });
+    }
+
+    // ✅ Mêmes filtres (filiere_id, niveau, curcus_id, groupe_id, etc.) que getEtudiantsByDepartement
+    // / exportEtudiantsByDepartement — voir _construireFiltresEtudiants ci-dessus dans ce fichier.
+    const { whereClause, params } = _construireFiltresEtudiants(req, departementId, anneeAcademiqueId, ecoleId);
+
+    const query = `
+      SELECT
+        e.id,
+        e.nom,
+        e.prenoms,
+        e.date_naissance,
+        e.lieu_naissance,
+        e.telephone,
+        e.contact_parent,
+        e.contact_parent_2,
+        e.code_unique,
+        e.matricule_iipea,
+        e.statut_scolaire,
+        e.date_inscription_annee,
+        e.sexe,
+
+        f.nom AS filiere,
+        n.libelle AS niveau,
+        a.annee AS annee_academique,
+        c.type_parcours,
+
+        g.nom AS groupe_nom,
+        g.est_primaire AS groupe_est_primaire,
+
+        COALESCE(e.montant_scolarite, 0) AS montant_total_scolarite,
+        COALESCE(e.scolarite_verse, 0) AS montant_paye,
+        COALESCE(e.scolarite_restante, 0) AS montant_restant,
+        e.statut_paiement AS statut_etudiant,
+        CASE
+          WHEN e.montant_scolarite IS NULL OR e.montant_scolarite = 0 THEN 0
+          ELSE ROUND((COALESCE(e.scolarite_verse, 0) / e.montant_scolarite) * 100, 2)
+        END AS pourcentage_paye,
+
+        p.pourcentage_reduction,
+        p.montant_reduction,
+        p.statut AS statut_prise_en_charge
+
+      FROM vue_position_academique e
+      JOIN filiere f ON e.id_filiere = f.id
+      LEFT JOIN departement dpt ON f.departement_id = dpt.id
+      JOIN niveau n ON e.niveau_id = n.id
+      JOIN anneeacademique a ON e.annee_academique_id = a.id
+      LEFT JOIN groupe g ON e.groupe_id = g.id
+      LEFT JOIN curcus c ON e.curcus_id = c.id
+      LEFT JOIN LATERAL (
+        SELECT pourcentage_reduction, montant_reduction, statut
+        FROM prise_en_charge
+        WHERE etudiant_id = e.id AND annee_academique_id = e.annee_academique_id AND statut = 'valide'
+        ORDER BY id DESC
+        LIMIT 1
+      ) p ON true
+      ${whereClause}
+      ORDER BY e.nom ASC, e.prenoms ASC
+    `;
+
+    const result = await db.query(query, params);
+
+    return res.status(200).json({
+      success: true,
+      data: result.rows,
+      total: result.rows.length,
+      anneeAcademique: {
+        id: anneeAcademiqueId,
+        annee: yearCheck.rows[0].annee,
+        etat: yearCheck.rows[0].etat
+      }
+    });
+  } catch (err) {
+    console.error("Erreur exportComptesEtudiants:", err);
     return res.status(500).json({
       success: false,
       error: "Erreur serveur",

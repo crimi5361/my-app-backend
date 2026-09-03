@@ -230,6 +230,61 @@ router.post('/ExportEtudiants', authenticateToken, etudiantController.exportEtud
 
 /**
  * @swagger
+ * /api/etudiants/ExportComptesEtudiants:
+ *   post:
+ *     summary: Exporter les comptes étudiants d'une année académique (Paramètres → Export des comptes étudiants)
+ *     description: >
+ *       Réservé aux administrateurs. Contrairement à /ExportEtudiants, le site est toujours celui
+ *       de l'agent connecté (jamais un paramètre de requête) et la position académique (niveau,
+ *       filière, groupe, scolarité) est celle de l'année sélectionnée — via vue_position_academique
+ *       — pas nécessairement la position courante de l'étudiant. Inclut la prise en charge de
+ *       cette année précise si elle existe.
+ *     tags: [Étudiants]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: anneeAcademiqueId
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID de l'année académique
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: filiere_id
+ *         schema:
+ *           type: integer
+ *       - in: query
+ *         name: niveau
+ *         schema:
+ *           type: string
+ *         description: Libellé exact du niveau (ex. "Licence 2")
+ *       - in: query
+ *         name: curcus_id
+ *         schema:
+ *           type: integer
+ *         description: Parcours
+ *       - in: query
+ *         name: groupe_id
+ *         schema:
+ *           type: integer
+ *     responses:
+ *       200:
+ *         description: Export réussi
+ *       400:
+ *         description: Paramètres manquants
+ *       404:
+ *         description: Année académique non trouvée
+ *       500:
+ *         description: Erreur serveur
+ */
+router.post('/ExportComptesEtudiants', authenticateToken, authorizeRoles('admin'), etudiantController.exportComptesEtudiants);
+
+/**
+ * @swagger
  * /api/etudiants/EtudiantsByDepartementEnattente:
  *   get:
  *     summary: Récupérer les étudiants en attente par département
