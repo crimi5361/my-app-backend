@@ -15,7 +15,7 @@ exports.listerDossiersEnAttente = async (req, res) => {
   try {
     const siteId = req.user.departement_id;
     const admissions = await db.query(`
-      SELECT e.id, e.nom, e.prenoms, e.code_paiement, e.source_inscription, e.date_inscription,
+      SELECT e.id, e.nom, e.prenoms, e.telephone, e.code_paiement, e.source_inscription, e.date_inscription,
              f.nom AS filiere, n.libelle AS niveau, aa.annee AS annee_academique,
              EXTRACT(DAY FROM now() - e.date_inscription)::int AS anciennete_jours
       FROM etudiant e
@@ -28,7 +28,7 @@ exports.listerDossiersEnAttente = async (req, res) => {
 
     const reinscriptions = await db.query(`
       SELECT r.id, r.etudiant_id, r.statut, r.created_at, r.code_paiement,
-             e.nom, e.prenoms, e.matricule_iipea,
+             e.nom, e.prenoms, e.telephone, e.matricule_iipea,
              n.libelle AS niveau_retenu, aa.annee AS annee_academique,
              EXTRACT(DAY FROM now() - r.created_at)::int AS anciennete_jours
       FROM reinscription r
