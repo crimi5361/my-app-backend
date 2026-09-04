@@ -1496,6 +1496,35 @@ exports.getEtudiantById = async (req, res) => {
       ? await getPecActive(db, { etudiantId: id, anneeAcademiqueId: etudiantData.annee_academique_id_brut })
       : null;
 
+    // Chantier "Fiche étudiant + Historique PEC + Certificats par année" (2026-09-04) — historique
+    // complet des prises en charge, une ligne par demande, la plus récente en premier.
+    // prise_en_charge.annee_academique_id est renseigné à 100% (audit validé) : contrairement au
+    // niveau/filière/scolarité, une ligne PEC porte déjà sa propre année, inutile de passer par
+    // vue_position_academique ici. Purement additif — `pecActive` ci-dessus (PEC de l'année
+    // courante de l'étudiant, résolue via le service existant) reste inchangé.
+    const pecHistoriqueResult = await db.query(
+      `SELECT p.id, p.reference, p.type_pec, p.pourcentage_reduction, p.montant_reduction, p.statut,
+              p.date_demande, p.date_validation, p.motif_refus, p.annee_academique_id, aa.annee
+       FROM prise_en_charge p
+       JOIN anneeacademique aa ON aa.id = p.annee_academique_id
+       WHERE p.etudiant_id = $1
+       ORDER BY aa.annee DESC, p.date_demande DESC`,
+      [id]
+    );
+    const priseEnChargeHistorique = pecHistoriqueResult.rows.map(row => ({
+      id: row.id,
+      reference: row.reference,
+      type: row.type_pec,
+      pourcentage_reduction: row.pourcentage_reduction,
+      montant_reduction: row.montant_reduction,
+      statut: row.statut,
+      date_demande: row.date_demande,
+      date_validation: row.date_validation,
+      motif_refus: row.motif_refus,
+      annee_academique_id: row.annee_academique_id,
+      annee_academique: row.annee
+    }));
+
     // Formater les données de base
     const etudiant = {
       ...etudiantData,
@@ -1540,7 +1569,10 @@ exports.getEtudiantById = async (req, res) => {
         date_validation: pecActive.date_validation,
         valide_par: pecActive.valide_par,
         motif_refus: pecActive.motif_refus
-      } : null
+      } : null,
+
+      // Additif — voir résolution de priseEnChargeHistorique ci-dessus.
+      prise_en_charge_historique: priseEnChargeHistorique
     };
 
     // Supprimer les champs temporaires
@@ -1608,7 +1640,14 @@ exports.updateInformationsPersonnelles = async (req, res) => {
     const identite = req.body || {};
 
     const etudiantResult = await db.query(
-      `SELECT nom, prenoms, sexe, nationalite, pays_naissance FROM etudiant WHERE id = $1`,
+      // etablissement_origine ajouté (Chantier "Fiche étudiant + Historique PEC + Certificats par
+      // année", 2026-09-04) — sans lui, validerReferentielsIdentite ci-dessous considère TOUJOURS
+      // ce champ comme "nouveau" dès qu'il est non vide (valeursActuelles.etablissement_origine
+      // undefined), et rejette donc toute resoumission d'un dossier existant dont la valeur
+      // libre historique ne correspond à aucune ligne de la table etablissement_origine (1818
+      // étudiants sur 1875 valeurs distinctes actuelles, vérifié à l'audit) — même si l'agent n'a
+      // jamais touché ce champ.
+      `SELECT nom, prenoms, sexe, nationalite, pays_naissance, etablissement_origine FROM etudiant WHERE id = $1`,
       [id]
     );
     if (etudiantResult.rows.length === 0) {
@@ -1636,8 +1675,9 @@ exports.updateInformationsPersonnelles = async (req, res) => {
          nom = $1, prenoms = $2, date_naissance = $3, sexe = $4, nationalite = $5,
          telephone = $6, email_personnel = $7, contact_parent = $8, contact_parent_2 = $9,
          lieu_naissance = $10, pays_naissance = $11, lieu_residence = $12,
-         nom_parent_1 = $13, nom_parent_2 = $14, adresse_parent_1 = $15, adresse_parent_2 = $16
-       WHERE id = $17
+         nom_parent_1 = $13, nom_parent_2 = $14, adresse_parent_1 = $15, adresse_parent_2 = $16,
+         etablissement_origine = $17
+       WHERE id = $18
        RETURNING id`,
       [
         identite.nom.toUpperCase(), identite.prenoms.toUpperCase(),
@@ -1647,6 +1687,7 @@ exports.updateInformationsPersonnelles = async (req, res) => {
         identite.lieu_naissance || null, identite.pays_naissance || null, identite.lieu_residence || null,
         identite.nom_parent_1 || null, identite.nom_parent_2 || null,
         identite.adresse_parent_1 || null, identite.adresse_parent_2 || null,
+        identite.etablissement_origine || null,
         id
       ]
     );

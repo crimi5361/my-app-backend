@@ -3,7 +3,9 @@ const db = require('../config/db.config');
 exports.getAllCertificat = async (req, res) => {
   try {
     const { id } = req.params;
-    
+    const { anneeAcademiqueId } = req.query;
+    const siteId = req.user?.departement_id;
+
     // Validation de l'ID
     if (!id || isNaN(id)) {
       return res.status(400).json({
@@ -11,6 +13,31 @@ exports.getAllCertificat = async (req, res) => {
         message: "ID étudiant invalide",
         code: "INVALID_STUDENT_ID"
       });
+    }
+    if (!siteId) {
+      return res.status(400).json({
+        success: false,
+        message: "Site de l'agent introuvable",
+        code: "DEPARTMENT_ID_REQUIRED"
+      });
+    }
+
+    // ✅ Cloisonnement par site (Chantier "Fiche étudiant + Historique PEC + Certificats par
+    // année", 2026-09-04) — cette requête n'était filtrée que sur l'id, permettant à un agent
+    // admin/scolarite d'imprimer le certificat d'un étudiant d'un autre site en connaissant son
+    // id. Décision explicite du demandeur : corrigé ici (contrairement à getEtudiantById /
+    // updateInformationsPersonnelles, où la même faille préexiste mais reste hors périmètre —
+    // voir rapport final).
+    const params = [id, siteId];
+    // ✅ Source vue_position_academique (au lieu de etudiant directement) — un étudiant réinscrit
+    // voit sa position (niveau/filière/scolarité) écrasée sur `etudiant` à chaque réinscription.
+    // Sans anneeAcademiqueId : position COURANTE (e.position_historique = false, même sémantique
+    // que le reste du projet). Avec anneeAcademiqueId : position FIGÉE de cette année précise
+    // (voir audit validé).
+    let anneeCondition = 'e.position_historique = false';
+    if (anneeAcademiqueId) {
+      params.push(anneeAcademiqueId);
+      anneeCondition = `e.annee_academique_id = $${params.length}`;
     }
 
     const query = `
@@ -30,7 +57,11 @@ exports.getAllCertificat = async (req, res) => {
         e.serie_bac,
         e.etablissement_origine,
         e.photo_url,
-        e.date_inscription,
+        -- ✅ date_inscription_annee (résolue par la vue — admission/réinscription réellement
+        -- validée POUR CETTE ANNÉE précise), jamais e.date_inscription seule qui reste figée à la
+        -- toute première admission et n'est jamais mise à jour lors d'une réinscription (voir
+        -- audit validé — même convention que controllers/etudiant.controller.js).
+        e.date_inscription_annee,
         e.statut_scolaire,
         -- Correctif (2026-08-14) : etudiant.nationalite stocke un code ISO (ex. "CI", parfois un
         -- nom de pays hérité pour d'anciens dossiers) — jamais l'adjectif attendu sur le
@@ -76,12 +107,14 @@ exports.getAllCertificat = async (req, res) => {
         d.dernier_diplome,
         d.fiche_orientation,
         
-        -- Informations de la scolarité
-        s.montant_scolarite,
-        s.scolarite_verse,
-        s.scolarite_restante
-        
-      FROM etudiant e
+        -- Informations de la scolarité — déjà résolues par vue_position_academique selon la
+        -- branche (courante ou figée), jamais via etudiant.scolarite_id directement (pointeur
+        -- courant, ne retrouve plus rien pour un étudiant depuis réinscrit).
+        e.montant_scolarite,
+        e.scolarite_verse,
+        e.scolarite_restante
+
+      FROM vue_position_academique e
 
       -- Jointures obligatoires
       LEFT JOIN pays p_nat ON p_nat.code_iso = e.nationalite OR p_nat.nom = e.nationalite
@@ -94,17 +127,16 @@ exports.getAllCertificat = async (req, res) => {
       LEFT JOIN groupe g ON e.groupe_id = g.id
       LEFT JOIN classe c ON g.classe_id = c.id
       LEFT JOIN document d ON e.document_id = d.id
-      LEFT JOIN scolarite s ON e.scolarite_id = s.id
-      
-      WHERE e.id = $1
+
+      WHERE e.id = $1 AND e.site_id = $2 AND ${anneeCondition}
     `;
 
-    const result = await db.query(query, [parseInt(id)]);
+    const result = await db.query(query, params);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: "Étudiant non trouvé",
+        message: "Étudiant non trouvé pour cette année académique",
         code: "STUDENT_NOT_FOUND"
       });
     }
@@ -172,7 +204,7 @@ exports.getAllCertificat = async (req, res) => {
         annee_bac: etudiantData.annee_bac,
         serie_bac: etudiantData.serie_bac,
         etablissement_origine: etudiantData.etablissement_origine,
-        date_inscription: etudiantData.date_inscription,
+        date_inscription: etudiantData.date_inscription_annee,
         statut_scolaire: etudiantData.statut_scolaire
       },
       
