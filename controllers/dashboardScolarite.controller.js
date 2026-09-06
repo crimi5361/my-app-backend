@@ -6,7 +6,7 @@ const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
 const {
-  getTotalInscrits, getInscriptionsValideesPeriodes, getEvolutionInscriptionsQuotidienne,
+  getTotalInscrits, getInscriptionsValideesPeriodes, getEvolutionInscriptionsQuotidienne, getActiviteAgents,
 } = require('../services/statistiquesInscriptions.service');
 
 exports.getDashboardScolarite = async (req, res) => {
@@ -34,7 +34,7 @@ exports.getDashboardScolarite = async (req, res) => {
       parEcoleResult,
       parNiveauResult,
       parFiliereResult,
-      activiteAgentsResult,
+      activiteAgents,
       dossiersEnAttente,
     ] = await Promise.all([
       // ✅ Chantier Statistiques (2026-08-18) : source unique — voir
@@ -81,47 +81,18 @@ exports.getDashboardScolarite = async (req, res) => {
         GROUP BY f.nom ORDER BY total DESC LIMIT 5
       `, baseParams),
 
-      // Activité des agents — même principe que StatsInscriptions.controller.js (jointure
-      // utilisateur/etudiant.inscrit_par). Tendance : 15 derniers jours vs 15 jours précédents.
-      db.query(`
-        SELECT
-          u.nom AS agent,
-          COUNT(*) FILTER (WHERE e.date_inscription::date >= CURRENT_DATE - INTERVAL '29 days') AS total_30j,
-          COUNT(*) FILTER (WHERE e.date_inscription::date >= CURRENT_DATE - INTERVAL '14 days') AS total_15j_recent,
-          COUNT(*) FILTER (WHERE e.date_inscription::date >= CURRENT_DATE - INTERVAL '29 days'
-                             AND e.date_inscription::date < CURRENT_DATE - INTERVAL '14 days') AS total_15j_precedent
-        FROM vue_position_academique e
-        JOIN utilisateur u ON u.id = e.inscrit_par::integer
-        WHERE e.annee_academique_id = $1 AND e.site_id = $2 ${ecoleCond}
-        GROUP BY u.nom
-        HAVING COUNT(*) FILTER (WHERE e.date_inscription::date >= CURRENT_DATE - INTERVAL '29 days') > 0
-        ORDER BY total_30j DESC
-        LIMIT 10
-      `, baseParams),
+      // Activité des agents — admissions ET réinscriptions, source unique historique_inscription
+      // (Chantier "Activité des agents", 2026-09-06 — voir statistiquesInscriptions.service.js pour
+      // la justification complète). Remplace l'ancienne requête inline basée sur
+      // vue_position_academique/etudiant.inscrit_par, qui ne pouvait structurellement jamais compter
+      // une réinscription (etudiant.inscrit_par/date_inscription ne sont jamais réécrits par une
+      // réinscription).
+      getActiviteAgents(db, { siteId, ecoleId, anneeAcademiqueId, fenetreJours: 30 }),
 
       // Visibilité des dossiers en attente (admissions + réinscriptions), même définition/périmètre
       // que le dashboard Caisse — voir services/dossiersEnAttente.service.js.
       getDossiersEnAttenteParOrigine(db, { siteId, ecoleId, anneeAcademiqueId }),
     ]);
-
-    const activiteAgents = activiteAgentsResult.rows.map((r) => {
-      const recent = parseInt(r.total_15j_recent, 10);
-      const precedent = parseInt(r.total_15j_precedent, 10);
-      let tendance = 'stable';
-      if (precedent > 0) {
-        const variation = (recent - precedent) / precedent;
-        if (variation >= 0.15) tendance = 'hausse';
-        else if (variation <= -0.15) tendance = 'baisse';
-      } else if (recent > 0) {
-        tendance = 'hausse';
-      }
-      return {
-        agent: r.agent,
-        total_30j: parseInt(r.total_30j, 10),
-        moyenne_jour: Math.round((parseInt(r.total_30j, 10) / 30) * 10) / 10,
-        tendance,
-      };
-    });
 
     const totalOrigine = origineResult.rows.reduce((sum, r) => sum + parseInt(r.total, 10), 0);
     const origineWeb = origineResult.rows.find((r) => r.source === 'web');

@@ -194,6 +194,81 @@ async function getEvolutionRecettesQuotidienne(client, { siteId, ecoleId, anneeA
   return Array.from(parJour.values()).sort((a, b) => a.jour.localeCompare(b.jour));
 }
 
+// Activité des agents de scolarité (admissions + réinscriptions) — source unique pour les deux
+// dashboards (Chantier "Activité des agents", 2026-09-06). Corrige le bug identifié à l'audit :
+// etudiant.inscrit_par / etudiant.date_inscription ne sont JAMAIS réécrits par une réinscription
+// (controllers/reinscription.controller.js n'écrit ni l'un ni l'autre) — une requête basée dessus
+// ne peut donc structurellement jamais voir une réinscription, et attribue à tort tout étudiant
+// réinscrit à l'agent de sa toute première admission.
+//
+// Source retenue : historique_inscription, type_evenement IN ('admission','reinscription')
+// UNIQUEMENT — jamais 'cloture' (écrite pour la même réinscription, sur l'ANCIENNE année : la
+// compter doublerait chaque réinscription). L'agent et la date sont résolus PAR TYPE d'événement :
+//   - admission     -> agent = COALESCE(e.inscrit_par::integer, e.verifie_par)
+//                       date  = e.date_inscription
+//   - reinscription -> agent = COALESCE(r.traite_par, r.verifie_par), r = reinscription liée via
+//                       h.reinscription_id (traite_par = agent scolarité qui a saisi la demande en
+//                       interne ; verifie_par = agent scolarité qui a vérifié un dossier venu du
+//                       portail web — l'un des deux est toujours renseigné, jamais les deux)
+//                       date  = h.created_at (date réelle de validation caisse — jamais
+//                       etudiant.annee_academique_id/date_inscription, qui ne reflètent que la
+//                       position COURANTE de l'étudiant, cf. vue_position_academique)
+// historique_inscription.valide_par n'est JAMAIS utilisé comme agent scolarité ici : c'est l'agent
+// de CAISSE qui a validé le paiement (rôle distinct, voir caisse.controller.js).
+//
+// fenetreJours (optionnel) restreint aux événements dont la date réelle (ci-dessus, jamais
+// CURRENT_DATE contre une mauvaise colonne) tombe dans les N derniers jours ; omis = tout
+// l'historique de l'année sélectionnée. Un agent sans aucun événement n'apparaît jamais (jointure
+// interne sur utilisateur, pas de LEFT JOIN depuis la table utilisateur).
+async function getActiviteAgents(client, { siteId, ecoleId, anneeAcademiqueId, fenetreJours }) {
+  const params = [anneeAcademiqueId, siteId];
+  let ecoleCond = '';
+  if (ecoleId !== null) {
+    params.push(ecoleId);
+    ecoleCond = `AND f.departement_id IN (SELECT id FROM departement WHERE ecole_id = $${params.length})`;
+  }
+  let fenetreCond = '';
+  if (fenetreJours) {
+    params.push(fenetreJours);
+    fenetreCond = `AND x.date_evenement::date >= CURRENT_DATE - ($${params.length}::int - 1) * INTERVAL '1 day'`;
+  }
+
+  const r = await client.query(`
+    SELECT x.agent_id, u.nom AS agent_nom,
+      COUNT(*) FILTER (WHERE x.type_evenement = 'admission') AS nouvelles_admissions,
+      COUNT(*) FILTER (WHERE x.type_evenement = 'reinscription') AS reinscriptions,
+      COUNT(*) AS total
+    FROM (
+      SELECT
+        h.type_evenement,
+        CASE WHEN h.type_evenement = 'admission' THEN COALESCE(e.inscrit_par::integer, e.verifie_par)
+             ELSE COALESCE(r.traite_par, r.verifie_par) END AS agent_id,
+        CASE WHEN h.type_evenement = 'admission' THEN e.date_inscription
+             ELSE h.created_at END AS date_evenement
+      FROM historique_inscription h
+      JOIN etudiant e ON e.id = h.etudiant_id
+      LEFT JOIN reinscription r ON r.id = h.reinscription_id
+      LEFT JOIN filiere f ON f.id = h.id_filiere
+      WHERE h.type_evenement IN ('admission', 'reinscription')
+        AND h.annee_academique_id = $1
+        AND e.site_id = $2
+        ${ecoleCond}
+    ) x
+    JOIN utilisateur u ON u.id = x.agent_id
+    WHERE 1=1 ${fenetreCond}
+    GROUP BY x.agent_id, u.nom
+    ORDER BY total DESC
+  `, params);
+
+  return r.rows.map((row) => ({
+    agent_id: row.agent_id,
+    agent_nom: row.agent_nom,
+    nouvelles_admissions: parseInt(row.nouvelles_admissions, 10),
+    reinscriptions: parseInt(row.reinscriptions, 10),
+    total: parseInt(row.total, 10),
+  }));
+}
+
 module.exports = {
   getDateDebutAnnee,
   getTotalInscrits,
@@ -201,4 +276,5 @@ module.exports = {
   getInscriptionsValideesPeriodes,
   getEvolutionInscriptionsQuotidienne,
   getEvolutionRecettesQuotidienne,
+  getActiviteAgents,
 };

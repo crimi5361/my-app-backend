@@ -1,6 +1,6 @@
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
-const { getInscriptionsValideesPeriodes } = require('../services/statistiquesInscriptions.service');
+const { getInscriptionsValideesPeriodes, getActiviteAgents } = require('../services/statistiquesInscriptions.service');
 const { getDossiersEnAttenteParOrigine } = require('../services/dossiersEnAttente.service');
 
 exports.getStatsInscriptions = async (req, res) => {
@@ -64,24 +64,14 @@ exports.getStatsInscriptions = async (req, res) => {
     const dossiersEnAttenteStats = await getDossiersEnAttenteParOrigine(db, { siteId: departementId, ecoleId, anneeAcademiqueId });
     const enAttente = { rows: [{ total: dossiersEnAttenteStats.admissions.total + dossiersEnAttenteStats.reinscriptions.total }] };
 
-    // 5. Inscriptions par utilisateur
-    const inscriptionsParUtilisateur = await db.query(`
-      SELECT
-        u.id AS utilisateur_id,
-        u.nom AS utilisateur_nom,
-        u.email AS utilisateur_email,
-        COUNT(e.id) AS total_inscrits,
-        SUM(CASE WHEN e.standing = 'en attente' THEN 1 ELSE 0 END) AS en_attente,
-        SUM(CASE WHEN e.standing = 'Inscrit' THEN 1 ELSE 0 END) AS confirmes
-      FROM utilisateur u
-      LEFT JOIN vue_position_academique e ON u.id = e.inscrit_par::integer
-      WHERE e.annee_academique_id = $1
-        AND e.site_id = $2
-        ${startDate && endDate ? 'AND DATE(e.date_inscription) BETWEEN $3 AND $4' : ''}
-        ${ecoleCondAliasE}
-      GROUP BY u.id, u.nom, u.email
-      ORDER BY total_inscrits DESC
-    `, dateParams);
+    // 5. Activité des agents — admissions ET réinscriptions, source unique historique_inscription
+    // (Chantier "Activité des agents", 2026-09-06 — voir statistiquesInscriptions.service.js pour la
+    // justification complète). Remplace l'ancienne requête inline basée sur
+    // vue_position_academique/etudiant.inscrit_par, qui ne pouvait structurellement jamais compter
+    // une réinscription. Porte sur l'année académique sélectionnée (anneeAcademiqueId ci-dessus),
+    // pas sur le filtre de dates du RangePicker (qui reste utilisé par les autres blocs de cette
+    // page, inchangés).
+    const activiteAgents = await getActiviteAgents(db, { siteId: departementId, ecoleId, anneeAcademiqueId });
 
     // 6. Inscriptions journalières
     const inscriptionsJournalieres = await db.query(`
@@ -147,7 +137,7 @@ exports.getStatsInscriptions = async (req, res) => {
       inscriptionsAujourdhui: parseInt(aujourdhui.rows[0].total),
       enAttente: parseInt(enAttente.rows[0].total),
       confirmesAujourdhui: parseInt(confirmesAujourdhui.rows[0].total),
-      inscriptionsParUtilisateur: inscriptionsParUtilisateur.rows,
+      inscriptionsParUtilisateur: activiteAgents,
       inscriptionsJournalieres: inscriptionsJournalieres.rows,
       statsParStatut: statsParStatut.rows,
       
