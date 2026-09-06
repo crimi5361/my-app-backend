@@ -112,6 +112,7 @@ const apiRoutes = [
   { path: '/api/niveaux',           route: require('./routes/niveau.routes') },
   { path: '/api/classes',           route: require('./routes/classes.routes') },
   { path: '/api/decoupage',         route: require('./routes/divisionGroupe.routes') },
+  { path: '/api/projections-groupes', route: require('./routes/projectionGroupes.routes') },
   { path: '/api/semestres',         route: require('./routes/semestre.routes') },
   { path: '/api/maquettes',         route: require('./routes/maquette.routes') },
   { path: '/api/categorie',         route: require('./routes/categorie.routes') },
