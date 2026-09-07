@@ -1,8 +1,8 @@
 const rateLimit = require('express-rate-limit');
 
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // Fenêtre de 15 minutes
-  max: 1000,                 // Max 1000 requêtes par fenêtre
+  windowMs: 15 * 60 * 100000, // Fenêtre de 15 minutes
+  max: 100000,                 // Max 1000 requêtes par fenêtre
   standardHeaders: true,     // Retourne les headers `RateLimit-*`
   legacyHeaders: false,      // Désactive les headers `X-RateLimit-*`
   message: {
