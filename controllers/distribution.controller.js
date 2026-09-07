@@ -17,6 +17,7 @@
 const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { enregistrerMouvementStock, getEmplacementStockPourSite, getSoldeStock } = require('../services/stockMoyensGeneraux.service');
+const { getSuiviDistributions } = require('../services/distributionSuivi.service');
 
 // Chantier Moyens Généraux, Phase 2C (2026-08-19) : la distribution gratuite standard ne laisse
 // plus le client fixer la quantité — elle est TOUJOURS celle de la règle applicable
@@ -420,8 +421,13 @@ exports.getHistorique = async (req, res) => {
       whereClauses.push(`d.agent_id = $${params.length + 1}`);
       params.push(parseInt(req.query.agent_id, 10));
     }
+    // Chantier "Historique détaillé par accessoire" (2026-09-07) : filtre par accessoire précis
+    // désormais direct sur la ligne (ld.accessoire_id = $X), plus un EXISTS — cohérent avec le
+    // passage d'une ligne par DISTRIBUTION à une ligne par ACCESSOIRE REMIS ci-dessous : filtrer
+    // sur un accessoire doit isoler ses propres lignes, pas réafficher les autres accessoires de
+    // la même remise.
     if (req.query.accessoire_id) {
-      whereClauses.push(`EXISTS (SELECT 1 FROM ligne_distribution ld WHERE ld.distribution_id = d.id AND ld.accessoire_id = $${params.length + 1})`);
+      whereClauses.push(`ld.accessoire_id = $${params.length + 1}`);
       params.push(parseInt(req.query.accessoire_id, 10));
     }
 
@@ -429,35 +435,56 @@ exports.getHistorique = async (req, res) => {
     const limit = parseInt(req.query.limit, 10) || 20;
     const offset = (page - 1) * limit;
 
+    // Chantier "Historique détaillé par accessoire" (2026-09-07) — l'historique affichait 1 ligne
+    // par DISTRIBUTION (un passage/reçu), avec un total agrégé (total_accessoires) masquant le
+    // détail. Passage à 1 ligne par ACCESSOIRE RÉELLEMENT REMIS (ligne_distribution JOIN accessoire)
+    // — toutes les colonnes/filtres existants (d.*, e.*) restent inchangés, seule la granularité
+    // change. JOIN (jamais LEFT JOIN) sur ligne_distribution : une distribution a toujours ≥1 ligne
+    // (garanti par validerLignes dans creerDistribution), donc aucune ligne perdue. Chaque
+    // (distribution_id, accessoire_id) n'existe qu'une fois dans ligne_distribution (contrainte déjà
+    // en place), donc aucun doublon introduit par cette jointure — une distribution à 3 accessoires
+    // produit exactement 3 lignes ici, jamais plus.
+    //
+    // Groupe : e.groupe_id (position ACTUELLE de l'étudiant) — `distribution` ne fige aucun nom de
+    // groupe au moment de la remise (contrairement à ecole_nom/filiere_nom/niveau_nom/classe_nom,
+    // qui eux sont bien l'instantané figé) ; c'est la seule source disponible, à la différence des
+    // autres colonnes académiques de ce tableau qui restent l'instantané historique.
+    // Téléphone : e.telephone — champ d'identité stable de l'étudiant, pas une position académique,
+    // donc lu directement sur `etudiant` (déjà joint ici) sans passer par vue_position_academique.
     const countResult = await db.query(
       `SELECT COUNT(*) FROM distribution d
        JOIN etudiant e ON e.id = d.etudiant_id
        JOIN emplacement_stock es ON es.id = d.emplacement_stock_id
+       JOIN ligne_distribution ld ON ld.distribution_id = d.id
        WHERE ${whereClauses.join(' AND ')}`,
       params
     );
 
     const dataResult = await db.query(
-      `SELECT d.id, d.numero_recu, d.date_remise, d.etudiant_id, d.annee_academique_id,
+      `SELECT ld.id AS ligne_id, d.id AS distribution_id, d.numero_recu, d.date_remise, d.etudiant_id, d.annee_academique_id,
          d.ecole_nom, d.filiere_nom, d.niveau_nom, d.classe_nom,
-         e.nom, e.prenoms, e.matricule, e.matricule_iipea,
+         e.nom, e.prenoms, e.matricule, e.matricule_iipea, e.telephone,
+         g.nom AS groupe_nom,
          u.nom AS agent_nom,
          aa.annee AS annee_academique,
-         (SELECT COALESCE(SUM(ld.quantite), 0) FROM ligne_distribution ld WHERE ld.distribution_id = d.id) AS total_accessoires
+         a.nom AS accessoire_nom, ld.quantite
        FROM distribution d
        JOIN etudiant e ON e.id = d.etudiant_id
        JOIN utilisateur u ON u.id = d.agent_id
        JOIN anneeacademique aa ON aa.id = d.annee_academique_id
        JOIN emplacement_stock es ON es.id = d.emplacement_stock_id
+       JOIN ligne_distribution ld ON ld.distribution_id = d.id
+       JOIN accessoire a ON a.id = ld.accessoire_id
+       LEFT JOIN groupe g ON g.id = e.groupe_id
        WHERE ${whereClauses.join(' AND ')}
-       ORDER BY d.date_remise DESC
+       ORDER BY d.date_remise DESC, d.id, a.nom
        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
       [...params, limit, offset]
     );
 
     res.status(200).json({
       success: true,
-      data: dataResult.rows.map((r) => ({ ...r, total_accessoires: parseInt(r.total_accessoires, 10) })),
+      data: dataResult.rows.map((r) => ({ ...r, quantite: parseInt(r.quantite, 10) })),
       pagination: { page, limit, total: parseInt(countResult.rows[0].count, 10) },
     });
   } catch (error) {
@@ -497,6 +524,44 @@ exports.getFiltresHistorique = async (req, res) => {
     });
   } catch (error) {
     console.error('Erreur getFiltresHistorique:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// ─── Suivi des distributions (Chantier "Suivi des distributions", Phase 1 backend, 2026-09-07) ───
+// Distinct de getHistorique (qui part de `distribution` et ne peut donc jamais montrer un étudiant
+// sans aucune remise) : part des étudiants INSCRITS (vue_position_academique, jamais `etudiant`
+// seul — voir services/distributionSuivi.service.js pour la justification complète) et calcule,
+// par article dû, qui a tout reçu / partiellement reçu / rien reçu.
+exports.getSuivi = async (req, res) => {
+  try {
+    const { anneeAcademiqueId } = req.query;
+    if (!anneeAcademiqueId) {
+      return res.status(400).json({ success: false, message: "L'ID de l'année académique est requis." });
+    }
+    const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+
+    const { rows, total } = await getSuiviDistributions(db, {
+      siteId,
+      ecoleId,
+      anneeAcademiqueId: parseInt(anneeAcademiqueId, 10),
+      dateDebut: req.query.dateDebut || null,
+      dateFin: req.query.dateFin || null,
+      statut: req.query.statut || null,
+      filiereId: req.query.filiereId ? parseInt(req.query.filiereId, 10) : null,
+      niveauId: req.query.niveauId ? parseInt(req.query.niveauId, 10) : null,
+      groupeId: req.query.groupeId ? parseInt(req.query.groupeId, 10) : null,
+      search: req.query.search || null,
+      page,
+      limit,
+    });
+
+    res.status(200).json({ success: true, data: rows, pagination: { page, limit, total } });
+  } catch (error) {
+    console.error('Erreur getSuivi (distribution):', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.' });
   }
 };
