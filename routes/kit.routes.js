@@ -11,6 +11,9 @@ const caisseOuScolariteLecture = authorizeRoles('admin', 'comptabilite', 'caissi
 const caisseOnly = authorizeRoles('admin', 'comptabilite', 'caissier');
 
 router.get('/rechercher', authenticateToken, caisseOuScolariteLecture, kitController.rechercherEtudiantsKit);
+// Chantier "Suivi des kits" (Phase 1 backend, 2026-09-07) — liste paginée/filtrée, même groupe de
+// rôles que la recherche existante, aucune nouvelle permission.
+router.get('/liste', authenticateToken, caisseOuScolariteLecture, kitController.listerKits);
 router.get('/etudiant/:id', authenticateToken, caisseOuScolariteLecture, kitController.getKitByEtudiant);
 router.get('/etudiant/:id/etat', authenticateToken, caisseOuScolariteLecture, kitController.getEtatKitEtudiant);
 router.get('/etat-campagne/:etudiantId', authenticateToken, caisseOuScolariteLecture, kitController.getEtatCampagne);

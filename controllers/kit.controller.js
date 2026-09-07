@@ -209,6 +209,143 @@ exports.rechercherEtudiantsKit = async (req, res) => {
   }
 };
 
+// ─── Suivi des kits (Chantier "Suivi des kits", Phase 1 backend, 2026-09-07) ───────────────────
+// Distinct de rechercherEtudiantsKit (recherche ponctuelle ≥2 caractères, sans pagination ni
+// filtres année/statut/date) : liste TOUS les étudiants inscrits pour l'année demandée, y compris
+// ceux sans aucune ligne kit (interprétés comme NON_DEPOSE — cas normal et majoritaire pour
+// 2026-2027, où traiterKit ne pré-crée plus de ligne à l'inscription contrairement à l'ancien
+// système). Source étudiant : vue_position_academique, jamais `etudiant` seul — un étudiant
+// réinscrit doit rester retrouvable sur son ancienne position (même limite déjà documentée dans
+// kitStatistiques.service.js, non corrigée là pour ne pas toucher les KPI existants — voir
+// rapport de Phase 1, point "problèmes restant à traiter").
+//
+// Statut dérivé — respecte STRICTEMENT les 2 générations déjà établies (voir migration 039 /
+// kitStatistiques.service.js, non dupliqué ici mais même règle) :
+//   - aucune ligne kit                          -> NON_DEPOSE
+//   - statut = 'KIT_APPORTE'                    -> KIT_APPORTE
+//   - statut = 'KIT_PAYE'                       -> KIT_PAYE
+//   - statut IS NULL AND deposer = true         -> KIT_PAYE (convention historique 2025-2026)
+//   - statut IS NULL AND deposer = false        -> NON_DEPOSE (ancienne ligne jamais traitée)
+// Aucun 4e statut inventé ("payé mais non déposé" n'existe pas dans le modèle actuel).
+//
+// Paiement : jointure kit.paiement_id -> paiement (contrainte supplémentaire type_frais='kit_ecole'
+// en pur filet de sécurité de lecture — kit.paiement_id ne peut de toute façon jamais pointer vers
+// un paiement de scolarité, imposé à l'écriture par traiterKit) -> paiement.recu_id -> recu. Le
+// montant affiché provient EXCLUSIVEMENT de paiement.montant, jamais de kit.montant (qui vaut 0 ou
+// une valeur non contractuelle pour les lignes historiques sans vrai paiement Caisse derrière) —
+// même règle que kitStatistiques.service.js.
+//
+// Dates : deux dates distinctes, jamais confondues — kit.date_enregistrement (dépôt/traitement) et
+// paiement.date_paiement (encaissement réel). dateType ('depot' par défaut, ou 'paiement') indique
+// explicitement laquelle filtrer avec dateDebut/dateFin, plutôt que d'appliquer silencieusement la
+// mauvaise date à l'une ou l'autre demande.
+exports.listerKits = async (req, res) => {
+  try {
+    const { anneeAcademiqueId } = req.query;
+    if (!anneeAcademiqueId) {
+      return res.status(400).json({ success: false, message: "L'ID de l'année académique est requis." });
+    }
+    const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
+    const anneeId = parseInt(anneeAcademiqueId, 10);
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 20;
+
+    const whereEtudiant = [
+      'e.annee_academique_id = $1',
+      'e.site_id = $2',
+      "e.standing = 'Inscrit'",
+    ];
+    const params = [anneeId, siteId];
+
+    if (ecoleId !== null) {
+      params.push(ecoleId);
+      whereEtudiant.push(`e.id_filiere IN (SELECT fx.id FROM filiere fx JOIN departement dx ON dx.id = fx.departement_id WHERE dx.ecole_id = $${params.length})`);
+    }
+    if (req.query.filiereId) {
+      params.push(parseInt(req.query.filiereId, 10));
+      whereEtudiant.push(`e.id_filiere = $${params.length}`);
+    }
+    if (req.query.niveauId) {
+      params.push(parseInt(req.query.niveauId, 10));
+      whereEtudiant.push(`e.niveau_id = $${params.length}`);
+    }
+    if (req.query.groupeId) {
+      params.push(parseInt(req.query.groupeId, 10));
+      whereEtudiant.push(`e.groupe_id = $${params.length}`);
+    }
+    if (req.query.search && req.query.search.trim().length >= 2) {
+      params.push(`%${req.query.search.trim()}%`);
+      const idx = params.length;
+      whereEtudiant.push(`(e.nom ILIKE $${idx} OR e.prenoms ILIKE $${idx} OR e.matricule_iipea ILIKE $${idx} OR (e.nom || ' ' || e.prenoms) ILIKE $${idx})`);
+    }
+
+    const dateType = req.query.dateType === 'paiement' ? 'paiement' : 'depot';
+    const dateColumn = dateType === 'paiement' ? 'p.date_paiement' : 'k.date_enregistrement';
+    let dateCond = '';
+    if (req.query.dateDebut) {
+      params.push(req.query.dateDebut);
+      dateCond += ` AND ${dateColumn} >= $${params.length}`;
+    }
+    if (req.query.dateFin) {
+      params.push(req.query.dateFin);
+      dateCond += ` AND ${dateColumn} <= $${params.length}::date + INTERVAL '1 day'`;
+    }
+
+    const baseCTE = `
+      WITH base AS (
+        SELECT
+          e.id, e.matricule_iipea, e.nom, e.prenoms,
+          f.nom AS filiere, n.libelle AS niveau, g.nom AS groupe,
+          k.deposer, k.date_enregistrement AS date_depot,
+          k.traite_par, ut.nom AS traite_par_nom,
+          p.montant, p.date_paiement, p.methode AS mode_paiement, rc.numero_recu,
+          CASE
+            WHEN k.id IS NULL THEN 'NON_DEPOSE'
+            WHEN k.statut = 'KIT_PAYE' THEN 'KIT_PAYE'
+            WHEN k.statut = 'KIT_APPORTE' THEN 'KIT_APPORTE'
+            WHEN k.statut IS NULL AND k.deposer = true THEN 'KIT_PAYE'
+            ELSE 'NON_DEPOSE'
+          END AS statut_kit
+        FROM vue_position_academique e
+        JOIN filiere f ON f.id = e.id_filiere
+        JOIN niveau n ON n.id = e.niveau_id
+        LEFT JOIN groupe g ON g.id = e.groupe_id
+        LEFT JOIN kit k ON k.etudiant_id = e.id AND k.annee_academique_id = e.annee_academique_id
+        LEFT JOIN utilisateur ut ON ut.id = k.traite_par
+        LEFT JOIN paiement p ON p.id = k.paiement_id AND p.type_frais = 'kit_ecole'
+        LEFT JOIN recu rc ON rc.id = p.recu_id
+        WHERE ${whereEtudiant.join(' AND ')} ${dateCond}
+      )
+    `;
+
+    let statutCond = '';
+    if (req.query.statut) {
+      params.push(req.query.statut);
+      statutCond = `WHERE statut_kit = $${params.length}`;
+    }
+
+    const countResult = await db.query(`${baseCTE} SELECT COUNT(*) AS total FROM base ${statutCond}`, params);
+    const total = parseInt(countResult.rows[0].total, 10);
+
+    const dataResult = await db.query(
+      `${baseCTE} SELECT * FROM base ${statutCond} ORDER BY nom, prenoms LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, (page - 1) * limit]
+    );
+
+    const data = dataResult.rows.map((r) => ({
+      ...r,
+      montant: r.montant !== null ? parseFloat(r.montant) : null,
+      paiement: r.statut_kit === 'KIT_PAYE',
+    }));
+
+    res.status(200).json({ success: true, data, pagination: { page, limit, total } });
+  } catch (error) {
+    console.error('Erreur listerKits:', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
 // Résolution du Kit pour un étudiant sur SON année académique courante — APPORTE (aucun paiement)
 // ou PAYE (paiement Caisse distinct, 5000 FCFA imposés, type_frais='kit_ecole', jamais mêlé au
 // paiement de scolarité). Un seul traitement possible par (étudiant, année) — kit_unique_etudiant_annee
