@@ -10,6 +10,9 @@ const mgOnly = authorizeRoles('admin', 'moyens_generaux');
 // Routes à segment fixe déclarées AVANT '/:id' — sinon Express les intercepterait comme un id.
 router.get('/historique/filtres', authenticateToken, mgOnly, requirePermission('distribution.voir'), distributionController.getFiltresHistorique);
 router.get('/historique', authenticateToken, mgOnly, requirePermission('distribution.voir'), distributionController.getHistorique);
+// Chantier "Suivi des distributions" (Phase 1 backend, 2026-09-07) — même permission que
+// l'historique (lecture), endpoint distinct : voir controllers/distribution.controller.js::getSuivi.
+router.get('/suivi', authenticateToken, mgOnly, requirePermission('distribution.voir'), distributionController.getSuivi);
 // Chantier Moyens Généraux, Phase 2D (2026-08-19) : aussi accessible avec 'distribution.surplus.creer'
 // seule — rechercher un étudiant est le même premier geste pour composer une distribution gratuite
 // OU pour créer une demande de surplus, un collaborateur habilité uniquement au surplus doit
