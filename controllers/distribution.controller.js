@@ -18,6 +18,7 @@ const db = require('../config/db.config');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { enregistrerMouvementStock, getEmplacementStockPourSite, getSoldeStock } = require('../services/stockMoyensGeneraux.service');
 const { getSuiviDistributions } = require('../services/distributionSuivi.service');
+const { getStatistiquesAccessoiresParNiveau, getNonRecuperateurs } = require('../services/statistiquesAccessoiresNiveau.service');
 
 // Chantier Moyens Généraux, Phase 2C (2026-08-19) : la distribution gratuite standard ne laisse
 // plus le client fixer la quantité — elle est TOUJOURS celle de la règle applicable
@@ -562,6 +563,65 @@ exports.getSuivi = async (req, res) => {
     res.status(200).json({ success: true, data: rows, pagination: { page, limit, total } });
   } catch (error) {
     console.error('Erreur getSuivi (distribution):', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// Chantier "Suivi des accessoires par niveau" — dashboard Moyens Généraux (2026-09-08). Distinct de
+// getSuivi (qui reste par ÉTUDIANT) : ici un tableau croisé niveau × accessoire, pour le dashboard.
+exports.getStatistiquesParNiveau = async (req, res) => {
+  try {
+    const { anneeAcademiqueId } = req.query;
+    if (!anneeAcademiqueId) {
+      return res.status(400).json({ success: false, message: "L'ID de l'année académique est requis." });
+    }
+    const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
+
+    const data = await getStatistiquesAccessoiresParNiveau(db, {
+      siteId,
+      ecoleId,
+      anneeAcademiqueId: parseInt(anneeAcademiqueId, 10),
+      filiereId: req.query.filiereId ? parseInt(req.query.filiereId, 10) : null,
+      niveauId: req.query.niveauId ? parseInt(req.query.niveauId, 10) : null,
+    });
+
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error('Erreur getStatistiquesParNiveau (distribution):', error);
+    res.status(500).json({ success: false, message: 'Erreur serveur.' });
+  }
+};
+
+// Détail d'UNE cellule du tableau ci-dessus (niveau + accessoireId obligatoires) — étudiants
+// inscrits n'ayant reçu aucune ligne_distribution gratuite pour cet accessoire.
+//
+// `niveau` (libellé, ex. "BTS 2") et non `niveauId` : getStatistiquesParNiveau regroupe ses lignes
+// par LIBELLÉ de niveau (voir services/statistiquesAccessoiresNiveau.service.js), une même ligne du
+// tableau peut donc correspondre à plusieurs niveau_id (un par filière) — un id unique ne
+// désignerait pas correctement la cellule cliquée.
+exports.getNonRecuperateurs = async (req, res) => {
+  try {
+    const { anneeAcademiqueId, niveau, accessoireId } = req.query;
+    if (!anneeAcademiqueId || !niveau || !accessoireId) {
+      return res.status(400).json({ success: false, message: "L'année académique, le niveau et l'accessoire sont requis." });
+    }
+    const siteId = req.user.departement_id;
+    const ecoleId = getEcoleScopeFromUser(req);
+
+    const data = await getNonRecuperateurs(db, {
+      siteId,
+      ecoleId,
+      anneeAcademiqueId: parseInt(anneeAcademiqueId, 10),
+      niveau,
+      accessoireId: parseInt(accessoireId, 10),
+      filiereId: req.query.filiereId ? parseInt(req.query.filiereId, 10) : null,
+      groupeId: req.query.groupeId ? parseInt(req.query.groupeId, 10) : null,
+    });
+
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    console.error('Erreur getNonRecuperateurs (distribution):', error);
     res.status(500).json({ success: false, message: 'Erreur serveur.' });
   }
 };

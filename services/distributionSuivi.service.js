@@ -163,4 +163,4 @@ async function getSuiviDistributions(client, {
   };
 }
 
-module.exports = { getSuiviDistributions };
+module.exports = { getSuiviDistributions, construireFiltresEtudiant };
