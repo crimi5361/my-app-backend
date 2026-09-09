@@ -392,8 +392,34 @@ exports.getDossierReinscription = async (req, res) => {
     );
     const parcoursOptions = parcoursResult.rows;
 
-    // Progression suggérée : ADMIS/DÉROGÉ → niveau supérieur ; sinon redoublement
-    let niveauRetenuPropose = etudiant.niveau_id;
+    // ✅ Correctif "Redoublement sur l'année cible" (2026-09-09) : le niveau de redoublement
+    // doit être résolu POUR L'ANNÉE CIBLE (même libellé, même filière, même site) — jamais l'id
+    // brut etudiant.niveau_id, qui appartient à l'ANCIENNE année. Plusieurs lignes `niveau`
+    // partagent le même libellé (une par filière ET par année) : la clé (libellé, filière,
+    // année cible, site) est celle déjà éprouvée ailleurs dans ce fichier (voir
+    // trouverOrientationsFiliere) pour identifier sans ambiguïté LE niveau visé. `niveau` n'a
+    // aucune colonne curcus_id — le choix Jour/Soir (curcusId) est indépendant de cette
+    // résolution, appliqué séparément à la soumission (voir plus bas dans
+    // traiterDemandeReinscription). Résolution générique : aucune condition sur un étudiant/
+    // matricule précis.
+    const niveauRedoublementResult = anneeCible
+      ? await db.query(
+          `SELECT id FROM niveau WHERE libelle = $1 AND filiere_id = $2 AND anneeacademique_id = $3 AND site_id = $4`,
+          [etudiant.niveau_libelle, etudiant.id_filiere, anneeCible.id, etudiant.site_id]
+        )
+      : { rows: [] };
+    const niveauRedoublementId = niveauRedoublementResult.rows[0]?.id ?? null;
+
+    // Filière pas encore préparée pour l'année cible sur ce niveau précis : même vigilance que
+    // progressionBloqueeMessage ci-dessus — ne jamais retomber silencieusement sur l'ancien id
+    // (qui redéclencherait le garde-fou NIVEAU_ANNEE_INCORRECTE à la soumission sans explication).
+    const redoublementBloqueMessage = !niveauRedoublementId
+      ? `Le niveau "${etudiant.niveau_libelle}" n'est pas encore configuré pour l'année ${anneeCible?.annee ?? 'cible'} dans la filière "${etudiant.filiere_nom}" : préparez d'abord cette filière depuis Gestion des filières avant de proposer un redoublement.`
+      : null;
+
+    // Progression suggérée : ADMIS/DÉROGÉ → niveau supérieur ; sinon redoublement (résolu
+    // ci-dessus pour l'année cible).
+    let niveauRetenuPropose = niveauRedoublementId;
     if (academiqueValide && niveauPropose?.id) {
       niveauRetenuPropose = niveauPropose.id;
     }
@@ -406,12 +432,20 @@ exports.getDossierReinscription = async (req, res) => {
     const tarifNiveauActuel = await TarifController.calculerMontantScolarite(etudiant.niveau_id, etudiant.statut_scolaire, 'reinscription');
 
     // ✅ Pièces justificatives — unique source de vérité (chargerPiecesReinscription), même
-    // mécanisme que la Vérification. Gating BTS 2 → Licence 3 PRO basé sur le niveau ACTUEL de
-    // l'étudiant (dossier pas encore créé à ce stade) — même signal que celui déjà utilisé par
-    // getSituationReinscriptionPublic pour exposer options.bts2_l3pro au portail Web. Le frontend
-    // n'a donc aucune détection à faire : il affiche exactement cette liste.
+    // mécanisme que la Vérification. Gating BTS 2 → Licence 3 PRO.
+    //
+    // ✅ Correctif "Redoublement AJOURNÉ" (2026-09-09) : BTS 2 → LICENCE 3 PRO n'est JAMAIS
+    // suggéré automatiquement (niveau.niveau_suivant_id est structurellement absent pour tous les
+    // niveaux BTS 2 — vérifié en base — le changement de cycle est un choix manuel de l'agent à
+    // la soumission, cf. determinerChangementDeCycle) : impossible de savoir à l'avance si CE
+    // BTS 2 ADMIS ira en Licence 3 PRO ou redoublera volontairement — la pièce reste donc
+    // affichée par prudence pour tout BTS 2 ADMIS/DÉROGÉ, exactement comme avant ce correctif
+    // (estBts2Actuel seul, comportement PRÉSERVÉ pour ce cas). Un AJOURNÉ, en revanche, n'a
+    // JAMAIS aucune progression proposée (cf. niveauPropose plus haut) : son seul chemin réaliste
+    // est le redoublement, où cette pièce n'a pas lieu d'être — exclue UNIQUEMENT dans ce cas.
     const estBts2Actuel = /^BTS\s*2$/i.test((etudiant.niveau_libelle || '').trim());
-    const documents = await exports.chargerPiecesReinscription(etudiant.id, estBts2Actuel);
+    const estBts2VersL3Pro = estBts2Actuel && academiqueValide;
+    const documents = await exports.chargerPiecesReinscription(etudiant.id, estBts2VersL3Pro);
 
     res.status(200).json({
       success: true,
@@ -430,6 +464,7 @@ exports.getDossierReinscription = async (req, res) => {
         niveau_propose: niveauPropose,
         progression_bloquee_message: progressionBloqueeMessage,
         niveau_retenu_propose: niveauRetenuPropose,
+        redoublement_bloque_message: redoublementBloqueMessage,
         parcours_requis: parcoursRequis,
         parcours_options: parcoursOptions,
         orientations_disponibles: orientationsDisponibles,
@@ -601,7 +636,15 @@ exports.traiterDemandeReinscription = async (client, {
   // commentaire "le contrôle académique n'a jamais empêché un redoublement"). Généralisée ici pour
   // que la soumission ne contredise jamais ce qui a été annoncé au candidat — moteur unique,
   // réutilisé tel quel par le portail Web, l'agent et la vérification.
-  const estRedoublement = parseInt(niveauRetenuId, 10) === etudiant.niveau_id && filiereRetenueIdNum === etudiant.id_filiere;
+  // ✅ Correctif "Redoublement sur l'année cible" (2026-09-09, suite) : niveauRetenuId est
+  // désormais résolu POUR L'ANNÉE CIBLE (ex. "BTS 2"/2026-2027 = id 171), jamais l'id brut
+  // etudiant.niveau_id qui appartient à L'ANCIENNE année (ex. "BTS 2"/2025-2026 = id 4) — ces
+  // deux id ne peuvent structurellement plus jamais être égaux pour un redoublement réel depuis
+  // qu'ils sont résolus sur des années différentes. Un redoublement se caractérise par le LIBELLÉ
+  // (même niveau) et la filière, jamais par l'id brut — comparaison alignée sur celle déjà
+  // utilisée par verification.controller.js::estBts2VersL3Pro (niveau précédent/retenu par
+  // libellé). niveauActuelLibelle/niveauRetenuLibelle déjà résolus ci-dessus.
+  const estRedoublement = niveauRetenuLibelle === niveauActuelLibelle && filiereRetenueIdNum === etudiant.id_filiere;
   const { financierConforme, academiqueValide } = exports.evaluerEligibiliteReinscription(situationAcademique, situationFinanciere);
   const eligible = financierConforme && (academiqueValide || estRedoublement) && montantAnnuel !== null;
 
