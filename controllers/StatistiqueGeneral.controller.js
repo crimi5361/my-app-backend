@@ -11,13 +11,18 @@ const db = require('../config/db.config');
 // étudiant réinscrit vers l'année suivante ne doit pas disparaître rétroactivement des statistiques
 // de l'année qu'il vient de quitter.
 //
-// Niveaux qui impliquent forcément une progression depuis une année antérieure (donc une
-// réinscription) — Chantier Statistiques 2026-08 : la liste d'origine ('LICENCE 2', 'LICENCE 3',
-// 'BTS 2') omettait les équivalents PRO, sous-comptant les réinscriptions d'environ 750 étudiants
-// (LICENCE 2 PRO + LICENCE 3 PRO) vérifié sur la base réelle. MASTER 1/1 PRO/2/2 PRO restent
-// volontairement exclus : un Master 1 peut être une admission externe fraîche, pas forcément une
-// réinscription IIPEA — question métier à trancher, non tranchée unilatéralement ici.
-const NIVEAUX_IMPLIQUANT_REINSCRIPTION = ['LICENCE 2', 'LICENCE 2 PRO', 'LICENCE 3', 'LICENCE 3 PRO', 'BTS 2'];
+// ✅ Correctif "Ré-inscriptions" (2026-09-09) : la colonne `reinscriptions` reposait auparavant sur
+// une heuristique par niveau (NIVEAUX_IMPLIQUANT_REINSCRIPTION, retirée) — un simple sous-ensemble
+// de `inscriptions`/`total` (même filtre `standing='Inscrit'`), jamais une notion distincte. Deux
+// défauts documentés dans l'ancien commentaire : faux positifs (un étudiant ADMIS directement en
+// LICENCE 2 par équivalence externe était compté à tort comme réinscrit) et faux négatifs (un
+// réinscrit en MASTER 1/1 PRO/2/2 PRO n'était jamais compté). Remplacée par la définition métier
+// DÉJÀ établie et validée ailleurs (services/statistiquesInscriptions.service.js::getInscriptionsValidees,
+// utilisée par les dashboards) : une réinscription "validée" = une ligne
+// historique_inscription.type_evenement = 'reinscription', écrite UNIQUEMENT à la finalisation du
+// paiement en caisse (jamais un simple dossier en attente). Chaque fonction ci-dessous corrèle cette
+// même source, agrégée au niveau de regroupement approprié (niveau/cycle/cursus/filière) — jamais
+// une nouvelle logique, la même que celle déjà utilisée par les dashboards.
 
 // Statistiques par cycles (Type de filière)
 exports.getStatisticsByCycle = async (req, res) => {
@@ -31,7 +36,13 @@ exports.getStatisticsByCycle = async (req, res) => {
                 COUNT(CASE WHEN e.statut_scolaire = 'Affecté' THEN 1 END) as etudiants_affectes,
                 COUNT(CASE WHEN e.statut_scolaire = 'Non affecté' THEN 1 END) as etudiants_non_affectes,
                 COUNT(CASE WHEN e.standing = 'Inscrit' THEN 1 END) as inscriptions,
-                COUNT(CASE WHEN n.libelle = ANY($3::text[]) AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
+                COALESCE((
+                    SELECT COUNT(*) FROM historique_inscription h
+                    JOIN etudiant he ON he.id = h.etudiant_id
+                    JOIN niveau hn ON hn.id = h.niveau_id
+                    WHERE h.type_evenement = 'reinscription' AND h.annee_academique_id = $1 AND he.site_id = $2
+                      AND hn.filiere_id IN (SELECT id FROM filiere WHERE type_filiere_id = tf.id)
+                ), 0) as reinscriptions,
                 COUNT(*) as total
             FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
@@ -42,7 +53,7 @@ exports.getStatisticsByCycle = async (req, res) => {
             ORDER BY tf.libelle
         `;
 
-        const result = await db.query(query, [annee_academique_id, departement_id, NIVEAUX_IMPLIQUANT_REINSCRIPTION]);
+        const result = await db.query(query, [annee_academique_id, departement_id]);
         
         res.json({
             success: true,
@@ -69,13 +80,19 @@ exports.getStatisticsByNiveau = async (req, res) => {
                 COUNT(CASE WHEN e.statut_scolaire = 'Affecté' THEN 1 END) as etudiants_affectes,
                 COUNT(CASE WHEN e.statut_scolaire = 'Non affecté' THEN 1 END) as etudiants_non_affectes,
                 COUNT(CASE WHEN e.standing = 'Inscrit' THEN 1 END) as inscriptions,
-                COUNT(CASE WHEN n.libelle = ANY($3::text[]) AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
+                COALESCE((
+                    SELECT COUNT(*) FROM historique_inscription h
+                    JOIN etudiant he ON he.id = h.etudiant_id
+                    JOIN niveau hn ON hn.id = h.niveau_id
+                    WHERE h.type_evenement = 'reinscription' AND h.annee_academique_id = $1 AND he.site_id = $2
+                      AND hn.libelle = n.libelle
+                ), 0) as reinscriptions,
                 COUNT(*) as total
             FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
             WHERE e.annee_academique_id = $1 AND e.site_id = $2 AND e.standing = 'Inscrit'
             GROUP BY n.libelle
-            ORDER BY 
+            ORDER BY
                  CASE 
                     WHEN n.libelle LIKE 'BTS 1' THEN 1
                     WHEN n.libelle LIKE 'BTS 2' THEN 2
@@ -93,7 +110,7 @@ exports.getStatisticsByNiveau = async (req, res) => {
                 END
         `;
 
-        const result = await db.query(query, [annee_academique_id, departement_id, NIVEAUX_IMPLIQUANT_REINSCRIPTION]);
+        const result = await db.query(query, [annee_academique_id, departement_id]);
 
         res.json({
             success: true,
@@ -121,7 +138,12 @@ exports.getStatisticsByCursus = async (req, res) => {
                 COUNT(CASE WHEN e.statut_scolaire = 'Affecté' THEN 1 END) as etudiants_affectes,
                 COUNT(CASE WHEN e.statut_scolaire = 'Non affecté' THEN 1 END) as etudiants_non_affectes,
                 COUNT(CASE WHEN e.standing = 'Inscrit' THEN 1 END) as inscriptions,
-                COUNT(CASE WHEN n.libelle = ANY($3::text[]) AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
+                COALESCE((
+                    SELECT COUNT(*) FROM historique_inscription h
+                    JOIN etudiant he ON he.id = h.etudiant_id
+                    WHERE h.type_evenement = 'reinscription' AND h.annee_academique_id = $1 AND he.site_id = $2
+                      AND h.curcus_id = c.id
+                ), 0) as reinscriptions,
                 COUNT(*) as total
             FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
@@ -131,7 +153,7 @@ exports.getStatisticsByCursus = async (req, res) => {
             ORDER BY c.type_parcours
         `;
 
-        const result = await db.query(query, [annee_academique_id, departement_id, NIVEAUX_IMPLIQUANT_REINSCRIPTION]);
+        const result = await db.query(query, [annee_academique_id, departement_id]);
         
         res.json({
             success: true,
@@ -162,7 +184,12 @@ exports.getStatisticsByFiliere = async (req, res) => {
                 COUNT(CASE WHEN e.statut_scolaire = 'Affecté' THEN 1 END) as etudiants_affectes,
                 COUNT(CASE WHEN e.statut_scolaire = 'Non affecté' THEN 1 END) as etudiants_non_affectes,
                 COUNT(CASE WHEN e.standing = 'Inscrit' THEN 1 END) as inscriptions,
-                COUNT(CASE WHEN n.libelle = ANY($3::text[]) AND e.standing = 'Inscrit' THEN 1 END) as reinscriptions,
+                COALESCE((
+                    SELECT COUNT(*) FROM historique_inscription h
+                    JOIN etudiant he ON he.id = h.etudiant_id
+                    WHERE h.type_evenement = 'reinscription' AND h.annee_academique_id = $1 AND he.site_id = $2
+                      AND h.niveau_id = n.id
+                ), 0) as reinscriptions,
                 COUNT(*) as total
             FROM vue_position_academique e
             INNER JOIN niveau n ON e.niveau_id = n.id
@@ -183,7 +210,7 @@ exports.getStatisticsByFiliere = async (req, res) => {
                 END
         `;
 
-        const result = await db.query(query, [annee_academique_id, departement_id, NIVEAUX_IMPLIQUANT_REINSCRIPTION]);
+        const result = await db.query(query, [annee_academique_id, departement_id]);
 
         // Regrouper par filière
         const groupedData = {};

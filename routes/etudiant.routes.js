@@ -281,7 +281,11 @@ router.post('/ExportEtudiants', authenticateToken, etudiantController.exportEtud
  *       500:
  *         description: Erreur serveur
  */
-router.post('/ExportComptesEtudiants', authenticateToken, authorizeRoles('admin'), etudiantController.exportComptesEtudiants);
+// Chantier "Accès Fondateur / Export comptes étudiants" (2026-09-09) — même patron déjà réutilisé
+// pour le fondateur ailleurs dans le backend (routes/payement.routes.js::fondateurOnly,
+// routes/dashboardFondateur.routes.js) : authorizeRoles('admin', 'fondateur'), aucune nouvelle
+// permission créée.
+router.post('/ExportComptesEtudiants', authenticateToken, authorizeRoles('admin', 'fondateur'), etudiantController.exportComptesEtudiants);
 
 /**
  * @swagger
