@@ -13,6 +13,7 @@ const { genererCodeCandidat, avecRetryCodeUnique } = require('../services/codePa
 const { saveDocument } = require('../services/documentStorage.service');
 const { enregistrerEvenementHistorique } = require('../services/equivalenceHistorique.service');
 const { resoudreFormationEtParcours } = require('../services/parcoursProfessionnel.service');
+const { genererEmailInstitutionnelUnique } = require('../services/emailEtudiant.service');
 const { generateMatriculeIIPEA, generateCodeUnique } = require('./etudiant.controller');
 const emailService = require('../services/email.service');
 
@@ -671,8 +672,8 @@ exports.validerDemande = async (req, res) => {
 
     // 2) Génération du code de paiement — colonne de la ligne etudiant elle-même : impossible
     //    structurellement qu'un étudiant existe sans code (document de conception §5.4).
-    const cleanName = (str) => str.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '.').toLowerCase();
-    const emailInstitutionnel = `${cleanName(demande.prenoms.split(' ')[0])}.${cleanName(demande.nom)}@iipea.com`;
+    // e-mail institutionnel unique (jamais un doublon, jamais un prefixe vide), voir services/emailEtudiant.service.js.
+    const emailInstitutionnel = await genererEmailInstitutionnelUnique(client, { nom: demande.nom, prenoms: demande.prenoms });
     const codeUnique = await generateCodeUnique(demande.nom, demande.prenoms, demande.date_naissance);
     const matriculeIipea = await generateMatriculeIIPEA(demande.annee_academique_id, demande.id_filiere);
     const bcrypt = require('bcrypt');

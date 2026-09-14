@@ -468,8 +468,9 @@ exports.demanderAdmissionPublic = async (req, res) => {
     }
 
     const { generateMatriculeIIPEA, generateCodeUnique } = require('./etudiant.controller');
-    const cleanName = (str) => str.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/\s+/g, '.').toLowerCase();
-    const email = `${cleanName(etudiant.prenoms.split(' ')[0])}.${cleanName(etudiant.nom)}@iipea.com`;
+    const { genererEmailInstitutionnelUnique } = require('../services/emailEtudiant.service');
+    // e-mail institutionnel unique (jamais un doublon, jamais un prefixe vide), voir services/emailEtudiant.service.js.
+    const email = await genererEmailInstitutionnelUnique(client, { nom: etudiant.nom, prenoms: etudiant.prenoms });
     const hashedPassword = await bcrypt.hash('@elites@', 10);
     const codeUnique = await generateCodeUnique(etudiant.nom, etudiant.prenoms, etudiant.date_naissance);
     const matriculeIipea = await generateMatriculeIIPEA(academique.annee_academique_id, inscription.id_filiere);

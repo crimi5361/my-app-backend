@@ -7,6 +7,7 @@ const { validatePhotoFile } = require('./etudiant.controller');
 const { avecRetryCodeUnique } = require('../services/codePaiement.service');
 const { requiertChoixParcours } = require('../services/parcoursProfessionnel.service');
 const { validerReferentielsIdentite } = require('../services/referentielIdentite.service');
+const { emailDejaUtiliseParAutreEtudiant } = require('../services/emailEtudiant.service');
 
 // session_bac retiré (obsolète, remplacé par annee_bac) — la colonne reste en base mais n'est
 // plus lue ni écrite par aucun code de l'application ; suppression physique différée à une
@@ -673,6 +674,23 @@ exports.traiterDemandeReinscription = async (client, {
         message: `Valeur(s) invalide(s) pour : ${champsInvalides.join(', ')}.`
       }
     };
+  }
+
+  // ✅ Unicite de l'e-mail de connexion (etudiant.email) — audit du 2026-09-11 : aucune
+  // verification n'existait avant ce chantier, permettant a deux etudiants de partager le meme
+  // e-mail (generation dupliquee pour homonymes, ou saisie manuelle ici meme non controlee).
+  // etudiantId exclu de la recherche : un etudiant ne se voit jamais refuser son PROPRE e-mail.
+  if (identiteFields?.email) {
+    const emailPris = await emailDejaUtiliseParAutreEtudiant(client, { email: identiteFields.email, etudiantIdAExclure: etudiantId });
+    if (emailPris) {
+      return {
+        erreur: {
+          status: 409,
+          code: 'EMAIL_DEJA_UTILISE',
+          message: 'Cette adresse e-mail est déjà utilisée par un autre étudiant.'
+        }
+      };
+    }
   }
 
   await client.query('BEGIN');

@@ -10,6 +10,7 @@ const { genererCodeCandidat } = require('../services/codePaiement.service');
 const { getEcoleScopeFromUser } = require('../services/ecoleScope.service');
 const { validerReferentielsIdentite } = require('../services/referentielIdentite.service');
 const { getPecActive } = require('../services/priseEnChargeResolution.service');
+const { genererEmailInstitutionnelUnique } = require('../services/emailEtudiant.service');
 
 const UPLOAD_DIR = path.join(__dirname, '../uploads/photos');
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -270,12 +271,9 @@ if (photoFile0) {
   console.log('Aucun fichier photo détecté dans la requête (inscription)');
 }
 
-    // Génération des identifiants
-    const cleanName = (str) => {
-      return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, '.').toLowerCase();
-    };
-
-    const email = `${cleanName(data.etudiant.prenoms.split(' ')[0])}.${cleanName(data.etudiant.nom)}@iipea.com`;
+    // Génération des identifiants — e-mail institutionnel unique (jamais un doublon, jamais un
+    // préfixe vide même si prenoms commence par un espace), voir services/emailEtudiant.service.js.
+    const email = await genererEmailInstitutionnelUnique(client, { nom: data.etudiant.nom, prenoms: data.etudiant.prenoms });
     const hashedPassword = await bcrypt.hash('@elites@', 10);
     
     // Génération des codes
