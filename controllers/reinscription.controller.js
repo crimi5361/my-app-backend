@@ -7,11 +7,16 @@ const { validatePhotoFile } = require('./etudiant.controller');
 const { avecRetryCodeUnique } = require('../services/codePaiement.service');
 const { requiertChoixParcours } = require('../services/parcoursProfessionnel.service');
 const { validerReferentielsIdentite } = require('../services/referentielIdentite.service');
-const { emailDejaUtiliseParAutreEtudiant } = require('../services/emailEtudiant.service');
 
 // session_bac retiré (obsolète, remplacé par annee_bac) — la colonne reste en base mais n'est
 // plus lue ni écrite par aucun code de l'application ; suppression physique différée à une
 // migration dédiée ultérieure.
+//
+// ⚠️ 'email' dans cette liste désigne le champ affiché « Email » de « Compléments d'identité »
+// (chantier 2026-09-14) : il est lu/écrit sur etudiant.EMAIL_PERSONNEL, jamais etudiant.email
+// (colonne de connexion, gérée exclusivement par services/emailEtudiant.service.js — admission/
+// équivalence). Le nom de clé 'email' est conservé tel quel (contrat API inchangé,
+// front-end/formData non renommés) ; seule la colonne cible de l'UPDATE change, voir plus bas.
 const IDENTITE_FIELDS = [
   'telephone', 'email', 'lieu_residence', 'contact_parent', 'contact_parent_2',
   'adresse_parent_1', 'adresse_parent_2', 'numero_acte_naissance', 'numero_piece_identite',
@@ -246,7 +251,7 @@ exports.getDossierReinscription = async (req, res) => {
 
     const etudiantResult = await db.query(
       `SELECT e.id, e.matricule_iipea, e.nom, e.prenoms, e.date_naissance, e.photo_url,
-              e.telephone, e.email, e.lieu_residence, e.contact_parent, e.contact_parent_2,
+              e.telephone, e.email, e.email_personnel, e.lieu_residence, e.contact_parent, e.contact_parent_2,
               e.nom_parent_1, e.nom_parent_2, e.adresse_parent_1, e.adresse_parent_2,
               e.numero_acte_naissance, e.numero_piece_identite, e.mention_bac, e.annee_bac,
               e.engagement_accepte, e.ip_ministere, e.statut_scolaire,
@@ -676,23 +681,6 @@ exports.traiterDemandeReinscription = async (client, {
     };
   }
 
-  // ✅ Unicite de l'e-mail de connexion (etudiant.email) — audit du 2026-09-11 : aucune
-  // verification n'existait avant ce chantier, permettant a deux etudiants de partager le meme
-  // e-mail (generation dupliquee pour homonymes, ou saisie manuelle ici meme non controlee).
-  // etudiantId exclu de la recherche : un etudiant ne se voit jamais refuser son PROPRE e-mail.
-  if (identiteFields?.email) {
-    const emailPris = await emailDejaUtiliseParAutreEtudiant(client, { email: identiteFields.email, etudiantIdAExclure: etudiantId });
-    if (emailPris) {
-      return {
-        erreur: {
-          status: 409,
-          code: 'EMAIL_DEJA_UTILISE',
-          message: 'Cette adresse e-mail est déjà utilisée par un autre étudiant.'
-        }
-      };
-    }
-  }
-
   await client.query('BEGIN');
 
   // Champs d'identité éditables + photo — appliqués tout de suite, indépendamment de
@@ -702,7 +690,7 @@ exports.traiterDemandeReinscription = async (client, {
     `UPDATE etudiant SET
        photo_url = COALESCE($1, photo_url),
        telephone = COALESCE($2, telephone),
-       email = COALESCE($3, email),
+       email_personnel = COALESCE($3, email_personnel),
        lieu_residence = COALESCE($4, lieu_residence),
        contact_parent = COALESCE($5, contact_parent),
        contact_parent_2 = COALESCE($6, contact_parent_2),

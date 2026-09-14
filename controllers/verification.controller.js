@@ -409,7 +409,7 @@ exports.getReinscriptionVerification = async (req, res) => {
     const { id } = req.params;
     const result = await db.query(
       `SELECT r.*,
-              e.nom, e.prenoms, e.matricule_iipea, e.photo_url, e.telephone, e.email,
+              e.nom, e.prenoms, e.matricule_iipea, e.photo_url, e.telephone, e.email, e.email_personnel,
               e.lieu_residence, e.contact_parent, e.contact_parent_2, e.adresse_parent_1, e.adresse_parent_2,
               e.numero_acte_naissance, e.numero_piece_identite, e.mention_bac, e.annee_bac,
               e.sexe, e.nationalite, e.pays_naissance, e.serie_bac, e.etablissement_origine,
