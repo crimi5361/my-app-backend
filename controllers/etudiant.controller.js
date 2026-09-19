@@ -1129,6 +1129,7 @@ exports.exportComptesEtudiants = async (req, res) => {
         e.statut_scolaire,
         e.date_inscription_annee,
         e.sexe,
+        e.email,
 
         f.nom AS filiere,
         n.libelle AS niveau,
