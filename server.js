@@ -178,6 +178,8 @@ const apiRoutes = [
   // Emploi du temps & divers
   { path: '/api/emploiDuTemps',   route: require('./routes/EDT.routes') },
   { path: '/api/public',          route: require('./routes/public.routes') },
+  // Intégration machine avec l'Application B (jeton RS256 de B, jamais de jeton d'utilisateur)
+  { path: '/api/integration/v1',  route: require('./routes/integrationB.routes') },
   { path: '/api/change_Password', route: require('./routes/changePassWord.routes') },
 ];
 

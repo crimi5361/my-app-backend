@@ -1,0 +1,54 @@
+# Intégration avec l'Application B (module pédagogique de l'ERP IIPEA)
+
+Routes machine sous **`/api/integration/v1`**, réservées à l'Application B. Elles sont séparées des routes des écrans : refus par défaut, aucun jeton d'utilisateur accepté. Le contrat de référence est `docs/architecture/contrat-api-a-b.yaml` du dépôt de B (version 0.2) et son guide `CONTRAT_A_B_GUIDE.md`.
+
+## Fichiers
+
+| Fichier | Rôle |
+| --- | --- |
+| `middleware/integrationB.middleware.js` | Vérifie le jeton machine de B : JWT RS256, `kid`, émetteur, audience, `jti` jamais rejoué, scopes |
+| `routes/integrationB.routes.js` | Les routes du contrat |
+| `services/integrationB/ressources.js` | Correspondance tables de A → ressources du contrat (identifiants publics, minimisation, jamais de taux horaire) |
+| `services/integrationB/lecture.js` | Pagination par curseur, `modifie_depuis`, filtres, ETag, effectif d'un groupe |
+| `services/integrationB/evenements.js` | Réception idempotente des événements de B, accusés |
+| `tests/integration_b/` | Tests (`npm run test:integration-b`), données fictives, préparation d'une base locale |
+
+## Routes
+
+- `GET /sante`
+- Lecture (`referentiel:read`) : `/annees-academiques`, `/semestres`, `/campus`, `/ecoles`, `/departements`, `/filieres`, `/niveaux`, `/classes`, `/groupes`, `/groupes/{id}/effectif`, `/maquettes`, `/suppressions`
+- Lecture (`etudiants:read`) : `/etudiants`, `/appartenances`
+- Réception (scope `…:write` par type) : `POST /evenements/affectations-publiees`, `edt-publie`, `notes-validees`, `supports-publies`, `fiches-enseignants`, `campagnes-evaluation`, `service-fait-valide` ; accusé : `GET /evenements/{id_reception}`
+
+Les événements sont enregistrés et accusés (`recu`, réponse 202). Leur intégration dans les tables de A (enseignements, emplois du temps, notes…) se branche type par type dans `services/integrationB/evenements.js` (`traitements`).
+
+## Migration SQL à appliquer avant de déployer ce code
+
+Comme les autres scripts du projet, la migration est dans le dossier local non versionné `migrations/integration_b/` (procédure : README, section F). Une copie de référence est conservée dans le dépôt de B (`docs/architecture/integration_a/`).
+
+- `001_integration_application_b.sql` : **ajouts uniquement**, rejouable, aucune colonne existante modifiée, aucun écran touché ;
+- `001_integration_application_b_annulation.sql` : retire tout ce que la migration ajoute.
+
+Ce qu'elle ajoute : `uuid_public` et `modifie_le` (déclencheur) sur les tables lues par B ; journal des suppressions ; `maquette.version` (déclencheurs sur maquette, UE et matières) ; table `appartenance_groupe` (historique daté des groupes, alimenté par déclencheur sur `etudiant.groupe_id`, reprise de l'existant) ; tables `integration_b_evenement` et `integration_b_jeton_vu`.
+
+## Configuration
+
+Dans `.env.local` / `.env.production` :
+
+```
+# Fichier JSON hors dépôt : { "<kid>": "<clé publique PEM de B>" } (deux clés pendant une rotation)
+CLES_PUBLIQUES_APPLICATION_B=/chemin/vers/cles-publiques-b.json
+```
+
+Retirer la clé révoque l'accès de B. A ne stocke aucun secret de B.
+
+## Tester en local
+
+```powershell
+$env:PSQL = "chemin\vers\psql.exe"; $env:PGPASSWORD = "…"
+.\tests\integration_b\preparer_base.ps1 -Schema "chemin\vers\schema_production.sql"   # pg_dump --schema-only
+$env:DB_USER = "postgres"; $env:DB_PASSWORD = $env:PGPASSWORD
+npm run test:integration-b
+```
+
+La base est supprimée puis recréée : le script refuse tout hôte autre que `localhost`.
