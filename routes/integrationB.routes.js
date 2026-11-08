@@ -10,6 +10,7 @@ const express = require('express');
 const { authentifierApplicationB, probleme } = require('../middleware/integrationB.middleware');
 const lecture = require('../services/integrationB/lecture');
 const evenements = require('../services/integrationB/evenements');
+const assiduite = require('../services/integrationB/assiduite');
 
 const router = express.Router();
 const VERSION_CONTRAT = '0.2.0';
@@ -34,6 +35,9 @@ const LECTURES = {
 function erreurs(res, erreur, next) {
   if (erreur instanceof lecture.ErreurRequete) {
     return probleme(res, erreur.code === 'INTROUVABLE' ? 404 : 400, erreur.code, erreur.message);
+  }
+  if (erreur instanceof assiduite.ErreurAssiduite) {
+    return probleme(res, 400, erreur.code, erreur.message);
   }
   if (erreur instanceof evenements.ErreurEvenement) {
     return probleme(res, erreur.statut, erreur.code, erreur.message);
@@ -64,6 +68,15 @@ router.get('/groupes/:id/effectif', authentifierApplicationB('referentiel:read')
   try {
     const resultat = await lecture.effectif(req.params.id);
     return resultat ? res.json(resultat) : probleme(res, 404, 'INTROUVABLE', 'Groupe inconnu');
+  } catch (erreur) {
+    return erreurs(res, erreur, next);
+  }
+});
+
+// Assiduité (application de Clovis, même base) : résumé par étudiant sur une période (B15).
+router.get('/presences', authentifierApplicationB('assiduite:read'), async (req, res, next) => {
+  try {
+    return res.json(await assiduite.presences(req.query));
   } catch (erreur) {
     return erreurs(res, erreur, next);
   }

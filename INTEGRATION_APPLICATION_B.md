@@ -18,6 +18,7 @@ Routes machine sous **`/api/integration/v1`**, réservées à l'Application B. E
 - `GET /sante`
 - Lecture (`referentiel:read`) : `/annees-academiques`, `/semestres`, `/campus`, `/ecoles`, `/departements`, `/filieres`, `/niveaux`, `/classes`, `/groupes`, `/groupes/{id}/effectif`, `/maquettes`, `/suppressions`
 - Lecture (`etudiants:read`) : `/etudiants`, `/appartenances`
+- Assiduité (`assiduite:read`) : `/presences?du=&au=&groupe_id=|etudiant_id=` — lit en lecture seule les tables de l'application d'assiduité de Clovis (EduCheck) dans la même base (`services/integrationB/assiduite.js`) ; `source_disponible: false` tant qu'elles n'existent pas
 - Réception (scope `…:write` par type) : `POST /evenements/affectations-publiees`, `edt-publie`, `notes-validees`, `supports-publies`, `fiches-enseignants`, `campagnes-evaluation`, `service-fait-valide` ; accusé : `GET /evenements/{id_reception}`
 
 Les événements sont enregistrés et accusés (`recu`, réponse 202). Leur intégration dans les tables de A (enseignements, emplois du temps, notes…) se branche type par type dans `services/integrationB/evenements.js` (`traitements`).
