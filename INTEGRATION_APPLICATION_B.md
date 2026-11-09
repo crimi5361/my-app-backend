@@ -25,7 +25,7 @@ Les événements sont enregistrés et accusés (`recu`, réponse 202). Leur int�
 
 ## Migration SQL à appliquer avant de déployer ce code
 
-Comme les autres scripts du projet, la migration est dans le dossier local non versionné `migrations/integration_b/` (procédure : README, section F). Une copie de référence est conservée dans le dépôt de B (`docs/architecture/integration_a/`).
+Comme les autres scripts du projet, la migration reste hors du dépôt : à placer dans le dossier local non versionné `migrations/integration_b/` (procédure : README, section F). Les deux fichiers sont transmis à part par l'équipe de l'Application B (Christopher Tapé) ; une copie de référence est conservée dans le dépôt de B (`docs/architecture/integration_a/`).
 
 - `001_integration_application_b.sql` : **ajouts uniquement**, rejouable, aucune colonne existante modifiée, aucun écran touché ;
 - `001_integration_application_b_annulation.sql` : retire tout ce que la migration ajoute.
@@ -53,3 +53,19 @@ npm run test:integration-b
 ```
 
 La base est supprimée puis recréée : le script refuse tout hôte autre que `localhost`.
+
+## Mise en production
+
+1. Relire la migration (ajouts uniquement) puis l'appliquer sur une **copie** de la base de production, lancer `npm run test:integration-b` sur une base locale préparée, puis l'appliquer sur Neon (production) avant de déployer le code.
+2. Fusionner `integration-application-b` dans `develop_crimi`, déployer.
+3. Placer le fichier des clés publiques de B (transmis par l'équipe de B, clé de **production**, différente de la clé de développement `b-dev`) hors du dépôt et renseigner `CLES_PUBLIQUES_APPLICATION_B` dans `.env.production`.
+4. Vérifier : `GET /api/integration/v1/sante` répond sans jeton ; toute autre route refuse sans jeton de B (401).
+5. Communiquer à l'équipe de B : l'URL publique de l'API, le `kid` enregistré, la date d'application de la migration.
+
+## Reste à réaliser (blocs suivants, à planifier ensemble)
+
+- Intégrer chaque type d'événement reçu dans les tables de A (`traitements` de `services/integrationB/evenements.js`) : affectations → enseignements, emplois du temps publiés, supports, fiches enseignants, notes validées (rejets motivés ligne par ligne), campagnes d'évaluation, service fait.
+- Affichage dans l'espace étudiant : emploi du temps, supports, fiche enseignant, campagnes ; bouton du Délégué « Confirmer la tenue du cours » transmis à B.
+- Notifications signées A → B (HMAC) vers `/integration/a/notifications/` de B : changement de groupe, d'effectif, de maquette, rejet de notes ; secret partagé à convenir.
+- Délégués habilités (titulaire / suppléant, période) : n'existent pas dans A.
+- Dashboard Fondateur : lecture de l'API KPI de B.
